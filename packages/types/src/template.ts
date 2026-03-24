@@ -29,18 +29,18 @@ export interface CustomizationSchema {
 }
 
 export interface BrandingOptions {
-    appName: { type: 'string'; required: true };
-    logoUrl: { type: 'string'; required: false };
-    primaryColor: { type: 'color'; required: true };
-    secondaryColor: { type: 'color'; required: true };
-    fontFamily: { type: 'string'; required: false };
+    appName: { type: 'string'; required: boolean };
+    logoUrl?: { type: 'string'; required: boolean };
+    primaryColor: { type: 'color'; required: boolean };
+    secondaryColor: { type: 'color'; required: boolean };
+    fontFamily: { type: 'string'; required: boolean };
 }
 
 export interface FeatureToggles {
-    enableCharts: { type: 'boolean'; default: true };
-    enableTransactionHistory: { type: 'boolean'; default: true };
-    enableAnalytics: { type: 'boolean'; default: false };
-    enableNotifications: { type: 'boolean'; default: false };
+    enableCharts: { type: 'boolean'; default: boolean };
+    enableTransactionHistory: { type: 'boolean'; default: boolean };
+    enableAnalytics: { type: 'boolean'; default: boolean };
+    enableNotifications: { type: 'boolean'; default: boolean };
 }
 
 export interface StellarConfiguration {

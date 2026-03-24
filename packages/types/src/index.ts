@@ -5,3 +5,4 @@ export * from './deployment';
 export * from './customization';
 export * from './stellar';
 export * from './payment';
+export * from './preview';
