@@ -1,4 +1,5 @@
 import { stripe } from '@/lib/stripe/client';
+import { getTierFromPriceId } from '@/lib/stripe/pricing';
 import { createClient } from '@/lib/supabase/server';
 import type {
     CheckoutSession,
@@ -12,7 +13,9 @@ export class PaymentService {
      */
     async createCheckoutSession(
         userId: string,
-        priceId: string
+        priceId: string,
+        successUrl?: string,
+        cancelUrl?: string
     ): Promise<CheckoutSession> {
         const supabase = createClient();
 
@@ -63,8 +66,8 @@ export class PaymentService {
                     quantity: 1,
                 },
             ],
-            success_url: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard?session_id={CHECKOUT_SESSION_ID}`,
-            cancel_url: `${process.env.NEXT_PUBLIC_APP_URL}/pricing`,
+            success_url: successUrl ?? `${process.env.NEXT_PUBLIC_APP_URL}/dashboard?session_id={CHECKOUT_SESSION_ID}`,
+            cancel_url: cancelUrl ?? `${process.env.NEXT_PUBLIC_APP_URL}/pricing`,
             metadata: {
                 user_id: userId,
             },
@@ -243,16 +246,11 @@ export class PaymentService {
     }
 
     /**
-     * Determine subscription tier from Stripe price ID
+     * Determine subscription tier from Stripe price ID.
+     * Delegates to the canonical pricing config.
      */
     private getTierFromPrice(priceId: string): 'free' | 'pro' | 'enterprise' {
-        if (priceId === process.env.NEXT_PUBLIC_STRIPE_PRICE_PRO) {
-            return 'pro';
-        }
-        if (priceId === process.env.NEXT_PUBLIC_STRIPE_PRICE_ENTERPRISE) {
-            return 'enterprise';
-        }
-        return 'free';
+        return getTierFromPriceId(priceId);
     }
 }
 

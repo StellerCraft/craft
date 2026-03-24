@@ -1,12 +1,26 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { stripe } from '@/lib/stripe/client';
 import { paymentService } from '@/services/payment.service';
-import { headers } from 'next/headers';
 
+const SUPPORTED_EVENTS = new Set([
+    'checkout.session.completed',
+    'customer.subscription.created',
+    'customer.subscription.updated',
+    'customer.subscription.deleted',
+    'invoice.payment_succeeded',
+    'invoice.payment_failed',
+]);
+
+/**
+ * POST /api/webhooks/stripe
+ *
+ * Receives Stripe webhook events, verifies the signature, and delegates
+ * to the payment service. Returns 200 for all successfully verified events
+ * (including unsupported types) so Stripe does not retry unnecessarily.
+ */
 export async function POST(req: NextRequest) {
     const body = await req.text();
-    const headersList = headers();
-    const signature = headersList.get('stripe-signature');
+    const signature = req.headers.get('stripe-signature');
 
     if (!signature) {
         return NextResponse.json(
@@ -31,10 +45,11 @@ export async function POST(req: NextRequest) {
         event = stripe.webhooks.constructEvent(body, signature, webhookSecret);
     } catch (err: any) {
         console.error('Webhook signature verification failed:', err.message);
-        return NextResponse.json(
-            { error: 'Invalid signature' },
-            { status: 400 }
-        );
+        return NextResponse.json({ error: 'Invalid signature' }, { status: 400 });
+    }
+
+    if (!SUPPORTED_EVENTS.has(event.type)) {
+        return NextResponse.json({ received: true });
     }
 
     try {

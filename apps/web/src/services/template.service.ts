@@ -42,7 +42,7 @@ export class TemplateService {
             throw new Error(`Failed to list templates: ${error.message}`);
         }
 
-        return (data || []).map(this.mapDatabaseToTemplate);
+        return (data || []).map((row) => this.mapDatabaseToTemplate(row));
     }
 
     /**
