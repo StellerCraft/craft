@@ -1,22 +1,44 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
 import { withAuth } from '@/lib/api/with-auth';
 import { paymentService } from '@/services/payment.service';
 
-export const POST = withAuth(async (req: NextRequest, { user }) => {
-    const { priceId } = await req.json();
+const checkoutSchema = z.object({
+    priceId: z.string().min(1),
+    successUrl: z.string().url().optional(),
+    cancelUrl: z.string().url().optional(),
+});
 
-    if (!priceId) {
-        return NextResponse.json({ error: 'Price ID is required' }, { status: 400 });
+/**
+ * POST /api/payments/checkout
+ * Creates a Stripe checkout session for the authenticated user.
+ * Returns { sessionId, url } on success.
+ */
+export const POST = withAuth(async (req: NextRequest, { user }) => {
+    const body = await req.json();
+    const parsed = checkoutSchema.safeParse(body);
+
+    if (!parsed.success) {
+        return NextResponse.json(
+            { error: 'Invalid input', details: parsed.error.flatten().fieldErrors },
+            { status: 400 }
+        );
     }
 
     try {
-        const session = await paymentService.createCheckoutSession(user.id, priceId);
+        const session = await paymentService.createCheckoutSession(
+            user.id,
+            parsed.data.priceId,
+            parsed.data.successUrl,
+            parsed.data.cancelUrl
+        );
         return NextResponse.json(session);
     } catch (error: any) {
         console.error('Error creating checkout session:', error);
+        const isClientError = error.message === 'User email not found';
         return NextResponse.json(
             { error: error.message || 'Failed to create checkout session' },
-            { status: 500 }
+            { status: isClientError ? 400 : 500 }
         );
     }
 });

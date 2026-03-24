@@ -12,7 +12,9 @@ export class PaymentService {
      */
     async createCheckoutSession(
         userId: string,
-        priceId: string
+        priceId: string,
+        successUrl?: string,
+        cancelUrl?: string
     ): Promise<CheckoutSession> {
         const supabase = createClient();
 
@@ -63,8 +65,8 @@ export class PaymentService {
                     quantity: 1,
                 },
             ],
-            success_url: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard?session_id={CHECKOUT_SESSION_ID}`,
-            cancel_url: `${process.env.NEXT_PUBLIC_APP_URL}/pricing`,
+            success_url: successUrl ?? `${process.env.NEXT_PUBLIC_APP_URL}/dashboard?session_id={CHECKOUT_SESSION_ID}`,
+            cancel_url: cancelUrl ?? `${process.env.NEXT_PUBLIC_APP_URL}/pricing`,
             metadata: {
                 user_id: userId,
             },
