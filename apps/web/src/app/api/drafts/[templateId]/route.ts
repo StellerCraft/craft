@@ -1,30 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { z } from 'zod';
 import { withAuth } from '@/lib/api/with-auth';
 import { customizationDraftService } from '@/services/customization-draft.service';
-
-const customizationConfigSchema = z.object({
-    branding: z.object({
-        appName: z.string().min(1),
-        logoUrl: z.string().url().optional(),
-        primaryColor: z.string(),
-        secondaryColor: z.string(),
-        fontFamily: z.string(),
-    }),
-    features: z.object({
-        enableCharts: z.boolean(),
-        enableTransactionHistory: z.boolean(),
-        enableAnalytics: z.boolean(),
-        enableNotifications: z.boolean(),
-    }),
-    stellar: z.object({
-        network: z.enum(['mainnet', 'testnet']),
-        horizonUrl: z.string().url(),
-        sorobanRpcUrl: z.string().url().optional(),
-        assetPairs: z.array(z.any()).optional(),
-        contractAddresses: z.record(z.string()).optional(),
-    }),
-});
+import { validateCustomizationConfig, customizationConfigSchema } from '@/lib/customization/validate';
 
 type Params = { templateId: string };
 
@@ -57,13 +34,16 @@ export const POST = withAuth<Params>(async (req: NextRequest, { user, params }) 
         return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
     }
 
-    const parsed = customizationConfigSchema.safeParse(body);
-    if (!parsed.success) {
-        return NextResponse.json({ error: 'Invalid input', details: parsed.error.flatten() }, { status: 400 });
+    const validation = validateCustomizationConfig(body);
+    if (!validation.valid) {
+        return NextResponse.json({ error: 'Invalid input', details: validation.errors }, { status: 400 });
     }
 
+    // Schema parse is safe here — validateCustomizationConfig already confirmed shape
+    const config = customizationConfigSchema.parse(body);
+
     try {
-        const draft = await customizationDraftService.saveDraft(user.id, params.templateId, parsed.data);
+        const draft = await customizationDraftService.saveDraft(user.id, params.templateId, config);
         return NextResponse.json(draft, { status: 200 });
     } catch (error: any) {
         const status = error.message === 'Template not found' ? 404 : 500;
