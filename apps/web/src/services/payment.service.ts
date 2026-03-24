@@ -1,4 +1,5 @@
 import { stripe } from '@/lib/stripe/client';
+import { getTierFromPriceId } from '@/lib/stripe/pricing';
 import { createClient } from '@/lib/supabase/server';
 import type {
     CheckoutSession,
@@ -243,16 +244,11 @@ export class PaymentService {
     }
 
     /**
-     * Determine subscription tier from Stripe price ID
+     * Determine subscription tier from Stripe price ID.
+     * Delegates to the canonical pricing config.
      */
     private getTierFromPrice(priceId: string): 'free' | 'pro' | 'enterprise' {
-        if (priceId === process.env.NEXT_PUBLIC_STRIPE_PRICE_PRO) {
-            return 'pro';
-        }
-        if (priceId === process.env.NEXT_PUBLIC_STRIPE_PRICE_ENTERPRISE) {
-            return 'enterprise';
-        }
-        return 'free';
+        return getTierFromPriceId(priceId);
     }
 }
 
