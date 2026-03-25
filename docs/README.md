@@ -267,6 +267,24 @@ POST   /api/deployments/:id/repository - Create GitHub repository for deployment
 GET    /api/deployments/:id/health - Health check
 ```
 
+### GitHub Code Push Flow
+
+Deployment updates can optionally push generated workspaces to GitHub as part of the `updating_repo` stage.
+
+Implementation notes:
+- Service: `GitHubPushService` (`apps/web/src/services/github-push.service.ts`)
+- Supports both first-time branch creation (from `baseBranch`) and updates to existing branches
+- Creates blobs in bounded batches for large generated file sets
+- Validates paths to prevent unsafe writes (`..`, absolute paths, `.git`)
+- Enforces file-count and total-byte limits for safety under large workspaces
+- Returns commit references (`commitSha`, `treeSha`, `commitUrl`, `previousCommitSha`) for auditability
+
+Error model:
+- `AUTH_ERROR` for invalid/expired GitHub credentials
+- `VALIDATION_ERROR` for malformed requests or unsafe generated files
+- `NETWORK_ERROR` for transport failures to GitHub
+- `API_ERROR` for non-auth GitHub API failures
+
 ### Payment Endpoints
 
 ```

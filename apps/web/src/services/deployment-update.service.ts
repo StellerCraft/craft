@@ -15,6 +15,12 @@
 
 import { createClient } from '@/lib/supabase/server';
 import type { DeploymentStatusType, CustomizationConfig } from '@craft/types';
+import type { GeneratedFile } from '@craft/types';
+import {
+    githubPushService,
+    type GitHubCommitReference,
+    type GitHubPushService,
+} from './github-push.service';
 
 export interface DeploymentUpdate {
     id: string;
@@ -49,6 +55,17 @@ export interface UpdateDeploymentRequest {
     deploymentId: string;
     userId: string;
     customizationConfig: CustomizationConfig;
+    githubPush?: {
+        owner: string;
+        repo: string;
+        token: string;
+        branch: string;
+        baseBranch?: string;
+        commitMessage?: string;
+        generatedFiles: GeneratedFile[];
+        authorName?: string;
+        authorEmail?: string;
+    };
 }
 
 export interface UpdateDeploymentResult {
@@ -56,17 +73,27 @@ export interface UpdateDeploymentResult {
     deploymentId: string;
     rolledBack: boolean;
     deploymentUrl?: string;
+    commitRef?: GitHubCommitReference;
     errorMessage?: string;
 }
 
+interface PipelineExecutionResult {
+    success: boolean;
+    commitRef?: GitHubCommitReference;
+}
+
 export class DeploymentUpdateService {
+    constructor(
+        private readonly _githubPushService: Pick<GitHubPushService, 'pushGeneratedCode'> = githubPushService
+    ) {}
+
     /**
      * Update a deployment with new customization config.
      * If the update fails, automatically rollback to the previous good state.
      */
     async updateDeployment(request: UpdateDeploymentRequest): Promise<UpdateDeploymentResult> {
         const supabase = createClient();
-        const { deploymentId, userId, customizationConfig } = request;
+        const { deploymentId, userId, customizationConfig, githubPush } = request;
 
         // Create update record
         const updateId = crypto.randomUUID();
@@ -104,9 +131,9 @@ export class DeploymentUpdateService {
             //         - Generate new code
             //         - Update repository
             //         - Trigger Vercel redeployment
-            const updateSuccess = await this.executeUpdatePipeline(updateId, customizationConfig);
+            const pipeline = await this.executeUpdatePipeline(updateId, customizationConfig, githubPush);
 
-            if (!updateSuccess) {
+            if (!pipeline.success) {
                 throw new Error('Update pipeline failed');
             }
 
@@ -119,6 +146,7 @@ export class DeploymentUpdateService {
                 deploymentId,
                 rolledBack: false,
                 deploymentUrl: previousState.deploymentUrl ?? undefined,
+                commitRef: pipeline.commitRef,
             };
 
         } catch (error: any) {
@@ -213,17 +241,35 @@ export class DeploymentUpdateService {
      */
     private async executeUpdatePipeline(
         updateId: string,
-        config: CustomizationConfig
-    ): Promise<boolean> {
+        config: CustomizationConfig,
+        githubPush?: UpdateDeploymentRequest['githubPush']
+    ): Promise<PipelineExecutionResult> {
         await this.updateUpdateStatus(updateId, 'generating');
         
         // Simulate code generation
         await this.simulateWork();
 
         await this.updateUpdateStatus(updateId, 'updating_repo');
-        
-        // Simulate repo update
-        await this.simulateWork();
+
+        let commitRef: GitHubCommitReference | undefined;
+        if (githubPush) {
+            commitRef = await this._githubPushService.pushGeneratedCode({
+                owner: githubPush.owner,
+                repo: githubPush.repo,
+                token: githubPush.token,
+                files: githubPush.generatedFiles,
+                branch: githubPush.branch,
+                baseBranch: githubPush.baseBranch,
+                commitMessage:
+                    githubPush.commitMessage ||
+                    `chore: update generated workspace (${new Date().toISOString()})`,
+                authorName: githubPush.authorName,
+                authorEmail: githubPush.authorEmail,
+            });
+        } else {
+            // Preserve simulated behavior for callers that do not opt into GitHub push.
+            await this.simulateWork();
+        }
 
         await this.updateUpdateStatus(updateId, 'redeploying');
         
@@ -235,10 +281,10 @@ export class DeploymentUpdateService {
         const shouldFail = (global as any).__DEPLOYMENT_UPDATE_SHOULD_FAIL === true;
         
         if (shouldFail) {
-            return false;
+            return { success: false, commitRef };
         }
 
-        return true;
+        return { success: true, commitRef };
     }
 
     /**
