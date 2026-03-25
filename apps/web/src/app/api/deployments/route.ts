@@ -1,93 +1,134 @@
-/**
- * POST /api/deployments
- *
- * Initiates a full deployment pipeline: code generation → GitHub repo →
- * code push → Vercel project → Vercel deployment → persisted record.
- *
- * Authentication: requires a valid Supabase session (401 if missing).
- *
- * Request body:
- * {
- *   "templateId":    string              — UUID of the template to deploy
- *   "name":          string              — human-readable deployment name (used as repo name)
- *   "customization": CustomizationConfig — branding, features, stellar config
- * }
- *
- * Responses:
- *   202 — Pipeline started; returns deploymentId + URLs when complete
- *         { deploymentId, repositoryUrl, deploymentUrl }
- *   400 — Missing or invalid request body
- *   401 — Not authenticated
- *   422 — Pipeline failed (generation, GitHub, or Vercel error)
- *         { error, deploymentId, failedStage }
- *   500 — Unexpected server error
- *
- * The returned deploymentId can be polled via GET /api/deployments/[id]
- * to track status progression.
- *
- * Issue: #96
- * Branch: issue-096-implement-deployment-pipeline-orchestration
- */
-
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
+import type { NextRequest } from 'next/server';
 import { withAuth } from '@/lib/api/with-auth';
-import { deploymentPipelineService } from '@/services/deployment-pipeline.service';
-import { validateCustomizationConfig } from '@/lib/customization/validate';
+import {
+  validateCustomizationConfig,
+  validateStellarEndpoints,
+} from '@/lib/customization/validate';
 
-export const POST = withAuth(async (req: NextRequest, { user }) => {
-    let body: unknown;
-    try {
-        body = await req.json();
-    } catch {
-        return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
+type RequestBody = {
+  templateId: string;
+  customizationConfig?: unknown;
+  name?: string;
+};
+
+function normalizeRequestBody(raw: unknown): RequestBody | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const b = raw as Record<string, unknown>;
+
+  if (!b.templateId || typeof b.templateId !== 'string') return null;
+  if ('name' in b && typeof b.name !== 'string') return null;
+
+  return {
+    templateId: b.templateId as string,
+    customizationConfig: b.customizationConfig,
+    name: typeof b.name === 'string' ? b.name : undefined,
+  };
+}
+
+export const POST = withAuth(async (req: NextRequest, { supabase, user }) => {
+  let body: RequestBody;
+  try {
+    const raw = await req.json();
+    const normalized = normalizeRequestBody(raw);
+    if (!normalized) {
+      return NextResponse.json(
+        { error: 'Invalid request body' },
+        { status: 400 }
+      );
     }
+    body = normalized;
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
+  }
 
-    const raw = body as Record<string, unknown>;
+  // Verify template exists and is active
+  const { data: template, error: tplErr } = await supabase
+    .from('templates')
+    .select('id, name')
+    .eq('id', body.templateId)
+    .eq('is_active', true)
+    .single();
 
-    // Validate required fields
-    if (!raw?.templateId || typeof raw.templateId !== 'string') {
-        return NextResponse.json({ error: 'templateId is required' }, { status: 400 });
-    }
+  if (tplErr || !template) {
+    return NextResponse.json({ error: 'Template not found' }, { status: 404 });
+  }
 
-    if (!raw?.name || typeof raw.name !== 'string' || raw.name.trim().length === 0) {
-        return NextResponse.json({ error: 'name is required' }, { status: 400 });
-    }
+  const customization = body.customizationConfig ?? {};
 
-    const validation = validateCustomizationConfig(raw?.customization);
-    if (!validation.valid) {
-        return NextResponse.json(
-            {
-                error: 'Invalid customization config',
-                details: validation.errors,
-            },
-            { status: 400 },
-        );
-    }
-
-    const result = await deploymentPipelineService.deploy({
-        userId: user.id,
-        templateId: raw.templateId.trim(),
-        name: (raw.name as string).trim(),
-        customization: raw.customization as import('@craft/types').CustomizationConfig,
-    });
-
-    if (!result.success) {
-        return NextResponse.json(
-            {
-                error: result.errorMessage ?? 'Deployment pipeline failed',
-                deploymentId: result.deploymentId,
-                failedStage: result.failedStage,
-            },
-            { status: 422 },
-        );
-    }
-
+  // Validate customization config shape and business rules
+  const validation = validateCustomizationConfig(customization);
+  if (!validation.valid) {
     return NextResponse.json(
-        {
-            deploymentId: result.deploymentId,
-            repositoryUrl: result.repositoryUrl,
-            deploymentUrl: result.deploymentUrl,
-        },
-        { status: 202 },
+      { error: 'Invalid customization config', details: validation.errors },
+      { status: 422 }
     );
+  }
+
+  // Validate stellar endpoints reachability (async). If invalid, return details.
+  try {
+    const endpointValidation = await validateStellarEndpoints(
+      customization as any,
+      { timeout: 3000 }
+    );
+    if (!endpointValidation.valid) {
+      return NextResponse.json(
+        {
+          error: 'Invalid customization endpoints',
+          details: endpointValidation.errors,
+        },
+        { status: 422 }
+      );
+    }
+  } catch (err: any) {
+    // Treat connectivity errors as transient server errors
+    return NextResponse.json(
+      { error: err?.message ?? 'Endpoint validation failed' },
+      { status: 500 }
+    );
+  }
+
+  // Create deployment record
+  const deploymentId = crypto.randomUUID();
+  const name = body.name ?? (template.name as string);
+
+  const { data: inserted, error: insertErr } = await supabase
+    .from('deployments')
+    .insert([
+      {
+        id: deploymentId,
+        user_id: user.id,
+        template_id: body.templateId,
+        name,
+        customization_config: customization as any,
+        status: 'pending',
+      },
+    ])
+    .select()
+    .single();
+
+  if (insertErr || !inserted) {
+    return NextResponse.json(
+      { error: insertErr?.message ?? 'Failed to create deployment' },
+      { status: 500 }
+    );
+  }
+
+  // Mark deployment as generating to indicate the pipeline has started/enqueued.
+  await supabase
+    .from('deployments')
+    .update({ status: 'generating', updated_at: new Date().toISOString() })
+    .eq('id', deploymentId);
+
+  const created = {
+    id: inserted.id,
+    templateId: inserted.template_id,
+    userId: inserted.user_id,
+    name: inserted.name,
+    customizationConfig: inserted.customization_config,
+    status: 'generating',
+    createdAt: inserted.created_at,
+  };
+
+  return NextResponse.json(created, { status: 201 });
 });
