@@ -1,5 +1,5 @@
 {
-    "extends": "@craft/config/tsconfig.json",
+    "extends": "../config/tsconfig.json",
     "compilerOptions": {
         "outDir": "./dist",
         "rootDir": "./src",

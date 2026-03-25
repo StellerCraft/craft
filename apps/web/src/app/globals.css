@@ -1,0 +1,38 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&family=Manrope:wght@200..800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-background text-on-background font-body antialiased;
+  }
+  
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-headline;
+  }
+}
+
+@layer utilities {
+  .glass {
+    @apply bg-surface-container-lowest/70 backdrop-blur-glass;
+  }
+  
+  .glass-panel {
+    background: rgba(255, 255, 255, 0.7);
+    backdrop-filter: blur(20px);
+  }
+  
+  .ambient-shadow {
+    box-shadow: 0 8px 32px rgba(0, 5, 25, 0.06);
+  }
+  
+  .ghost-border {
+    @apply border border-outline-variant/20;
+  }
+  
+  .primary-gradient {
+    background: linear-gradient(135deg, #000519 0%, #001b4f 100%);
+  }
+}
