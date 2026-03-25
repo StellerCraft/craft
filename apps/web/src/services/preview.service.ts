@@ -202,7 +202,6 @@ export class PreviewService {
                 disabledFeatures.push(key);
             }
         }
-      }
     }
 
     /**

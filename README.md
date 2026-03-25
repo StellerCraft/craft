@@ -323,7 +323,10 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 
 # GitHub Configuration
-GITHUB_TOKEN=ghp_your_github_token
+GITHUB_APP_ID=123456
+GITHUB_APP_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
+GITHUB_APP_INSTALLATION_ID=12345678
+GITHUB_API_BASE_URL=https://api.github.com
 GITHUB_ORG=your-github-org-or-username
 
 # Vercel Configuration
@@ -349,6 +352,8 @@ NODE_ENV=development
 STELLAR_NETWORK=testnet  # or mainnet
 STELLAR_HORIZON_URL=https://horizon-testnet.stellar.org
 ```
+
+GitHub authentication uses a platform-owned GitHub App installation. Installation access tokens are minted on demand and cached in memory until close to expiry.
 
 #### Step 8: Start Development Server
 

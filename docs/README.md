@@ -45,6 +45,10 @@ cp .env.example .env
 # Required variables
 NEXT_PUBLIC_SUPABASE_URL=your_supabase_url
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_key
+GITHUB_APP_ID=123456
+GITHUB_APP_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
+GITHUB_APP_INSTALLATION_ID=12345678
+GITHUB_API_BASE_URL=https://api.github.com
 STRIPE_SECRET_KEY=your_stripe_key
 STRIPE_WEBHOOK_SECRET=your_webhook_secret
 ```
