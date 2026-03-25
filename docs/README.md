@@ -240,6 +240,7 @@ DELETE /api/templates/:id       - Delete template
 GET    /api/deployments         - List deployments
 GET    /api/deployments/:id     - Get deployment
 POST   /api/deployments         - Create deployment
+POST   /api/deployments/:id/repository - Create GitHub repository for deployment
 GET    /api/deployments/:id/health - Health check
 ```
 

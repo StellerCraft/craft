@@ -909,6 +909,46 @@ Authorization: Bearer {access_token}
 }
 ```
 
+#### POST `/api/deployments/[id]/repository`
+
+Create a private GitHub repository for a deployment under the configured account or installation.
+
+**Headers:**
+```
+Authorization: Bearer {access_token}
+```
+
+**Request Body:**
+```json
+{
+  "private": true,
+  "description": "Production repository for My DEX",
+  "homepage": "https://craft.app/deployments/dep-123",
+  "topics": ["stellar", "dex", "generated"]
+}
+```
+
+**Response (201):**
+```json
+{
+  "repositoryId": 12345,
+  "repositoryUrl": "https://github.com/acme/my-dex",
+  "cloneUrl": "https://github.com/acme/my-dex.git",
+  "sshUrl": "git@github.com:acme/my-dex.git",
+  "fullName": "acme/my-dex",
+  "defaultBranch": "main",
+  "resolvedName": "my-dex"
+}
+```
+
+**Errors:**
+- `400` - Invalid JSON or invalid request body
+- `401` - Unauthorized
+- `403` - Deployment does not belong to the current user
+- `404` - Deployment not found
+- `409` - Repository name collision after all retries
+- `429` - GitHub API rate limit exceeded
+
 ### Webhook Endpoints
 
 #### POST `/api/webhooks/stripe`

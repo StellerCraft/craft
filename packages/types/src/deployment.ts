@@ -78,6 +78,47 @@ export interface GenerationResult {
     errors: GenerationError[];
 }
 
+// ── GitHub repository creation ────────────────────────────────────────────────
+
+export interface CreateRepoRequest {
+    /** Desired repository name (will be sanitized before use). */
+    name: string;
+    description?: string;
+    homepage?: string;
+    topics?: string[];
+    private: boolean;
+    userId: string;
+}
+
+export interface Repository {
+    /** GitHub repository numeric ID. */
+    id: number;
+    /** HTML URL — e.g. https://github.com/owner/repo */
+    url: string;
+    /** HTTPS clone URL — needed for subsequent git push steps. */
+    cloneUrl: string;
+    /** SSH clone URL. */
+    sshUrl: string;
+    /** "owner/repo" slug. */
+    fullName: string;
+    defaultBranch: string;
+    private: boolean;
+}
+
+export type GitHubErrorCode =
+    | 'COLLISION'
+    | 'AUTH_FAILED'
+    | 'RATE_LIMITED'
+    | 'NETWORK_ERROR'
+    | 'UNKNOWN';
+
+export interface GitHubServiceError {
+    code: GitHubErrorCode;
+    message: string;
+    /** Milliseconds to wait before retrying (populated for RATE_LIMITED). */
+    retryAfterMs?: number;
+}
+
 export interface GenerationRequest {
     templateId: string;
     customization: CustomizationConfig;
