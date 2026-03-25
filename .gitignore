@@ -40,6 +40,8 @@ next-env.d.ts
 !README.md
 !design.md
 !.craft/specs/craft-platform/design.md
+!.kiro/specs/**/requirements.md
+!.kiro/specs/**/tasks.md
 
 # Exclude spec files
 .craft/specs/craft-platform/requirements.md
