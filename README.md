@@ -1836,3 +1836,6 @@ CRAFT wouldn't be possible without these amazing projects and communities:
 [Website](https://craft.app) • [Documentation](https://docs.craft.app) • [Discord](https://discord.gg/craft) • [Twitter](https://twitter.com/craft_platform)
 
 </div>
+
+## Automated PR Test
+This change is added by GitHub Copilot exercise.
