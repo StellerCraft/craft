@@ -83,7 +83,7 @@ describe('POST /api/payments/checkout', () => {
         const { POST } = await import('./checkout/route');
         const res = await POST(post('/api/payments/checkout', {}), { params: {} });
         expect(res.status).toBe(400);
-        expect((await res.json()).error).toBe('Price ID is required');
+        expect((await res.json()).error).toBe('Invalid input');
     });
 
     it('returns 400 when priceId is not in the valid set', async () => {
@@ -110,7 +110,7 @@ describe('POST /api/payments/checkout', () => {
         mockCreateCheckoutSession.mockResolvedValue({ sessionId: 'cs_x', url: 'https://x' });
         const { POST } = await import('./checkout/route');
         await POST(post('/api/payments/checkout', { priceId: 'price_pro' }), { params: {} });
-        expect(mockCreateCheckoutSession).toHaveBeenCalledWith('user-1', 'price_pro');
+        expect(mockCreateCheckoutSession).toHaveBeenCalledWith('user-1', 'price_pro', undefined, undefined);
     });
 
     it('returns 500 when createCheckoutSession throws', async () => {

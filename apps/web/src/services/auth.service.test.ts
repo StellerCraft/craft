@@ -43,7 +43,7 @@ const MOCK_SESSION = {
     expires_at: 1800000000,
 };
 
-const FREE_PROFILE = { subscription_tier: 'free', github_connected: false };
+const FREE_PROFILE = { subscription_tier: 'free', github_connected: false, github_username: null };
 
 describe('AuthService', () => {
     let service: AuthService;
@@ -124,13 +124,14 @@ describe('AuthService', () => {
     describe('signIn', () => {
         it('returns user and session with profile data on success', async () => {
             mockSignInWithPassword.mockResolvedValue({ data: { user: MOCK_USER, session: MOCK_SESSION }, error: null });
-            mockProfileSelect.mockResolvedValue({ data: { subscription_tier: 'pro', github_connected: true } });
+            mockProfileSelect.mockResolvedValue({ data: { subscription_tier: 'pro', github_connected: true, github_username: 'octocat' } });
 
             const result = await service.signIn('test@example.com', 'password123');
 
             expect(result.error).toBeNull();
             expect(result.user?.subscriptionTier).toBe('pro');
             expect(result.user?.githubConnected).toBe(true);
+            expect(result.user?.githubUsername).toBe('octocat');
             expect(result.session?.accessToken).toBe('access-token');
         });
 
@@ -202,7 +203,7 @@ describe('AuthService', () => {
     describe('getCurrentUser', () => {
         it('returns user with profile data when authenticated', async () => {
             mockGetUser.mockResolvedValue({ data: { user: MOCK_USER } });
-            mockProfileSelect.mockResolvedValue({ data: { subscription_tier: 'pro', github_connected: true } });
+            mockProfileSelect.mockResolvedValue({ data: { subscription_tier: 'pro', github_connected: true, github_username: 'octocat' } });
 
             const user = await service.getCurrentUser();
 
@@ -210,6 +211,7 @@ describe('AuthService', () => {
             expect(user?.email).toBe('test@example.com');
             expect(user?.subscriptionTier).toBe('pro');
             expect(user?.githubConnected).toBe(true);
+            expect(user?.githubUsername).toBe('octocat');
         });
 
         it('returns null when no session exists', async () => {

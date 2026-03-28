@@ -16,6 +16,11 @@ vi.mock('@/services/payment.service', () => ({
     paymentService: { createCheckoutSession: mockCreateCheckoutSession },
 }));
 
+// --- Stripe pricing mock ---
+vi.mock('@/lib/stripe/pricing', () => ({
+    getValidPriceIds: () => ['price_123', 'price_pro_test', 'price_ent_test'],
+}));
+
 const fakeUser = { id: 'user-1', email: 'a@b.com' };
 const fakeSession = { sessionId: 'cs_test_123', url: 'https://checkout.stripe.com/pay/cs_test_123' };
 

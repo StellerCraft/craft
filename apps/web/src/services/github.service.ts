@@ -1,0 +1,301 @@
+/**
+ * GitHubService
+ *
+ * Creates and manages GitHub repositories on behalf of deployments.
+ *
+ * Configuration (env vars):
+ *   GITHUB_TOKEN — Personal Access Token or GitHub App installation token
+ *   GITHUB_ORG   — Optional. When set, repos are created under this organisation.
+ *                  When absent, repos are created under the token-owner's account.
+ *
+ * Naming collisions:
+ *   If the requested name already exists the service appends a numeric suffix
+ *   (-1, -2, …) and retries up to MAX_NAME_RETRIES times, then throws with
+ *   code 'COLLISION' so the caller can surface a meaningful error message.
+ *
+ * Rate limiting:
+ *   GitHub returns 403/429 with a `Retry-After` (seconds) header when rate-
+ *   limited. The service surfaces `retryAfterMs` in the thrown error so callers
+ *   can implement their own back-off strategy without polling.
+ *
+ * Returns:
+ *   { repository, resolvedName } — all identifiers needed for subsequent git
+ *   push and Vercel deployment steps (url, cloneUrl, sshUrl, fullName,
+ *   defaultBranch).
+ */
+
+import type { CreateRepoRequest, GitHubErrorCode, Repository } from '@craft/types';
+
+const GITHUB_API_BASE = 'https://api.github.com';
+const MAX_NAME_RETRIES = 5;
+const MAX_REPOSITORY_NAME_LENGTH = 100;
+const DEFAULT_REPOSITORY_TOPICS = ['craft', 'stellar', 'defi'];
+
+/**
+ * Sanitizes an arbitrary string into a valid GitHub repository name.
+ *
+ * Rules enforced:
+ *   - Only alphanumerics, hyphens, underscores, and dots are kept.
+ *   - Leading dots are stripped (GitHub forbids them).
+ *   - Consecutive hyphens are collapsed to a single hyphen.
+ *   - Trailing hyphens, underscores, and dots are stripped.
+ *   - Names are truncated to 100 characters (GitHub limit).
+ *   - Empty results fall back to the literal string "repo".
+ */
+export function sanitizeRepoName(raw: string): string {
+    let name = raw.replace(/[^a-zA-Z0-9\-_.]/g, '-');
+    name = name.replace(/^\.+/, '');
+    name = name.replace(/-{2,}/g, '-');
+    name = name.replace(/[-_.]+$/, '');
+    return name.slice(0, MAX_REPOSITORY_NAME_LENGTH) || 'repo';
+}
+
+function sanitizeRepoTopics(topics?: string[]): string[] {
+    const normalized = topics
+        ?.map((topic) =>
+            topic
+                .trim()
+                .toLowerCase()
+                .replace(/[^a-z0-9-]/g, '-')
+                .replace(/-{2,}/g, '-')
+                .replace(/^-+|-+$/g, ''),
+        )
+        .filter((topic) => topic.length > 0) ?? [];
+
+    return [...new Set([...DEFAULT_REPOSITORY_TOPICS, ...normalized])].slice(0, 20);
+}
+
+function buildCandidateName(baseName: string, attempt: number): string {
+    if (attempt === 0) {
+        return baseName;
+    }
+
+    const suffix = `-${attempt}`;
+    const trimmedBase = baseName.slice(0, MAX_REPOSITORY_NAME_LENGTH - suffix.length);
+    return `${trimmedBase}${suffix}`;
+}
+
+export interface CreateRepoResult {
+    repository: Repository;
+    /** Final repository name, which may carry a numeric suffix if a collision occurred. */
+    resolvedName: string;
+}
+
+class GitHubApiError extends Error {
+    constructor(
+        message: string,
+        public readonly code: GitHubErrorCode,
+        public readonly retryAfterMs?: number,
+    ) {
+        super(message);
+        this.name = 'GitHubApiError';
+    }
+}
+
+export class GitHubService {
+    private get token(): string {
+        return process.env.GITHUB_TOKEN ?? '';
+    }
+
+    private get org(): string | null {
+        return process.env.GITHUB_ORG || null;
+    }
+
+    private buildHeaders(): Record<string, string> {
+        if (!this.token) {
+            throw new GitHubApiError(
+                'GITHUB_TOKEN is not configured',
+                'AUTH_FAILED',
+            );
+        }
+        return {
+            Authorization: `Bearer ${this.token}`,
+            Accept: 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+            'Content-Type': 'application/json',
+        };
+    }
+
+    /**
+     * Create a GitHub repository, retrying with `-1`, `-2`, … suffixes on
+     * name collisions. Throws a GitHubApiError on unrecoverable failures.
+     */
+    async createRepository(request: CreateRepoRequest): Promise<CreateRepoResult> {
+        const baseName = sanitizeRepoName(request.name);
+        let attempt = 0;
+
+        while (attempt <= MAX_NAME_RETRIES) {
+            const candidateName = buildCandidateName(baseName, attempt);
+
+            try {
+                const repository = await this.tryCreate(candidateName, request);
+                return { repository, resolvedName: candidateName };
+            } catch (err: unknown) {
+                if (err instanceof GitHubApiError && err.code === 'COLLISION') {
+                    attempt++;
+                    continue;
+                }
+                throw err;
+            }
+        }
+
+        throw new GitHubApiError(
+            `Repository name "${baseName}" is still taken after ${MAX_NAME_RETRIES} retries`,
+            'COLLISION',
+        );
+    }
+
+    /**
+     * Verify that the configured token can reach the GitHub API.
+     * Returns false on any authentication failure or network error.
+     */
+    async validateAccess(): Promise<boolean> {
+        try {
+            const res = await fetch(`${GITHUB_API_BASE}/user`, {
+                headers: this.buildHeaders(),
+            });
+            return res.ok;
+        } catch {
+            return false;
+        }
+    }
+
+    /**
+     * Delete a GitHub repository by owner and repo name (Issue #110).
+     * Uses the shared request helper for consistent error handling.
+     * Logs errors but does not throw - best effort cleanup.
+     */
+    async deleteRepository(owner: string, repo: string): Promise<void> {
+        try {
+            const headers = this.buildHeaders();
+            const res = await fetch(`${GITHUB_API_BASE}/repos/${owner}/${repo}`, {
+                method: 'DELETE',
+                headers,
+            });
+            
+            if (!res.ok && res.status !== 404) {
+                const data = await res.json().catch(() => ({}));
+                const message = (data as { message?: string }).message ?? `GitHub API error: ${res.status}`;
+                console.error(`GitHub repo delete failed for ${owner}/${repo}:`, message);
+            }
+        } catch (error: unknown) {
+            const message = error instanceof Error ? error.message : 'Network request failed';
+            console.error(`GitHub repo delete failed for ${owner}/${repo}:`, message);
+            // Continue - DB deletion should succeed regardless
+        }
+    }
+
+    // ── Private helpers ─────────────────────────────────────────────────────────
+
+    private async tryCreate(
+        name: string,
+        request: CreateRepoRequest,
+    ): Promise<Repository> {
+        const endpoint = this.org
+            ? `${GITHUB_API_BASE}/orgs/${this.org}/repos`
+            : `${GITHUB_API_BASE}/user/repos`;
+
+        const payload = {
+            name,
+            description: request.description ?? '',
+            homepage: request.homepage ?? '',
+            topics: sanitizeRepoTopics(request.topics),
+            private: request.private,
+            auto_init: true,
+        };
+        const headers = this.buildHeaders();
+
+        let res: Response;
+        try {
+            res = await fetch(endpoint, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify(payload),
+            });
+        } catch (error: unknown) {
+            const message = error instanceof Error ? error.message : 'Network request failed';
+            throw new GitHubApiError(message, 'NETWORK_ERROR');
+        }
+
+        const data = await res.json().catch(() => ({}));
+        const body = data as { message?: string; errors?: { message?: string }[] };
+
+        if (res.status === 422) {
+            const isNameCollision =
+                (body.errors ?? []).some((e) =>
+                    e.message?.toLowerCase().includes('already exists'),
+                ) || body.message?.toLowerCase().includes('already exists');
+
+            if (isNameCollision) {
+                throw new GitHubApiError(
+                    `Repository "${name}" already exists`,
+                    'COLLISION',
+                );
+            }
+            throw new GitHubApiError(
+                body.message ?? 'Unprocessable entity from GitHub API',
+                'UNKNOWN',
+            );
+        }
+
+        if (res.status === 401) {
+            throw new GitHubApiError(
+                'GitHub token is invalid or expired',
+                'AUTH_FAILED',
+            );
+        }
+
+        if (res.status === 429) {
+            const retryAfterSec = parseInt(res.headers.get('Retry-After') ?? '0', 10);
+            throw new GitHubApiError(
+                'GitHub API rate limit exceeded',
+                'RATE_LIMITED',
+                retryAfterSec * 1000,
+            );
+        }
+
+        if (res.status === 403) {
+            const retryAfterSec = parseInt(res.headers.get('Retry-After') ?? '0', 10);
+            const isRateLimited =
+                retryAfterSec > 0 ||
+                res.headers.get('X-RateLimit-Remaining') === '0' ||
+                body.message?.toLowerCase().includes('rate limit') === true;
+
+            if (isRateLimited) {
+                throw new GitHubApiError(
+                    'GitHub API rate limit exceeded',
+                    'RATE_LIMITED',
+                    retryAfterSec * 1000,
+                );
+            }
+
+            throw new GitHubApiError(
+                body.message ?? 'GitHub token does not have permission to create repositories',
+                'AUTH_FAILED',
+            );
+        }
+
+        if (!res.ok) {
+            throw new GitHubApiError(
+                body.message ?? `GitHub API error: ${res.status}`,
+                'NETWORK_ERROR',
+            );
+        }
+
+        return this.mapRepository(data as Record<string, unknown>);
+    }
+
+    private mapRepository(raw: Record<string, unknown>): Repository {
+        return {
+            id: raw.id as number,
+            url: raw.html_url as string,
+            cloneUrl: raw.clone_url as string,
+            sshUrl: raw.ssh_url as string,
+            fullName: raw.full_name as string,
+            defaultBranch: (raw.default_branch as string | undefined) ?? 'main',
+            private: raw.private as boolean,
+        };
+    }
+}
+
+export const githubService = new GitHubService();

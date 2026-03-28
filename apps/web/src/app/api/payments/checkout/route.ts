@@ -29,7 +29,7 @@ export const POST = withAuth(async (req: NextRequest, { user }) => {
     // Reject price IDs that are not mapped to a known tier.
     // This prevents callers from passing arbitrary Stripe price IDs.
     const validIds = getValidPriceIds();
-    if (!validIds.includes(priceId)) {
+    if (!validIds.includes(parsed.data.priceId)) {
         return NextResponse.json({ error: 'Invalid price ID' }, { status: 400 });
     }
 

@@ -82,7 +82,7 @@ export default function AppDashboard() {
               Dashboard
             </h1>
             <p className="text-on-surface-variant">
-              Welcome back! Here's an overview of your projects.
+              Welcome back! Here&apos;s an overview of your projects.
             </p>
           </div>
 

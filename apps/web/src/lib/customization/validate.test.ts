@@ -115,4 +115,68 @@ describe('validateCustomizationConfig', () => {
         });
         expect(result.valid).toBe(true);
     });
+
+    // ── Contract address validation ────────────────────────────────────────────
+
+    it('accepts config without contract addresses', () => {
+        const result = validateCustomizationConfig(valid);
+        expect(result.valid).toBe(true);
+    });
+
+    it('accepts config with valid contract addresses', () => {
+        const result = validateCustomizationConfig({
+            ...valid,
+            stellar: {
+                ...valid.stellar,
+                contractAddresses: {
+                    usdcContract: 'CBQWI64FZ2NKSJC7D45HJZVVMQZ3T7KHXOJSLZPZ5LHKQM7FFWVGNQST',
+                    nativeTokenContract: 'CATPNZ2SJRSVZJBWXGFSMZQHQ47JM5PXNQRVJLGHGHVKPZ2OVH3FHXPA',
+                },
+            },
+        });
+        expect(result.valid).toBe(true);
+    });
+
+    it('returns error for invalid contract address (wrong length)', () => {
+        const result = validateCustomizationConfig({
+            ...valid,
+            stellar: {
+                ...valid.stellar,
+                contractAddresses: {
+                    badContract: 'CBQWI64FZ2NKSJC7D45HJZ',
+                },
+            },
+        });
+        expect(result.valid).toBe(false);
+        expect(result.errors[0].field).toBe('stellar.contractAddresses.badContract');
+        expect(result.errors[0].code).toBe('CONTRACT_ADDRESS_INVALID_LENGTH');
+    });
+
+    it('returns error for invalid contract address (wrong prefix)', () => {
+        const result = validateCustomizationConfig({
+            ...valid,
+            stellar: {
+                ...valid.stellar,
+                contractAddresses: {
+                    badContract: 'GBQWI64FZ2NKSJC7D45HJZVVMQZ3T7KHXOJSLZPZ5LHKQM7FFWVGNQST',
+                },
+            },
+        });
+        expect(result.valid).toBe(false);
+        expect(result.errors[0].code).toBe('CONTRACT_ADDRESS_INVALID_PREFIX');
+    });
+
+    it('returns error for contract with invalid characters', () => {
+        const result = validateCustomizationConfig({
+            ...valid,
+            stellar: {
+                ...valid.stellar,
+                contractAddresses: {
+                    badContract: 'CBQWI64FZ2NKSJC7D45HJZVVMQZ3T7KHXOJSLZPZ5LHKQM7-FWVGNQST',
+                },
+            },
+        });
+        expect(result.valid).toBe(false);
+        expect(result.errors[0].code).toBe('CONTRACT_ADDRESS_INVALID_CHARSET');
+    });
 });

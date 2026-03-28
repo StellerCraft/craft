@@ -19,6 +19,8 @@ export interface Database {
                     github_connected: boolean;
                     github_username: string | null;
                     github_token_encrypted: string | null;
+                    github_token_expires_at: string | null;
+                    github_token_refreshed_at: string | null;
                     created_at: string;
                     updated_at: string;
                 };
@@ -31,6 +33,8 @@ export interface Database {
                     github_connected?: boolean;
                     github_username?: string | null;
                     github_token_encrypted?: string | null;
+                    github_token_expires_at?: string | null;
+                    github_token_refreshed_at?: string | null;
                     created_at?: string;
                     updated_at?: string;
                 };
@@ -43,6 +47,8 @@ export interface Database {
                     github_connected?: boolean;
                     github_username?: string | null;
                     github_token_encrypted?: string | null;
+                    github_token_expires_at?: string | null;
+                    github_token_refreshed_at?: string | null;
                     created_at?: string;
                     updated_at?: string;
                 };

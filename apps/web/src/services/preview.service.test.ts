@@ -68,6 +68,22 @@ const validConfig: CustomizationConfig = {
     },
 };
 
+const mainnetConfig: CustomizationConfig = {
+    ...validConfig,
+    stellar: {
+        network: 'mainnet',
+        horizonUrl: 'https://horizon.stellar.org',
+    },
+};
+
+const testnetConfig: CustomizationConfig = {
+    ...validConfig,
+    stellar: {
+        network: 'testnet',
+        horizonUrl: 'https://horizon-testnet.stellar.org',
+    },
+};
+
 // ── buildDefaultConfigFromTemplate ────────────────────────────────────────────
 
 describe('buildDefaultConfigFromTemplate', () => {
@@ -576,5 +592,209 @@ describe('PreviewService.applyUpdate', () => {
         expect(typeof f.enableTransactionHistory).toBe('boolean');
         expect(typeof f.enableAnalytics).toBe('boolean');
         expect(typeof f.enableNotifications).toBe('boolean');
+    });
+
+    describe('updatePreview', () => {
+        it('merges partial changes into current customization', () => {
+            const current = mainnetConfig;
+            const changes = {
+                branding: {
+                    appName: 'Updated DEX',
+                },
+            };
+
+            const result = service.updatePreview(current, changes);
+
+            expect(result.customization.branding.appName).toBe('Updated DEX');
+            expect(result.customization.branding.primaryColor).toBe(current.branding.primaryColor);
+            expect(result.customization.stellar.network).toBe(current.stellar.network);
+        });
+
+        it('detects changed fields', () => {
+            const current = mainnetConfig;
+            const changes = {
+                branding: {
+                    appName: 'New Name',
+                    primaryColor: '#ff0000',
+                },
+            };
+
+            const result = service.updatePreview(current, changes);
+
+            expect(result.changedFields).toContain('branding.appName');
+            expect(result.changedFields).toContain('branding.primaryColor');
+            expect(result.changedFields.length).toBe(2);
+        });
+
+        it('does not include unchanged fields in changedFields', () => {
+            const current = mainnetConfig;
+            const changes = {
+                branding: {
+                    appName: mainnetConfig.branding.appName,
+                },
+            };
+
+            const result = service.updatePreview(current, changes);
+
+            expect(result.changedFields).not.toContain('branding.appName');
+        });
+
+        it('does not regenerate mock data for branding changes', () => {
+            const current = mainnetConfig;
+            const changes = {
+                branding: {
+                    appName: 'Updated',
+                    primaryColor: '#ff0000',
+                },
+            };
+
+            const result = service.updatePreview(current, changes);
+
+            expect(result.mockData).toBeUndefined();
+            expect(result.changedFields).toContain('branding.appName');
+        });
+
+        it('does not regenerate mock data for feature changes', () => {
+            const current = mainnetConfig;
+            const changes = {
+                features: {
+                    enableCharts: false,
+                },
+            };
+
+            const result = service.updatePreview(current, changes);
+
+            expect(result.mockData).toBeUndefined();
+            expect(result.changedFields).toContain('features.enableCharts');
+        });
+
+        it('regenerates mock data when network changes', () => {
+            const current = mainnetConfig;
+            const changes = {
+                stellar: {
+                    network: 'testnet' as const,
+                    horizonUrl: 'https://horizon-testnet.stellar.org',
+                },
+            };
+
+            const result = service.updatePreview(current, changes);
+
+            expect(result.mockData).toBeDefined();
+            expect(result.changedFields).toContain('stellar.network');
+            expect(result.customization.stellar.network).toBe('testnet');
+        });
+
+        it('does not regenerate mock data for horizon URL change only', () => {
+            const current = mainnetConfig;
+            const changes = {
+                stellar: {
+                    horizonUrl: 'https://custom-horizon.stellar.org',
+                },
+            };
+
+            const result = service.updatePreview(current, changes);
+
+            expect(result.mockData).toBeUndefined();
+            expect(result.changedFields).toContain('stellar.horizonUrl');
+        });
+
+        it('handles multiple field changes across sections', () => {
+            const current = mainnetConfig;
+            const changes = {
+                branding: {
+                    appName: 'Multi Update',
+                },
+                features: {
+                    enableAnalytics: true,
+                },
+                stellar: {
+                    sorobanRpcUrl: 'https://soroban-rpc.stellar.org',
+                },
+            };
+
+            const result = service.updatePreview(current, changes);
+
+            expect(result.changedFields).toContain('branding.appName');
+            expect(result.changedFields).toContain('features.enableAnalytics');
+            expect(result.changedFields).toContain('stellar.sorobanRpcUrl');
+            expect(result.changedFields.length).toBe(3);
+        });
+
+        it('returns valid timestamp', () => {
+            const current = mainnetConfig;
+            const changes = { branding: { appName: 'Test' } };
+
+            const result = service.updatePreview(current, changes);
+
+            expect(result.timestamp).toBeDefined();
+            expect(new Date(result.timestamp)).toBeInstanceOf(Date);
+        });
+
+        it('handles empty changes object', () => {
+            const current = mainnetConfig;
+            const changes = {};
+
+            const result = service.updatePreview(current, changes);
+
+            expect(result.customization).toEqual(current);
+            expect(result.changedFields).toEqual([]);
+            expect(result.mockData).toBeUndefined();
+        });
+
+        it('preserves all fields when updating single field', () => {
+            const current = testnetConfig;
+            const changes = {
+                branding: {
+                    primaryColor: '#123456',
+                },
+            };
+
+            const result = service.updatePreview(current, changes);
+
+            expect(result.customization.branding.appName).toBe(current.branding.appName);
+            expect(result.customization.branding.secondaryColor).toBe(
+                current.branding.secondaryColor
+            );
+            expect(result.customization.features).toEqual(current.features);
+            expect(result.customization.stellar).toEqual(current.stellar);
+        });
+
+        it('network change from mainnet to testnet regenerates appropriate mock data', () => {
+            const current = mainnetConfig;
+            const changes = {
+                stellar: {
+                    network: 'testnet' as const,
+                    horizonUrl: 'https://horizon-testnet.stellar.org',
+                },
+            };
+
+            const result = service.updatePreview(current, changes);
+
+            expect(result.mockData).toBeDefined();
+            // Balance should be in testnet range (5000-6000)
+            const balance = parseFloat(result.mockData!.accountBalance);
+            expect(balance).toBeGreaterThanOrEqual(5000);
+            expect(balance).toBeLessThanOrEqual(6000);
+            expect(result.mockData!.assetPrices.XLM).toBe(0.10);
+        });
+
+        it('network change from testnet to mainnet regenerates appropriate mock data', () => {
+            const current = testnetConfig;
+            const changes = {
+                stellar: {
+                    network: 'mainnet' as const,
+                    horizonUrl: 'https://horizon.stellar.org',
+                },
+            };
+
+            const result = service.updatePreview(current, changes);
+
+            expect(result.mockData).toBeDefined();
+            // Balance should be in mainnet range (10000-11000)
+            const balance = parseFloat(result.mockData!.accountBalance);
+            expect(balance).toBeGreaterThanOrEqual(10000);
+            expect(balance).toBeLessThanOrEqual(11000);
+            expect(result.mockData!.assetPrices.XLM).toBe(0.12);
+        });
     });
 });

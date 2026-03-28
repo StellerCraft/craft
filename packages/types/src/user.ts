@@ -6,6 +6,7 @@ export interface User {
     createdAt: Date;
     subscriptionTier: SubscriptionTier;
     githubConnected: boolean;
+    githubUsername: string | null;
 }
 
 export interface AuthResult {
