@@ -33,7 +33,8 @@ function makeOwnershipQuery(userId: string | null, deploymentData: any = null) {
                 single: vi.fn().mockResolvedValue(
                     userId === null
                         ? { data: null, error: { message: 'not found' } }
-                        : { data: { user_id: userId, ...deploymentData }, error: null },
+                        // Spread deploymentData first so caller-supplied userId wins.
+                        : { data: { ...deploymentData, user_id: userId }, error: null },
                 ),
             })),
         })),
