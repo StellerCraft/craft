@@ -186,6 +186,30 @@ describe('AuthService', () => {
 
             expect(result.error?.message).toBe('Some unexpected error');
         });
+
+        it('uses SIGNIN_ERROR code when provider error has no code', async () => {
+            mockSignInWithPassword.mockResolvedValue({
+                data: { user: null, session: null },
+                error: { message: 'Invalid login credentials' },
+            });
+
+            const result = await service.signIn('test@example.com', 'wrong');
+
+            expect(result.error?.code).toBe('SIGNIN_ERROR');
+        });
+
+        it('returns correct session expiry from provider', async () => {
+            const expiresAt = 1800000000;
+            mockSignInWithPassword.mockResolvedValue({
+                data: { user: MOCK_USER, session: { ...MOCK_SESSION, expires_at: expiresAt } },
+                error: null,
+            });
+            mockProfileSelect.mockResolvedValue({ data: null });
+
+            const result = await service.signIn('test@example.com', 'password123');
+
+            expect(result.session?.expiresAt).toEqual(new Date(expiresAt * 1000));
+        });
     });
 
     // ----------------------------------------------------------------- signOut
@@ -196,6 +220,12 @@ describe('AuthService', () => {
             await service.signOut();
 
             expect(mockSignOut).toHaveBeenCalledOnce();
+        });
+
+        it('resolves without error on successful sign-out', async () => {
+            mockSignOut.mockResolvedValue({});
+
+            await expect(service.signOut()).resolves.toBeUndefined();
         });
     });
 

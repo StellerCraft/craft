@@ -166,6 +166,26 @@ describe('PaymentService.createCheckoutSession', () => {
             expect.objectContaining({ metadata: { user_id: userId } })
         );
     });
+
+    it('passes custom successUrl and cancelUrl to Stripe', async () => {
+        const query = makeQuery({ data: { stripe_customer_id: 'cus_x' } });
+        mockFrom.mockReturnValue(query);
+        mockCheckoutSessionsCreate.mockResolvedValue(fakeSession);
+
+        await service.createCheckoutSession(
+            userId,
+            priceId,
+            'https://app.example.com/success',
+            'https://app.example.com/cancel'
+        );
+
+        expect(mockCheckoutSessionsCreate).toHaveBeenCalledWith(
+            expect.objectContaining({
+                success_url: 'https://app.example.com/success',
+                cancel_url: 'https://app.example.com/cancel',
+            })
+        );
+    });
 });
 
 // ── getSubscriptionStatus ─────────────────────────────────────────────────────

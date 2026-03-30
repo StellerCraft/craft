@@ -54,6 +54,43 @@ describe('POST /api/webhooks/stripe', () => {
         expect((await res.json()).error).toBe('Invalid signature');
     });
 
+    it('verifies webhook signature using raw payload, signature, and webhook secret', async () => {
+        const payload = '{"id":"evt_sig"}';
+        mockConstructEvent.mockReturnValue(fakeEvent('payment_intent.created'));
+
+        const { POST } = await import('./route');
+        const res = await POST(makeRequest(payload, VALID_SIG));
+
+        expect(res.status).toBe(200);
+        expect(mockConstructEvent).toHaveBeenCalledWith(payload, VALID_SIG, WEBHOOK_SECRET);
+    });
+
+    it('processes checkout.session.completed events', async () => {
+        const event = fakeEvent('checkout.session.completed');
+        mockConstructEvent.mockReturnValue(event);
+        mockHandleWebhook.mockResolvedValue(undefined);
+
+        const { POST } = await import('./route');
+        const res = await POST(makeRequest('{}', VALID_SIG));
+
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ received: true });
+        expect(mockHandleWebhook).toHaveBeenCalledWith(event);
+    });
+
+    it('processes customer.subscription.deleted events', async () => {
+        const event = fakeEvent('customer.subscription.deleted');
+        mockConstructEvent.mockReturnValue(event);
+        mockHandleWebhook.mockResolvedValue(undefined);
+
+        const { POST } = await import('./route');
+        const res = await POST(makeRequest('{}', VALID_SIG));
+
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ received: true });
+        expect(mockHandleWebhook).toHaveBeenCalledWith(event);
+    });
+
     it('returns 200 without calling handleWebhook for unsupported event types', async () => {
         mockConstructEvent.mockReturnValue(fakeEvent('payment_intent.created'));
         const { POST } = await import('./route');
