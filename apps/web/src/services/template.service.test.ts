@@ -113,6 +113,40 @@ describe('TemplateService', () => {
 
             await expect(service.listTemplates()).rejects.toThrow('Failed to list templates: DB error');
         });
+
+        it('applies category and search filters together', async () => {
+            const query = makeQuery().mockResolve({ data: [], error: null });
+            mockFrom.mockReturnValue(query);
+
+            await service.listTemplates({ category: 'dex', search: 'stellar' });
+
+            expect(query.eq).toHaveBeenCalledWith('category', 'dex');
+            expect(query.or).toHaveBeenCalledWith('name.ilike.%stellar%,description.ilike.%stellar%');
+        });
+
+        it('orders results by created_at descending', async () => {
+            const query = makeQuery().mockResolve({ data: [], error: null });
+            mockFrom.mockReturnValue(query);
+
+            await service.listTemplates();
+
+            expect(query.order).toHaveBeenCalledWith('created_at', { ascending: false });
+        });
+
+        it('maps multiple templates correctly', async () => {
+            const query = makeQuery().mockResolve({
+                data: [dbTemplate({ id: 'tpl-1' }), dbTemplate({ id: 'tpl-2', category: 'payment' })],
+                error: null,
+            });
+            mockFrom.mockReturnValue(query);
+
+            const results = await service.listTemplates();
+
+            expect(results).toHaveLength(2);
+            expect(results[0].id).toBe('tpl-1');
+            expect(results[1].id).toBe('tpl-2');
+            expect(results[1].category).toBe('payment');
+        });
     });
 
     // ── getTemplate ────────────────────────────────────────────────────────────
