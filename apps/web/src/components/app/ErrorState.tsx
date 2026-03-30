@@ -15,8 +15,6 @@ interface ErrorStateProps {
   error?: AppError;
   onRetry?: () => Promise<void> | void;
   onSupport?: () => void;
-  /** When true, shows a "Report this error" button that opens the report form. */
-  reportable?: boolean;
 }
 
 export function ErrorState({
@@ -26,7 +24,6 @@ export function ErrorState({
   error,
   onRetry,
   onSupport,
-  reportable = false,
 }: ErrorStateProps) {
   // If an error object is provided, gate the retry button on retryability.
   // If no error object is provided, fall back to showing retry whenever onRetry exists.
@@ -71,39 +68,7 @@ export function ErrorState({
             Contact Support
           </button>
         )}
-
-        <div className="flex flex-col sm:flex-row gap-3">
-          {showRetry && <RetryButton onRetry={onRetry} />}
-
-          {reportable && (
-            <button
-              type="button"
-              onClick={() => setShowReportForm(true)}
-              className="bg-surface-container-lowest text-primary px-6 py-3 rounded-lg font-semibold border border-outline-variant/20 hover:bg-surface-container-low transition-all active:scale-95"
-            >
-              Report this error
-            </button>
-          )}
-
-          {onSupport && (
-            <button
-              type="button"
-              onClick={onSupport}
-              className="bg-surface-container-lowest text-primary px-6 py-3 rounded-lg font-semibold border border-outline-variant/20 hover:bg-surface-container-low transition-all active:scale-95"
-            >
-              Contact Support
-            </button>
-          )}
-        </div>
       </div>
-
-      {showReportForm && (
-        <ErrorReportForm
-          errorContext={errorContext}
-          correlationId={errorCode}
-          onClose={() => setShowReportForm(false)}
-        />
-      )}
-    </>
+    </div>
   );
 }
