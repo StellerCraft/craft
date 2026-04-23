@@ -7,6 +7,10 @@
         {
             "path": "/api/cron/purge-expired-tokens",
             "schedule": "0 3 * * *"
+        },
+        {
+            "path": "/api/cron/smoke-test",
+            "schedule": "0 * * * *"
         }
     ]
 }
