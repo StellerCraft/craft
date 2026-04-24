@@ -211,6 +211,37 @@ export interface DomainConfig {
     deploymentId?: string;
 }
 
+// ── Deployment log types (Issue #90) ─────────────────────────────────────────
+
+/**
+ * Raw event entry returned by the Vercel /v2/deployments/{id}/events API.
+ */
+export interface VercelDeploymentLogEvent {
+    /** Event type (e.g. 'stdout', 'stderr', 'command', 'exit'). */
+    type: string;
+    /** Unix timestamp in milliseconds. */
+    created: number;
+    payload?: {
+        /** Log line text. */
+        text?: string;
+        /** Severity level from Vercel ('error' | 'warning' | any). */
+        level?: string;
+    };
+}
+
+export interface GetDeploymentLogsOptions {
+    /** Return only events after this Unix-ms timestamp (pagination cursor). */
+    since?: number;
+    /** Maximum number of log entries to return. */
+    limit?: number;
+}
+
+export interface VercelDeploymentLogsResult {
+    logs: import('@craft/types').DeploymentLogResponse[];
+    /** Timestamp of the last entry — use as `since` for the next page. */
+    nextCursor?: number;
+}
+
 // ── Config validation ─────────────────────────────────────────────────────────
 
 export interface VercelConfigValidationResult {
@@ -780,6 +811,70 @@ export class VercelService {
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
+
+    // ── Deployment log retrieval (Issue #90) ─────────────────────────────────
+
+    /**
+     * Fetch build and runtime log events for a Vercel deployment.
+     *
+     * Calls GET /v2/deployments/{id}/events and normalises each event into the
+     * platform's `DeploymentLogResponse` shape.  Supports incremental retrieval
+     * via the `since` cursor (Unix-ms timestamp of the last seen event).
+     *
+     * Level mapping:
+     *   Vercel "error"   → LogLevel "error"
+     *   Vercel "warning" → LogLevel "warn"
+     *   anything else    → LogLevel "info"
+     *
+     * @param deploymentId - Vercel deployment ID
+     * @param options      - Optional `since` cursor and `limit`
+     */
+    async getDeploymentLogs(
+        deploymentId: string,
+        options: GetDeploymentLogsOptions = {},
+    ): Promise<VercelDeploymentLogsResult> {
+        const params = new URLSearchParams();
+        if (options.since !== undefined) params.set('since', String(options.since));
+        if (options.limit !== undefined) params.set('limit', String(options.limit));
+
+        const qs = params.toString();
+        const path = `/v2/deployments/${deploymentId}/events${qs ? `?${qs}` : ''}`;
+
+        const data = await this.request<{ events?: VercelDeploymentLogEvent[] }>(path, {
+            method: 'GET',
+        });
+
+        const events: VercelDeploymentLogEvent[] = data.events ?? (data as unknown as VercelDeploymentLogEvent[]);
+        const entries = Array.isArray(events) ? events : [];
+
+        const logs: import('@craft/types').DeploymentLogResponse[] = entries.map((event) => {
+            const text = event.payload?.text ?? '';
+            const rawLevel = event.payload?.level ?? '';
+
+            let level: import('@craft/types').LogLevel;
+            if (rawLevel === 'error') {
+                level = 'error';
+            } else if (rawLevel === 'warning') {
+                level = 'warn';
+            } else {
+                level = 'info';
+            }
+
+            return {
+                id: `${deploymentId}-${event.created}`,
+                deploymentId,
+                timestamp: new Date(event.created).toISOString(),
+                level,
+                message: text,
+            };
+        });
+
+        const nextCursor = entries.length > 0
+            ? entries[entries.length - 1].created
+            : undefined;
+
+        return { logs, nextCursor };
+    }
 
     private assertOk(res: Response, data: Record<string, unknown>): void {
         if (res.ok) return;

@@ -917,3 +917,134 @@ describe('VercelService — getCertificate', () => {
         expect(cert).toEqual({ domain: 'example.com', state: 'error', error: 'DNS not propagated' });
     });
 });
+
+// ── getDeploymentLogs ─────────────────────────────────────────────────────────
+
+describe('VercelService — getDeploymentLogs', () => {
+    const TOKEN = 'test_token';
+
+    function makeLogService() {
+        const mockFetch = vi.fn();
+        const svc = new VercelService(mockFetch);
+        return { svc, mockFetch };
+    }
+
+    beforeEach(() => vi.stubEnv('VERCEL_TOKEN', TOKEN));
+    afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); });
+
+    it('returns empty logs when events array is empty', async () => {
+        const { svc, mockFetch } = makeLogService();
+        mockFetch.mockResolvedValueOnce(makeJsonResponse(200, { events: [] }));
+
+        const result = await svc.getDeploymentLogs('dpl_abc');
+
+        expect(result.logs).toEqual([]);
+        expect(result.nextCursor).toBeUndefined();
+    });
+
+    it('normalizes stdout events to info level', async () => {
+        const { svc, mockFetch } = makeLogService();
+        const created = 1700000000000;
+        mockFetch.mockResolvedValueOnce(makeJsonResponse(200, {
+            events: [{ type: 'stdout', created, payload: { text: 'Build started', level: 'info' } }],
+        }));
+
+        const result = await svc.getDeploymentLogs('dpl_abc');
+
+        expect(result.logs).toHaveLength(1);
+        expect(result.logs[0]).toMatchObject({
+            deploymentId: 'dpl_abc',
+            level: 'info',
+            message: 'Build started',
+            timestamp: new Date(created).toISOString(),
+        });
+    });
+
+    it('maps Vercel "error" level to LogLevel "error"', async () => {
+        const { svc, mockFetch } = makeLogService();
+        mockFetch.mockResolvedValueOnce(makeJsonResponse(200, {
+            events: [{ type: 'stderr', created: 1700000001000, payload: { text: 'Build failed', level: 'error' } }],
+        }));
+
+        const result = await svc.getDeploymentLogs('dpl_abc');
+
+        expect(result.logs[0].level).toBe('error');
+    });
+
+    it('maps Vercel "warning" level to LogLevel "warn"', async () => {
+        const { svc, mockFetch } = makeLogService();
+        mockFetch.mockResolvedValueOnce(makeJsonResponse(200, {
+            events: [{ type: 'stdout', created: 1700000002000, payload: { text: 'Deprecation', level: 'warning' } }],
+        }));
+
+        const result = await svc.getDeploymentLogs('dpl_abc');
+
+        expect(result.logs[0].level).toBe('warn');
+    });
+
+    it('maps unknown level to LogLevel "info"', async () => {
+        const { svc, mockFetch } = makeLogService();
+        mockFetch.mockResolvedValueOnce(makeJsonResponse(200, {
+            events: [{ type: 'command', created: 1700000003000, payload: { text: 'npm install' } }],
+        }));
+
+        const result = await svc.getDeploymentLogs('dpl_abc');
+
+        expect(result.logs[0].level).toBe('info');
+    });
+
+    it('sets nextCursor to the created timestamp of the last event', async () => {
+        const { svc, mockFetch } = makeLogService();
+        const events = [
+            { type: 'stdout', created: 1700000000000, payload: { text: 'first' } },
+            { type: 'stdout', created: 1700000001000, payload: { text: 'last' } },
+        ];
+        mockFetch.mockResolvedValueOnce(makeJsonResponse(200, { events }));
+
+        const result = await svc.getDeploymentLogs('dpl_abc');
+
+        expect(result.nextCursor).toBe(1700000001000);
+    });
+
+    it('appends since and limit as query params', async () => {
+        const { svc, mockFetch } = makeLogService();
+        mockFetch.mockResolvedValueOnce(makeJsonResponse(200, { events: [] }));
+
+        await svc.getDeploymentLogs('dpl_abc', { since: 1700000000000, limit: 50 });
+
+        const calledUrl: string = mockFetch.mock.calls[0][0];
+        expect(calledUrl).toContain('since=1700000000000');
+        expect(calledUrl).toContain('limit=50');
+    });
+
+    it('handles response where events is the top-level array', async () => {
+        const { svc, mockFetch } = makeLogService();
+        const events = [
+            { type: 'stdout', created: 1700000000000, payload: { text: 'line', level: 'info' } },
+        ];
+        // Vercel sometimes returns the array directly
+        mockFetch.mockResolvedValueOnce(makeJsonResponse(200, events));
+
+        const result = await svc.getDeploymentLogs('dpl_abc');
+
+        expect(result.logs).toHaveLength(1);
+    });
+
+    it('throws VercelApiError on auth failure', async () => {
+        const { svc, mockFetch } = makeLogService();
+        mockFetch.mockResolvedValueOnce(makeJsonResponse(401, { error: { message: 'Unauthorized' } }));
+
+        await expect(svc.getDeploymentLogs('dpl_abc')).rejects.toMatchObject({
+            code: 'AUTH_FAILED',
+        });
+    });
+
+    it('throws VercelApiError on network error', async () => {
+        const { svc, mockFetch } = makeLogService();
+        mockFetch.mockRejectedValueOnce(new Error('Network timeout'));
+
+        await expect(svc.getDeploymentLogs('dpl_abc')).rejects.toMatchObject({
+            code: 'NETWORK_ERROR',
+        });
+    });
+});
