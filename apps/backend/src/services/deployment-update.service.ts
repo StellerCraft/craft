@@ -21,6 +21,7 @@ import {
     type GitHubCommitReference,
     type GitHubPushService,
 } from './github-push.service';
+import { parseRepoIdentity } from './github-repository-update.service';
 
 export interface DeploymentUpdate {
     id: string;
@@ -49,6 +50,7 @@ export interface DeploymentState {
     deploymentUrl: string | null;
     vercelDeploymentId: string | null;
     status: DeploymentStatusType;
+    repositoryUrl: string | null;
 }
 
 export interface UpdateDeploymentRequest {
@@ -131,7 +133,7 @@ export class DeploymentUpdateService {
             //         - Generate new code
             //         - Update repository
             //         - Trigger Vercel redeployment
-            const pipeline = await this.executeUpdatePipeline(updateId, customizationConfig, githubPush);
+            const pipeline = await this.executeUpdatePipeline(updateId, customizationConfig, githubPush, previousState);
 
             if (!pipeline.success) {
                 throw new Error('Update pipeline failed');
@@ -175,7 +177,7 @@ export class DeploymentUpdateService {
 
         const { data: deployment, error } = await supabase
             .from('deployments')
-            .select('customization_config, deployment_url, vercel_deployment_id, status')
+            .select('customization_config, deployment_url, vercel_deployment_id, status, repository_url')
             .eq('id', deploymentId)
             .eq('user_id', userId)
             .single();
@@ -189,6 +191,7 @@ export class DeploymentUpdateService {
             deploymentUrl: deployment.deployment_url,
             vercelDeploymentId: deployment.vercel_deployment_id,
             status: deployment.status as DeploymentStatusType,
+            repositoryUrl: deployment.repository_url ?? null,
         };
     }
 
@@ -242,7 +245,8 @@ export class DeploymentUpdateService {
     private async executeUpdatePipeline(
         updateId: string,
         config: CustomizationConfig,
-        githubPush?: UpdateDeploymentRequest['githubPush']
+        githubPush?: UpdateDeploymentRequest['githubPush'],
+        previousState?: DeploymentState
     ): Promise<PipelineExecutionResult> {
         await this.updateUpdateStatus(updateId, 'generating');
         
@@ -265,6 +269,18 @@ export class DeploymentUpdateService {
                     `chore: update generated workspace (${new Date().toISOString()})`,
                 authorName: githubPush.authorName,
                 authorEmail: githubPush.authorEmail,
+            });
+        } else if (previousState?.repositoryUrl) {
+            // Auto-resolve owner/repo from the stored repository URL (reuse logic)
+            const { owner, repo } = parseRepoIdentity(previousState.repositoryUrl);
+            const token = process.env.GITHUB_TOKEN ?? '';
+            commitRef = await this._githubPushService.pushGeneratedCode({
+                owner,
+                repo,
+                token,
+                files: [],
+                branch: 'main',
+                commitMessage: `chore: update generated workspace (${new Date().toISOString()})`,
             });
         } else {
             // Preserve simulated behavior for callers that do not opt into GitHub push.
