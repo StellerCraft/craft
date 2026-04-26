@@ -13,6 +13,7 @@ import {
   templateGeneratorService,
 } from './template-generator.service';
 import type { Template, GeneratedFile, GenerationError } from '@craft/types';
+import type { SyntaxValidationResult } from './syntax-validator';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -63,7 +64,8 @@ const mockGeneratedFiles: GeneratedFile[] = [
 function makeService(
   templateMock?: Partial<{ getTemplate: () => Promise<Template> }>,
   codeGenMock?: Partial<{ generate: () => any }>,
-  cloningMock?: Partial<{ clone: () => Promise<any> }>
+  cloningMock?: Partial<{ clone: () => Promise<any> }>,
+  syntaxValidatorMock?: Partial<{ validate: () => SyntaxValidationResult }>
 ) {
   const ts = {
     getTemplate: vi.fn().mockResolvedValue(mockTemplate),
@@ -85,7 +87,11 @@ function makeService(
     }),
     ...cloningMock,
   };
-  return new TemplateGeneratorService(ts as any, cgs as any, cs as any);
+  const sv = {
+    validate: vi.fn().mockReturnValue({ valid: true, errors: [] }),
+    ...syntaxValidatorMock,
+  };
+  return new TemplateGeneratorService(ts as any, cgs as any, cs as any, sv as any);
 }
 
 // ── mapCategoryToFamily ───────────────────────────────────────────────────────
@@ -359,5 +365,61 @@ describe('TemplateGeneratorService — cloning integration', () => {
     );
     await svc.generate(validRequest);
     expect(generateMock).not.toHaveBeenCalled();
+  });
+});
+
+// ── SyntaxValidator integration ───────────────────────────────────────────────
+
+describe('TemplateGeneratorService — syntax validation integration', () => {
+  it('returns success:false when a generated file has a syntax error', async () => {
+    const svc = makeService(
+      undefined,
+      undefined,
+      undefined,
+      {
+        validate: vi.fn().mockReturnValue({
+          valid: false,
+          errors: [{ file: 'src/config.ts', message: "'}' expected", line: 5 }],
+        }),
+      }
+    );
+    const result = await svc.generate(validRequest);
+    expect(result.success).toBe(false);
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.errors[0].file).toBe('src/config.ts');
+    expect(result.errors[0].severity).toBe('error');
+    expect(result.artifactMetadata).toBeUndefined();
+  });
+
+  it('returns success:true when all generated files pass syntax validation', async () => {
+    const svc = makeService();
+    const result = await svc.generate(validRequest);
+    expect(result.success).toBe(true);
+    expect(result.errors).toHaveLength(0);
+    expect(result.artifactMetadata).toBeDefined();
+  });
+
+  it('calls validate for each generated file', async () => {
+    const validateMock = vi.fn().mockReturnValue({ valid: true, errors: [] });
+    const svc = makeService(undefined, undefined, undefined, { validate: validateMock });
+    await svc.generate(validRequest);
+    expect(validateMock).toHaveBeenCalledTimes(mockGeneratedFiles.length);
+  });
+
+  it('includes generatedFiles in result even when syntax validation fails', async () => {
+    const svc = makeService(
+      undefined,
+      undefined,
+      undefined,
+      {
+        validate: vi.fn().mockReturnValue({
+          valid: false,
+          errors: [{ file: 'src/config.ts', message: 'Unexpected token', line: 1 }],
+        }),
+      }
+    );
+    const result = await svc.generate(validRequest);
+    expect(result.success).toBe(false);
+    expect(result.generatedFiles).toEqual(mockGeneratedFiles);
   });
 });

@@ -24,6 +24,7 @@ import {
   templateCloningService,
   type CloneRequest,
 } from './template-cloning.service';
+import { SyntaxValidator, syntaxValidator } from './syntax-validator';
 import type { TemplateCategory } from '@craft/types';
 
 // ── Re-exports from @craft/types ──────────────────────────────────────────────
@@ -84,7 +85,8 @@ export class TemplateGeneratorService {
   constructor(
     private readonly _templateService: Pick<TemplateService, 'getTemplate'> = templateService,
     private readonly _codeGeneratorService: Pick<CodeGeneratorService, 'generate'> = codeGeneratorService,
-    private readonly _cloningService: Pick<TemplateCloningService, 'clone'> = templateCloningService
+    private readonly _cloningService: Pick<TemplateCloningService, 'clone'> = templateCloningService,
+    private readonly _syntaxValidator: Pick<SyntaxValidator, 'validate'> = syntaxValidator
   ) {}
 
   /**
@@ -222,7 +224,31 @@ export class TemplateGeneratorService {
         };
       }
 
-      // ── Step 7: Assemble artifact metadata ───────────────────────────────────
+      // ── Step 7: Validate syntax of generated TS/JSON files ───────────────────
+      const syntaxErrors: import('@craft/types').GenerationError[] = [];
+      for (const file of innerResult.generatedFiles) {
+        const result = this._syntaxValidator.validate(file);
+        if (!result.valid) {
+          for (const err of result.errors) {
+            syntaxErrors.push({
+              file: err.file,
+              message: err.message,
+              line: err.line,
+              severity: 'error',
+            });
+          }
+        }
+      }
+
+      if (syntaxErrors.length > 0) {
+        return {
+          success: false,
+          generatedFiles: innerResult.generatedFiles,
+          errors: syntaxErrors,
+        };
+      }
+
+      // ── Step 8: Assemble artifact metadata ───────────────────────────────────
       const artifactMetadata: ArtifactMetadata = {
         templateId,
         templateFamily,
