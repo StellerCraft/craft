@@ -1,0 +1,20 @@
+{
+  "action": "opened",
+  "number": 1,
+  "pull_request": {
+    "id": 1,
+    "number": 1,
+    "state": "open",
+    "title": "Add new feature",
+    "body": "This PR adds a new feature.",
+    "head": { "ref": "feature-branch", "sha": "abc123" },
+    "base": { "ref": "main", "sha": "def456" },
+    "user": { "login": "octocat" }
+  },
+  "repository": {
+    "id": 123456789,
+    "name": "my-repo",
+    "full_name": "octocat/my-repo"
+  },
+  "sender": { "login": "octocat" }
+}

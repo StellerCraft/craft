@@ -1,0 +1,22 @@
+{
+  "ref": "refs/heads/main",
+  "before": "0000000000000000000000000000000000000000",
+  "after": "abc123def456abc123def456abc123def456abc1",
+  "repository": {
+    "id": 123456789,
+    "name": "my-repo",
+    "full_name": "octocat/my-repo",
+    "private": false
+  },
+  "pusher": {
+    "name": "octocat",
+    "email": "octocat@github.com"
+  },
+  "commits": [
+    {
+      "id": "abc123def456abc123def456abc123def456abc1",
+      "message": "Initial commit",
+      "author": { "name": "octocat", "email": "octocat@github.com" }
+    }
+  ]
+}
