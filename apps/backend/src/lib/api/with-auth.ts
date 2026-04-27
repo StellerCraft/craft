@@ -1,12 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
-import { canConfigureCustomDomain } from '@/lib/stripe/pricing';
+import { createClient } from '../supabase/server';
+import { canConfigureCustomDomain } from '../stripe/pricing';
 import {
-    resolveCorrelationId,
-    createLogger,
+    withLogging,
     CORRELATION_ID_HEADER,
     type Logger,
-} from '@/lib/api/logger';
+} from './logger';
 import type { User } from '@supabase/supabase-js';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { SubscriptionTier } from '@craft/types';
@@ -26,25 +25,19 @@ type RouteHandler<TParams = {}> = (
 /**
  * Wraps a route handler with Supabase session authentication.
  * Returns 401 if the user is not authenticated.
- * Attaches a correlation ID and logger to the context.
+ * Attaches a correlation ID and logger to the context via withLogging.
  */
 export function withAuth<TParams = {}>(handler: RouteHandler<TParams>) {
-    return async (req: NextRequest, { params }: { params: TParams }) => {
-        const correlationId = resolveCorrelationId(req);
-        const log = createLogger({ correlationId });
+    return withLogging<TParams>(async (req, { params, correlationId, log }) => {
         const supabase = createClient();
         const { data: { user }, error } = await supabase.auth.getUser();
 
         if (error || !user) {
-            const res = NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-            res.headers.set(CORRELATION_ID_HEADER, correlationId);
-            return res;
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
         }
 
-        const response = await handler(req, { user, supabase, correlationId, log, params });
-        response.headers.set(CORRELATION_ID_HEADER, correlationId);
-        return response;
-    };
+        return handler(req, { user, supabase, correlationId, log, params });
+    });
 }
 
 /**

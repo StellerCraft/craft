@@ -110,6 +110,56 @@ export function createLogger(ctx: LogContext): Logger {
     };
 }
 
+// ── Redaction ────────────────────────────────────────────────────────────────
+
+const SENSITIVE_KEYS = new Set([
+    'password',
+    'token',
+    'secret',
+    'authorization',
+    'cookie',
+    'key',
+    'stripe_secret',
+    'access_token',
+    'refresh_token',
+    'seed',
+    'private_key',
+    'secret_key',
+    'mnemonic',
+    'privatekey',
+    'secretkey',
+    'phrase',
+    'api_key',
+    'apikey',
+    'x-api-key',
+]);
+
+/**
+ * Recursively redacts sensitive keys from an object or array.
+ * Returns a new object/array, leaving the original untouched.
+ */
+export function redact(obj: unknown, depth = 0): unknown {
+    if (depth > 10 || !obj || typeof obj !== 'object') {
+        return obj;
+    }
+
+    if (Array.isArray(obj)) {
+        return obj.map((item) => redact(item, depth + 1));
+    }
+
+    const result: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+        if (SENSITIVE_KEYS.has(key.toLowerCase())) {
+            result[key] = '[REDACTED]';
+        } else if (typeof value === 'object' && value !== null) {
+            result[key] = redact(value, depth + 1);
+        } else {
+            result[key] = value;
+        }
+    }
+    return result;
+}
+
 // ── Route middleware ──────────────────────────────────────────────────────────
 
 type RouteHandler<TParams = {}> = (
@@ -119,27 +169,70 @@ type RouteHandler<TParams = {}> = (
 
 /**
  * Wraps a route handler with automatic correlation ID resolution and a
- * pre-configured logger. The correlation ID is echoed back in the response
- * header so clients can include it in support requests.
- *
- * @example
- * export const POST = withLogging(async (req, { correlationId, log }) => {
- *   log.info('Processing request');
- *   // ...
- * });
+ * pre-configured logger. Automatically logs incoming requests and outgoing
+ * responses, ensuring sensitive data is redacted.
  */
 export function withLogging<TParams = {}>(handler: RouteHandler<TParams>) {
     return async (req: NextRequest, { params }: { params: TParams }): Promise<NextResponse> => {
         const correlationId = resolveCorrelationId(req);
         const log = createLogger({ correlationId });
+        const start = Date.now();
+
+        const method = req.method;
+        const url = req.nextUrl.pathname;
+
+        // Capture request details for logging
+        const logRequest = async () => {
+            const headers = Object.fromEntries(req.headers.entries());
+            let body: any = undefined;
+
+            if (req.headers.get('content-type')?.includes('application/json')) {
+                try {
+                    // Clone request to avoid consuming the body stream
+                    const cloned = req.clone();
+                    body = await cloned.json();
+                } catch {
+                    // Body might be empty or invalid JSON
+                }
+            }
+
+            log.info(`API Request: ${method} ${url}`, {
+                method,
+                url,
+                headers: redact(headers),
+                body: redact(body),
+            });
+        };
+
+        // Fire-and-forget logging to avoid blocking the main request path
+        logRequest().catch((err) => log.error('Logging failed', err));
 
         try {
             const response = await handler(req, { params, correlationId, log });
+            const duration = Date.now() - start;
+
             response.headers.set(CORRELATION_ID_HEADER, correlationId);
+
+            log.info(`API Response: ${method} ${url} ${response.status}`, {
+                method,
+                url,
+                status: response.status,
+                durationMs: duration,
+            });
+
             return response;
         } catch (err: unknown) {
-            log.error('Unhandled route error', err);
-            const response = NextResponse.json({ error: 'Internal server error', correlationId }, { status: 500 });
+            const duration = Date.now() - start;
+            log.error('Unhandled route error', err, {
+                method,
+                url,
+                durationMs: duration,
+            });
+
+            const response = NextResponse.json(
+                { error: 'Internal server error', correlationId },
+                { status: 500 }
+            );
             response.headers.set(CORRELATION_ID_HEADER, correlationId);
             return response;
         }
