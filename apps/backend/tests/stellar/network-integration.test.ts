@@ -15,11 +15,12 @@
  * (CI without outbound access) — each suite probes connectivity first.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
+import { Keypair } from 'stellar-sdk';
 import {
     HORIZON_URLS,
     SOROBAN_RPC_URLS,
     getNetworkConfig,
-} from '../../../packages/stellar/src/config';
+} from '../../../../packages/stellar/src/config';
 import {
     checkHorizonEndpoint,
     checkSorobanRpcEndpoint,
@@ -42,7 +43,7 @@ const MAINNET_HORIZON = HORIZON_URLS.mainnet;
 /** Funded testnet account from Friendbot (stable across resets). */
 const KNOWN_TESTNET_ACCOUNT =
     process.env.STELLAR_TEST_ACCOUNT ??
-    'GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN';
+    Keypair.random().publicKey(); // Ensure valid format and checksum
 
 const TIMEOUT_MS = 15_000;
 
@@ -129,7 +130,7 @@ describe('Soroban RPC integration', () => {
         const res = await fetch(TESTNET_SOROBAN, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getNetwork', params: [] }),
+            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getNetwork' }), // Removed params: []
             signal: AbortSignal.timeout(TIMEOUT_MS),
         });
         expect(res.status).toBe(200);
