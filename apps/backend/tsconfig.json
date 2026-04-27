@@ -1,7 +1,7 @@
 {
     "extends": "../../packages/config/tsconfig.json",
     "compilerOptions": {
-        "types": ["vitest/globals"],
+        "types": ["vitest/globals", "node"],
         "paths": {
             "@/*": ["./src/*"],
             "@craft/types": ["../../packages/types/src"],
