@@ -31,6 +31,13 @@ import { sanitizeRepoName, GitHubService } from './github.service';
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
 
+// ── Validator mock (always passes — tests for the validator itself live in
+//    github-access-validator.service.test.ts) ──────────────────────────────────
+
+const passingValidator = {
+    validate: vi.fn().mockResolvedValue({ valid: true, code: 'OK', message: 'ok' }),
+};
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function makeJsonResponse(
@@ -111,10 +118,11 @@ describe('GitHubService', () => {
     let service: GitHubService;
 
     beforeEach(() => {
+        vi.clearAllMocks();
         process.env.GITHUB_TOKEN = 'ghp_test_token';
         delete process.env.GITHUB_ORG;
-        service = new GitHubService();
-        vi.clearAllMocks();
+        passingValidator.validate.mockResolvedValue({ valid: true, code: 'OK', message: 'ok' });
+        service = new GitHubService(passingValidator);
     });
 
     afterEach(() => {
@@ -148,7 +156,7 @@ describe('GitHubService', () => {
 
         it('creates a repository under the org when GITHUB_ORG is set', async () => {
             process.env.GITHUB_ORG = 'craft-templates';
-            service = new GitHubService();
+            service = new GitHubService(passingValidator);
             mockFetch.mockResolvedValueOnce(makeJsonResponse(201, REPO_RESPONSE));
 
             await service.createRepository(BASE_REQUEST);
@@ -367,7 +375,7 @@ describe('GitHubService', () => {
 
         it('throws AUTH_FAILED immediately when GITHUB_TOKEN is not configured', async () => {
             delete process.env.GITHUB_TOKEN;
-            service = new GitHubService();
+            service = new GitHubService(passingValidator);
 
             await expect(service.createRepository(BASE_REQUEST)).rejects.toMatchObject({
                 code: 'AUTH_FAILED',

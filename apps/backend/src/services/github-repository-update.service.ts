@@ -20,6 +20,7 @@ import {
   GitHubPushNetworkError,
 } from './github-push.service';
 import { codeGeneratorService, type CodeGeneratorService } from './code-generator.service';
+import { githubAccessValidator, type GitHubAccessValidator } from './github-access-validator.service';
 
 // ---------------------------------------------------------------------------
 // parseRepoIdentity — pure function
@@ -94,6 +95,7 @@ export class GitHubRepositoryUpdateService {
   constructor(
     private readonly _githubPushService: Pick<GitHubPushService, 'pushGeneratedCode'> = githubPushService,
     private readonly _codeGenerator: Pick<CodeGeneratorService, 'generate'> = codeGeneratorService,
+    private readonly _accessValidator: Pick<GitHubAccessValidator, 'validate'> = githubAccessValidator,
   ) {}
 
   async updateRepository(params: UpdateRepositoryParams): Promise<UpdateRepositoryResult> {
@@ -125,6 +127,15 @@ export class GitHubRepositoryUpdateService {
 
     // Parse owner/repo from stored URL — throws INVALID_REPO_IDENTITY if malformed
     const { owner, repo } = parseRepoIdentity(deployment.repository_url as string);
+
+    // ── Pre-flight: validate GitHub access before any write operation ────────
+    const access = await this._accessValidator.validate();
+    if (!access.valid) {
+      const code: UpdateErrorCode =
+        access.code === 'RATE_LIMITED' ? 'RATE_LIMITED' :
+        access.code === 'NETWORK_ERROR' ? 'NETWORK_ERROR' : 'AUTH_FAILED';
+      throw { code, message: access.message, retryAfterMs: access.retryAfterMs } satisfies ServiceError;
+    }
 
     // ── Code generation ──────────────────────────────────────────────────────
     const generationResult = this._codeGenerator.generate({
@@ -250,4 +261,8 @@ export class GitHubRepositoryUpdateService {
 }
 
 // Export singleton instance
-export const githubRepositoryUpdateService = new GitHubRepositoryUpdateService();
+export const githubRepositoryUpdateService = new GitHubRepositoryUpdateService(
+  githubPushService,
+  codeGeneratorService,
+  githubAccessValidator,
+);
