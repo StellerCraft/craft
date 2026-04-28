@@ -25,6 +25,7 @@
  */
 
 import type { CreateRepoRequest, GitHubErrorCode, Repository } from '@craft/types';
+import { githubAccessValidator, type GitHubAccessValidator } from './github-access-validator.service';
 
 const GITHUB_API_BASE = 'https://api.github.com';
 const MAX_NAME_RETRIES = 5;
@@ -93,6 +94,9 @@ class GitHubApiError extends Error {
 }
 
 export class GitHubService {
+    constructor(
+        private readonly _accessValidator: Pick<GitHubAccessValidator, 'validate'> = githubAccessValidator,
+    ) {}
     private get token(): string {
         return process.env.GITHUB_TOKEN ?? '';
     }
@@ -121,6 +125,14 @@ export class GitHubService {
      * name collisions. Throws a GitHubApiError on unrecoverable failures.
      */
     async createRepository(request: CreateRepoRequest): Promise<CreateRepoResult> {
+        // ── Pre-flight: validate GitHub access before any write operation ─────
+        const access = await this._accessValidator.validate();
+        if (!access.valid) {
+            const code: GitHubErrorCode =
+                access.code === 'RATE_LIMITED' ? 'RATE_LIMITED' : 'AUTH_FAILED';
+            throw new GitHubApiError(access.message, code, access.retryAfterMs);
+        }
+
         const baseName = sanitizeRepoName(request.name);
         let attempt = 0;
 
@@ -298,4 +310,4 @@ export class GitHubService {
     }
 }
 
-export const githubService = new GitHubService();
+export const githubService = new GitHubService(githubAccessValidator);
