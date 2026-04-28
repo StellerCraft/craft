@@ -810,7 +810,18 @@ export class VercelService {
         }
     }
 
+    /**
+     * Assign a custom alias to a Vercel deployment.
+     */
+    async assignAlias(deploymentId: string, alias: string): Promise<void> {
+        await this.request(`/v2/deployments/${deploymentId}/aliases`, {
+            method: 'POST',
+            body: JSON.stringify({ alias }),
+        });
+    }
+
     // ── Private helpers ───────────────────────────────────────────────────────
+
 
     // ── Deployment log retrieval (Issue #90) ─────────────────────────────────
 
