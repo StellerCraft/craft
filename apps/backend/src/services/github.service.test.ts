@@ -301,22 +301,21 @@ describe('GitHubService', () => {
         });
 
         it('throws a RATE_LIMITED error with retryAfterMs on HTTP 429', async () => {
-            mockFetch.mockResolvedValueOnce(
-                makeJsonResponse(429, { message: 'rate limited' }, { 'Retry-After': '60' }),
-            );
+            const response = makeJsonResponse(429, { message: 'rate limited' }, { 'Retry-After': '60' });
+            // 1 initial + 3 retries, all rate-limited
+            mockFetch.mockResolvedValue(response);
 
-            await expect(service.createRepository(BASE_REQUEST)).rejects.toMatchObject({
+            await expect(service.createRepository(BASE_REQUEST, noSleep)).rejects.toMatchObject({
                 code: 'RATE_LIMITED',
                 retryAfterMs: 60_000,
             });
         });
 
         it('throws a RATE_LIMITED error with retryAfterMs on HTTP 403', async () => {
-            mockFetch.mockResolvedValueOnce(
-                makeJsonResponse(403, { message: 'rate limited' }, { 'Retry-After': '30' }),
-            );
+            const response = makeJsonResponse(403, { message: 'rate limited' }, { 'Retry-After': '30' });
+            mockFetch.mockResolvedValue(response);
 
-            await expect(service.createRepository(BASE_REQUEST)).rejects.toMatchObject({
+            await expect(service.createRepository(BASE_REQUEST, noSleep)).rejects.toMatchObject({
                 code: 'RATE_LIMITED',
                 retryAfterMs: 30_000,
             });
@@ -344,20 +343,22 @@ describe('GitHubService', () => {
         });
 
         it('throws a NETWORK_ERROR for unexpected server errors', async () => {
-            mockFetch.mockResolvedValueOnce(
+            // 1 initial + 3 retries, all 500
+            mockFetch.mockResolvedValue(
                 makeJsonResponse(500, { message: 'Internal Server Error' }),
             );
 
-            await expect(service.createRepository(BASE_REQUEST)).rejects.toMatchObject({
+            await expect(service.createRepository(BASE_REQUEST, noSleep)).rejects.toMatchObject({
                 code: 'NETWORK_ERROR',
                 message: 'Internal Server Error',
             });
         });
 
         it('throws NETWORK_ERROR when fetch itself fails', async () => {
-            mockFetch.mockRejectedValueOnce(new Error('socket hang up'));
+            // 1 initial + 3 retries, all throw
+            mockFetch.mockRejectedValue(new Error('socket hang up'));
 
-            await expect(service.createRepository(BASE_REQUEST)).rejects.toMatchObject({
+            await expect(service.createRepository(BASE_REQUEST, noSleep)).rejects.toMatchObject({
                 code: 'NETWORK_ERROR',
                 message: 'socket hang up',
             });

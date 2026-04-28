@@ -32,6 +32,9 @@ import {
 const RETRYABLE_CODES = new Set(['RATE_LIMITED']);
 const TERMINAL_CODES = new Set(['AUTH_FAILED', 'NETWORK_ERROR', 'COLLISION', 'UNKNOWN']);
 
+/** No-op sleep — prevents real delays in tests that exercise the retry path. */
+const noSleep = () => Promise.resolve();
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function makeJsonResponse(
@@ -224,14 +227,15 @@ describe('Property 18 — GitHub auth and installation error classification', ()
             fc.asyncProperty(arbRetryAfterSec, async (retryAfterSec) => {
                 const headers =
                     retryAfterSec > 0 ? { 'Retry-After': String(retryAfterSec) } : {};
-                mockFetch.mockResolvedValueOnce(
+                // Use persistent mock so all retry attempts get the same response.
+                mockFetch.mockResolvedValue(
                     makeJsonResponse(429, { message: 'rate limited' }, headers),
                 );
 
                 let thrownCode: string | undefined;
                 let retryAfterMs: number | undefined;
                 try {
-                    await service.createRepository(BASE_REPO_REQUEST);
+                    await service.createRepository(BASE_REPO_REQUEST, noSleep);
                 } catch (err: unknown) {
                     const e = err as { code?: string; retryAfterMs?: number };
                     thrownCode = e.code;
@@ -246,6 +250,8 @@ describe('Property 18 — GitHub auth and installation error classification', ()
                 if (retryAfterSec > 0) {
                     expect(retryAfterMs).toBe(retryAfterSec * 1000);
                 }
+
+                vi.clearAllMocks();
             }),
             { numRuns: 100 },
         );
@@ -258,11 +264,11 @@ describe('Property 18 — GitHub auth and installation error classification', ()
                 async ([body, retryAfterSec]) => {
                     const headers =
                         retryAfterSec > 0 ? { 'Retry-After': String(retryAfterSec) } : {};
-                    mockFetch.mockResolvedValueOnce(makeJsonResponse(403, body, headers));
+                    mockFetch.mockResolvedValue(makeJsonResponse(403, body, headers));
 
                     let thrownCode: string | undefined;
                     try {
-                        await service.createRepository(BASE_REPO_REQUEST);
+                        await service.createRepository(BASE_REPO_REQUEST, noSleep);
                     } catch (err: unknown) {
                         thrownCode = (err as { code?: string }).code;
                     }
@@ -270,6 +276,8 @@ describe('Property 18 — GitHub auth and installation error classification', ()
                     // Invariant: rate-limit 403 is always retryable
                     expect(thrownCode).toBe('RATE_LIMITED');
                     expect(RETRYABLE_CODES).toContain(thrownCode);
+
+                    vi.clearAllMocks();
                 },
             ),
             { numRuns: 100 },
@@ -290,11 +298,11 @@ describe('Property 18 — GitHub auth and installation error classification', ()
                     ),
                 ),
                 async ([status, body]) => {
-                    mockFetch.mockResolvedValueOnce(makeJsonResponse(status, body));
+                    mockFetch.mockResolvedValue(makeJsonResponse(status, body));
 
                     let thrownCode: string | undefined;
                     try {
-                        await service.createRepository(BASE_REPO_REQUEST);
+                        await service.createRepository(BASE_REPO_REQUEST, noSleep);
                     } catch (err: unknown) {
                         thrownCode = (err as { code?: string }).code;
                     }
@@ -302,6 +310,8 @@ describe('Property 18 — GitHub auth and installation error classification', ()
                     // Invariant: 5xx is always terminal NETWORK_ERROR
                     expect(thrownCode).toBe('NETWORK_ERROR');
                     expect(TERMINAL_CODES).toContain(thrownCode);
+
+                    vi.clearAllMocks();
                 },
             ),
             { numRuns: 100 },
@@ -318,11 +328,11 @@ describe('Property 18 — GitHub auth and installation error classification', ()
                     fc.stringMatching(/^[A-Za-z ]{5,30}$/),
                 ),
                 async (errorMessage) => {
-                    mockFetch.mockRejectedValueOnce(new Error(errorMessage));
+                    mockFetch.mockRejectedValue(new Error(errorMessage));
 
                     let thrownCode: string | undefined;
                     try {
-                        await service.createRepository(BASE_REPO_REQUEST);
+                        await service.createRepository(BASE_REPO_REQUEST, noSleep);
                     } catch (err: unknown) {
                         thrownCode = (err as { code?: string }).code;
                     }
@@ -330,6 +340,8 @@ describe('Property 18 — GitHub auth and installation error classification', ()
                     // Invariant: fetch throw is always terminal NETWORK_ERROR
                     expect(thrownCode).toBe('NETWORK_ERROR');
                     expect(TERMINAL_CODES).toContain(thrownCode);
+
+                    vi.clearAllMocks();
                 },
             ),
             { numRuns: 100 },
@@ -354,13 +366,14 @@ describe('Property 18 — GitHub auth and installation error classification', ()
 
         await fc.assert(
             fc.asyncProperty(scenarios, async ([status, body, headers]) => {
-                mockFetch.mockResolvedValueOnce(
+                // Use persistent mock so retry attempts all get the same response.
+                mockFetch.mockResolvedValue(
                     makeJsonResponse(status, body, headers as Record<string, string>),
                 );
 
                 let thrownCode: string | undefined;
                 try {
-                    await service.createRepository(BASE_REPO_REQUEST);
+                    await service.createRepository(BASE_REPO_REQUEST, noSleep);
                 } catch (err: unknown) {
                     thrownCode = (err as { code?: string }).code;
                 }
@@ -368,6 +381,8 @@ describe('Property 18 — GitHub auth and installation error classification', ()
                 // Invariant: every thrown code is in the known classification set
                 expect(thrownCode).toBeDefined();
                 expect(ALL_CODES).toContain(thrownCode);
+
+                vi.clearAllMocks();
             }),
             { numRuns: 100 },
         );
