@@ -278,6 +278,97 @@ const GUIDANCE_MAP: Record<GuidanceKey, ErrorGuidance> = {
     ],
   },
 
+  // ── Soroban contract validation ──────────────────────────────────────────
+  'stellar:CONTRACT_ADDRESS_EMPTY': {
+    template: {
+      title: 'Contract address is empty',
+      message: 'A Soroban contract address is required.',
+      retryable: false,
+    },
+    steps: [
+      'Provide a valid 56-character Soroban contract address starting with "C".',
+    ],
+    links: [
+      { label: 'Soroban contract addresses', url: 'https://developers.stellar.org/docs/learn/encyclopedia/contract-development/contract-interactions/stellar-transaction' },
+    ],
+  },
+
+  'stellar:CONTRACT_ADDRESS_WHITESPACE': {
+    template: {
+      title: 'Contract address contains whitespace',
+      message: 'The contract address must not contain leading, trailing, or internal whitespace.',
+      retryable: false,
+    },
+    steps: [
+      'Remove all spaces or newline characters from the contract address.',
+      'Ensure the address is exactly 56 characters of base32 (A-Z, 2-7) starting with "C".',
+    ],
+    links: [
+      { label: 'Soroban contract addresses', url: 'https://developers.stellar.org/docs/learn/encyclopedia/contract-development/contract-interactions/stellar-transaction' },
+    ],
+  },
+
+  'stellar:CONTRACT_ADDRESS_INVALID_LENGTH': {
+    template: {
+      title: 'Contract address has wrong length',
+      message: 'A Soroban contract address must be exactly 56 characters long.',
+      retryable: false,
+    },
+    steps: [
+      'Verify you copied the full contract address.',
+      'Soroban contract addresses are always 56 characters.',
+    ],
+    links: [
+      { label: 'Soroban contract addresses', url: 'https://developers.stellar.org/docs/learn/encyclopedia/contract-development/contract-interactions/stellar-transaction' },
+    ],
+  },
+
+  'stellar:CONTRACT_ADDRESS_INVALID_PREFIX': {
+    template: {
+      title: 'Contract address has wrong prefix',
+      message: 'A Soroban contract address must start with "C". Addresses starting with "G" are Stellar account addresses, not contract addresses.',
+      retryable: false,
+    },
+    steps: [
+      'Confirm you are using a contract address, not a Stellar account (G…) address.',
+      'Retrieve the contract address from the deployment output or Stellar Explorer.',
+    ],
+    links: [
+      { label: 'Stellar Explorer', url: 'https://stellar.expert' },
+    ],
+  },
+
+  'stellar:CONTRACT_ADDRESS_INVALID_CHARSET': {
+    template: {
+      title: 'Contract address contains invalid characters',
+      message: 'Soroban contract addresses use base32 encoding (A-Z and 2-7 only).',
+      retryable: false,
+    },
+    steps: [
+      'Remove any characters outside the base32 alphabet (A-Z, 2-7).',
+      'Copy the address directly from the Stellar Explorer or deployment output.',
+    ],
+    links: [
+      { label: 'Stellar Explorer', url: 'https://stellar.expert' },
+    ],
+  },
+
+  'stellar:CONTRACT_ADDRESS_INVALID_CHECKSUM': {
+    template: {
+      title: 'Contract address checksum mismatch',
+      message: 'The contract address failed the Stellar strkey checksum check. It may be corrupted or mistyped.',
+      retryable: false,
+    },
+    steps: [
+      'Copy the contract address again from a trusted source.',
+      'Verify the address on Stellar Expert to confirm it is correct.',
+    ],
+    links: [
+      { label: 'Stellar Expert', url: 'https://stellar.expert' },
+      { label: 'Stellar strkey spec', url: 'https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0023.md' },
+    ],
+  },
+
   // ── Auth ─────────────────────────────────────────────────────────────────
   'auth:INVALID_CREDENTIALS': {
     template: {

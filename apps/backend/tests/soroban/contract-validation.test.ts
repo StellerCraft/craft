@@ -1,424 +1,344 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import {
+  validateContractAddress,
+  validateContractAddresses,
+} from '../../src/lib/stellar/contract-validation';
+import {
+  SorobanContractValidator,
+} from '../../src/services/soroban-contract-validator.service';
 
 /**
  * Soroban Contract Validation Tests
- * 
- * Verifies Soroban smart contract validation and interaction work correctly.
+ *
+ * Covers:
+ * - validateContractAddress pure function (all rule branches)
+ * - validateContractAddresses batch helper
+ * - SorobanContractValidator.validateFormat (structured errors + guidance)
+ * - SorobanContractValidator.checkExistence (RPC integration)
+ * - Property-based tests for random strings
+ * - Edge cases: empty, whitespace-only, G-prefix, bad checksum
  */
 
-interface ContractAddress {
-  address: string;
-  network: 'testnet' | 'mainnet';
-}
+// ── Fixtures ──────────────────────────────────────────────────────────────────
 
-interface ContractMethod {
-  name: string;
-  params: Array<{ name: string; type: string }>;
-  returns: string;
-}
+/**
+ * A real Soroban contract address with a valid CRC-16/XMODEM checksum.
+ * Version byte 0x10, 32 zero-byte payload, correct checksum appended.
+ */
+const VALID_ADDRESS = 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4';
 
-interface ContractState {
-  address: string;
-  methods: ContractMethod[];
-  isDeployed: boolean;
-  lastUpdated: number;
-}
+// ── validateContractAddress ───────────────────────────────────────────────────
 
-interface InvocationResult {
-  success: boolean;
-  result?: unknown;
-  error?: string;
-  gasUsed?: number;
-}
+describe('validateContractAddress', () => {
+  describe('valid address', () => {
+    it('accepts a well-formed contract address', () => {
+      expect(validateContractAddress(VALID_ADDRESS)).toEqual({ valid: true });
+    });
+  });
 
-class SorobanContractValidator {
-  private contractCache: Map<string, ContractState> = new Map();
-  private testnetHorizonUrl = 'https://horizon-testnet.stellar.org';
-  private mainnetHorizonUrl = 'https://horizon.stellar.org';
+  describe('whitespace checks', () => {
+    it('rejects address with leading whitespace', () => {
+      const result = validateContractAddress(' ' + VALID_ADDRESS);
+      expect(result).toMatchObject({ valid: false, code: 'CONTRACT_ADDRESS_WHITESPACE' });
+    });
 
-  validateContractAddress(address: string, network: 'testnet' | 'mainnet'): boolean {
-    // Stellar contract addresses start with 'C' and are 56 characters
-    if (!address.startsWith('C') || address.length !== 56) {
-      return false;
-    }
+    it('rejects address with trailing whitespace', () => {
+      const result = validateContractAddress(VALID_ADDRESS + ' ');
+      expect(result).toMatchObject({ valid: false, code: 'CONTRACT_ADDRESS_WHITESPACE' });
+    });
 
-    // Basic checksum validation (simplified)
-    const validChars = /^[A-Z2-7]+$/.test(address.slice(1));
-    return validChars;
-  }
+    it('rejects whitespace-only string', () => {
+      const result = validateContractAddress('   ');
+      expect(result).toMatchObject({ valid: false, code: 'CONTRACT_ADDRESS_WHITESPACE' });
+    });
 
-  async getContractState(contractAddress: ContractAddress): Promise<ContractState> {
-    const cacheKey = `${contractAddress.address}-${contractAddress.network}`;
+    it('rejects address with internal tab', () => {
+      const mid = Math.floor(VALID_ADDRESS.length / 2);
+      const withTab = VALID_ADDRESS.slice(0, mid) + '\t' + VALID_ADDRESS.slice(mid);
+      const result = validateContractAddress(withTab);
+      expect(result).toMatchObject({ valid: false, code: 'CONTRACT_ADDRESS_WHITESPACE' });
+    });
 
-    if (this.contractCache.has(cacheKey)) {
-      return this.contractCache.get(cacheKey)!;
-    }
+    it('rejects address with newline', () => {
+      const result = validateContractAddress(VALID_ADDRESS + '\n');
+      expect(result).toMatchObject({ valid: false, code: 'CONTRACT_ADDRESS_WHITESPACE' });
+    });
+  });
 
-    // Simulate fetching contract state
-    const state: ContractState = {
-      address: contractAddress.address,
-      methods: this.getMockContractMethods(),
-      isDeployed: true,
-      lastUpdated: Date.now(),
-    };
+  describe('empty check', () => {
+    it('rejects empty string', () => {
+      const result = validateContractAddress('');
+      expect(result).toMatchObject({ valid: false, code: 'CONTRACT_ADDRESS_EMPTY' });
+    });
+  });
 
-    this.contractCache.set(cacheKey, state);
-    return state;
-  }
+  describe('length check', () => {
+    it('rejects address that is too short', () => {
+      const result = validateContractAddress(VALID_ADDRESS.slice(0, 55));
+      expect(result).toMatchObject({ valid: false, code: 'CONTRACT_ADDRESS_INVALID_LENGTH' });
+    });
 
-  private getMockContractMethods(): ContractMethod[] {
-    return [
-      {
-        name: 'initialize',
-        params: [{ name: 'admin', type: 'Address' }],
-        returns: 'void',
-      },
-      {
-        name: 'transfer',
-        params: [
-          { name: 'from', type: 'Address' },
-          { name: 'to', type: 'Address' },
-          { name: 'amount', type: 'i128' },
-        ],
-        returns: 'bool',
-      },
-      {
-        name: 'balance_of',
-        params: [{ name: 'account', type: 'Address' }],
-        returns: 'i128',
-      },
-    ];
-  }
+    it('rejects address that is too long', () => {
+      const result = validateContractAddress(VALID_ADDRESS + 'A');
+      expect(result).toMatchObject({ valid: false, code: 'CONTRACT_ADDRESS_INVALID_LENGTH' });
+    });
 
-  async invokeContractMethod(
-    contractAddress: ContractAddress,
-    methodName: string,
-    params: Record<string, unknown>
-  ): Promise<InvocationResult> {
-    if (!this.validateContractAddress(contractAddress.address, contractAddress.network)) {
-      return {
-        success: false,
-        error: 'Invalid contract address',
-      };
-    }
+    it('includes actual length in the reason message', () => {
+      const result = validateContractAddress('C'.repeat(10));
+      expect(result).toMatchObject({ valid: false, code: 'CONTRACT_ADDRESS_INVALID_LENGTH' });
+      if (!result.valid) expect(result.reason).toContain('10');
+    });
+  });
 
-    const state = await this.getContractState(contractAddress);
-    const method = state.methods.find((m) => m.name === methodName);
+  describe('prefix check', () => {
+    it('rejects G-prefix (Stellar account address)', () => {
+      const gAddress = 'G' + VALID_ADDRESS.slice(1);
+      const result = validateContractAddress(gAddress);
+      expect(result).toMatchObject({ valid: false, code: 'CONTRACT_ADDRESS_INVALID_PREFIX' });
+    });
 
-    if (!method) {
-      return {
-        success: false,
-        error: `Method ${methodName} not found`,
-      };
-    }
+    it('rejects lowercase c prefix', () => {
+      const lower = 'c' + VALID_ADDRESS.slice(1);
+      const result = validateContractAddress(lower);
+      // lowercase 'c' is not in base32 alphabet, so charset error fires first
+      expect(result.valid).toBe(false);
+    });
 
-    // Simulate method invocation
-    return {
-      success: true,
-      result: this.simulateMethodResult(methodName, params),
-      gasUsed: Math.floor(Math.random() * 100000) + 10000,
-    };
-  }
+    it('rejects S-prefix', () => {
+      const sAddress = 'S' + VALID_ADDRESS.slice(1);
+      const result = validateContractAddress(sAddress);
+      expect(result).toMatchObject({ valid: false, code: 'CONTRACT_ADDRESS_INVALID_PREFIX' });
+    });
+  });
 
-  private simulateMethodResult(methodName: string, params: Record<string, unknown>): unknown {
-    const results: Record<string, unknown> = {
-      initialize: true,
-      transfer: true,
-      balance_of: Math.floor(Math.random() * 1000000),
-    };
-    return results[methodName] || null;
-  }
+  describe('charset check', () => {
+    it('rejects address with digit 0', () => {
+      const bad = 'C' + '0'.repeat(55);
+      const result = validateContractAddress(bad);
+      expect(result).toMatchObject({ valid: false, code: 'CONTRACT_ADDRESS_INVALID_CHARSET' });
+    });
 
-  async queryContractState(
-    contractAddress: ContractAddress,
-    key: string
-  ): Promise<unknown> {
-    if (!this.validateContractAddress(contractAddress.address, contractAddress.network)) {
-      throw new Error('Invalid contract address');
-    }
+    it('rejects address with digit 1', () => {
+      const bad = 'C' + '1'.repeat(55);
+      const result = validateContractAddress(bad);
+      expect(result).toMatchObject({ valid: false, code: 'CONTRACT_ADDRESS_INVALID_CHARSET' });
+    });
 
-    // Simulate state query
-    return {
-      key,
-      value: `state_${key}_value`,
-      ledger: Math.floor(Math.random() * 1000000),
-    };
-  }
+    it('rejects address with digit 8', () => {
+      const bad = 'C' + '8'.repeat(55);
+      const result = validateContractAddress(bad);
+      expect(result).toMatchObject({ valid: false, code: 'CONTRACT_ADDRESS_INVALID_CHARSET' });
+    });
 
-  async verifyContractDeployment(contractAddress: ContractAddress): Promise<boolean> {
-    if (!this.validateContractAddress(contractAddress.address, contractAddress.network)) {
-      return false;
-    }
+    it('rejects address with special character', () => {
+      const bad = 'C' + VALID_ADDRESS.slice(1, 55) + '!';
+      const result = validateContractAddress(bad);
+      expect(result).toMatchObject({ valid: false, code: 'CONTRACT_ADDRESS_INVALID_CHARSET' });
+    });
+  });
 
-    const state = await this.getContractState(contractAddress);
-    return state.isDeployed;
-  }
+  describe('checksum check', () => {
+    it('rejects address with corrupted last character', () => {
+      // Flip the last character to break the checksum
+      const lastChar = VALID_ADDRESS[55]!;
+      const replacement = lastChar === 'A' ? 'B' : 'A';
+      const corrupted = VALID_ADDRESS.slice(0, 55) + replacement;
+      const result = validateContractAddress(corrupted);
+      expect(result).toMatchObject({ valid: false, code: 'CONTRACT_ADDRESS_INVALID_CHECKSUM' });
+    });
 
-  clearCache(): void {
-    this.contractCache.clear();
-  }
-}
+    it('rejects address with corrupted middle character', () => {
+      const chars = VALID_ADDRESS.split('');
+      chars[28] = chars[28] === 'A' ? 'B' : 'A';
+      const corrupted = chars.join('');
+      const result = validateContractAddress(corrupted);
+      expect(result).toMatchObject({ valid: false, code: 'CONTRACT_ADDRESS_INVALID_CHECKSUM' });
+    });
+  });
+});
 
-describe('Soroban Contract Validation', () => {
+// ── validateContractAddresses ─────────────────────────────────────────────────
+
+describe('validateContractAddresses', () => {
+  it('returns valid for empty object', () => {
+    expect(validateContractAddresses({})).toEqual({ valid: true });
+  });
+
+  it('returns valid for undefined', () => {
+    expect(validateContractAddresses(undefined)).toEqual({ valid: true });
+  });
+
+  it('returns valid when all addresses are valid', () => {
+    expect(validateContractAddresses({ token: VALID_ADDRESS })).toEqual({ valid: true });
+  });
+
+  it('returns field path and code on first invalid address', () => {
+    const result = validateContractAddresses({ token: '' });
+    expect(result).toMatchObject({
+      valid: false,
+      field: 'stellar.contractAddresses.token',
+      code: 'CONTRACT_ADDRESS_EMPTY',
+    });
+  });
+});
+
+// ── SorobanContractValidator.validateFormat ───────────────────────────────────
+
+describe('SorobanContractValidator.validateFormat', () => {
   let validator: SorobanContractValidator;
 
   beforeEach(() => {
     validator = new SorobanContractValidator();
   });
 
-  describe('Contract Address Validation', () => {
-    it('should validate correct contract address format', () => {
-      const validAddress = 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4';
-
-      expect(validator.validateContractAddress(validAddress, 'testnet')).toBe(true);
-    });
-
-    it('should reject address with invalid prefix', () => {
-      const invalidAddress = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4';
-
-      expect(validator.validateContractAddress(invalidAddress, 'testnet')).toBe(false);
-    });
-
-    it('should reject address with incorrect length', () => {
-      const shortAddress = 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC';
-
-      expect(validator.validateContractAddress(shortAddress, 'testnet')).toBe(false);
-    });
-
-    it('should reject address with invalid characters', () => {
-      const invalidAddress = 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC!';
-
-      expect(validator.validateContractAddress(invalidAddress, 'testnet')).toBe(false);
-    });
-
-    it('should validate on both testnet and mainnet', () => {
-      const validAddress = 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4';
-
-      expect(validator.validateContractAddress(validAddress, 'testnet')).toBe(true);
-      expect(validator.validateContractAddress(validAddress, 'mainnet')).toBe(true);
-    });
+  it('returns valid: true for a well-formed address', () => {
+    expect(validator.validateFormat(VALID_ADDRESS)).toEqual({ valid: true });
   });
 
-  describe('Contract Method Invocation', () => {
-    it('should invoke contract method successfully', async () => {
-      const contractAddress: ContractAddress = {
-        address: 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4',
-        network: 'testnet',
-      };
-
-      const result = await validator.invokeContractMethod(contractAddress, 'transfer', {
-        from: 'GXXX',
-        to: 'GYYY',
-        amount: 100,
-      });
-
-      expect(result.success).toBe(true);
-      expect(result.result).toBeDefined();
-      expect(result.gasUsed).toBeGreaterThan(0);
-    });
-
-    it('should return error for invalid contract address', async () => {
-      const contractAddress: ContractAddress = {
-        address: 'INVALID',
-        network: 'testnet',
-      };
-
-      const result = await validator.invokeContractMethod(contractAddress, 'transfer', {});
-
-      expect(result.success).toBe(false);
-      expect(result.error).toBeDefined();
-    });
-
-    it('should return error for non-existent method', async () => {
-      const contractAddress: ContractAddress = {
-        address: 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4',
-        network: 'testnet',
-      };
-
-      const result = await validator.invokeContractMethod(contractAddress, 'nonExistent', {});
-
-      expect(result.success).toBe(false);
-      expect(result.error).toContain('not found');
-    });
-
-    it('should include gas usage in result', async () => {
-      const contractAddress: ContractAddress = {
-        address: 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4',
-        network: 'testnet',
-      };
-
-      const result = await validator.invokeContractMethod(contractAddress, 'transfer', {});
-
-      expect(result.gasUsed).toBeGreaterThan(10000);
-      expect(result.gasUsed).toBeLessThan(200000);
-    });
+  it('returns structured error for non-string input', () => {
+    const result = validator.validateFormat(null);
+    expect(result.valid).toBe(false);
+    expect(result.error?.code).toBeDefined();
+    expect(result.error?.guidance).toBeDefined();
+    expect(result.error?.guidance.template.title).toBeTruthy();
   });
 
-  describe('Contract State Queries', () => {
-    it('should query contract state successfully', async () => {
-      const contractAddress: ContractAddress = {
-        address: 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4',
-        network: 'testnet',
-      };
-
-      const state = await validator.queryContractState(contractAddress, 'balance');
-
-      expect(state).toBeDefined();
-      expect((state as Record<string, unknown>).key).toBe('balance');
-    });
-
-    it('should throw error for invalid contract address in query', async () => {
-      const contractAddress: ContractAddress = {
-        address: 'INVALID',
-        network: 'testnet',
-      };
-
-      await expect(
-        validator.queryContractState(contractAddress, 'balance')
-      ).rejects.toThrow('Invalid contract address');
-    });
-
-    it('should return ledger information in state query', async () => {
-      const contractAddress: ContractAddress = {
-        address: 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4',
-        network: 'testnet',
-      };
-
-      const state = await validator.queryContractState(contractAddress, 'data');
-
-      expect((state as Record<string, unknown>).ledger).toBeGreaterThan(0);
-    });
+  it('returns guidance aligned with catalogue for empty string', () => {
+    const result = validator.validateFormat('');
+    expect(result.valid).toBe(false);
+    expect(result.error?.code).toBe('CONTRACT_ADDRESS_EMPTY');
+    expect(result.error?.guidance.template.title).toBeTruthy();
+    expect(result.error?.guidance.steps.length).toBeGreaterThan(0);
   });
 
-  describe('Contract Deployment Verification', () => {
-    it('should verify deployed contract', async () => {
-      const contractAddress: ContractAddress = {
-        address: 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4',
-        network: 'testnet',
-      };
-
-      const isDeployed = await validator.verifyContractDeployment(contractAddress);
-
-      expect(isDeployed).toBe(true);
-    });
-
-    it('should return false for invalid address', async () => {
-      const contractAddress: ContractAddress = {
-        address: 'INVALID',
-        network: 'testnet',
-      };
-
-      const isDeployed = await validator.verifyContractDeployment(contractAddress);
-
-      expect(isDeployed).toBe(false);
-    });
-
-    it('should verify on both networks', async () => {
-      const address = 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4';
-
-      const testnetResult = await validator.verifyContractDeployment({
-        address,
-        network: 'testnet',
-      });
-
-      const mainnetResult = await validator.verifyContractDeployment({
-        address,
-        network: 'mainnet',
-      });
-
-      expect(testnetResult).toBe(true);
-      expect(mainnetResult).toBe(true);
-    });
+  it('returns guidance for whitespace-only input', () => {
+    const result = validator.validateFormat('   ');
+    expect(result.valid).toBe(false);
+    expect(result.error?.code).toBe('CONTRACT_ADDRESS_WHITESPACE');
+    expect(result.error?.guidance).toBeDefined();
   });
 
-  describe('Contract Error Handling', () => {
-    it('should handle contract invocation errors gracefully', async () => {
-      const contractAddress: ContractAddress = {
-        address: 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4',
-        network: 'testnet',
-      };
-
-      const result = await validator.invokeContractMethod(contractAddress, 'unknownMethod', {});
-
-      expect(result.success).toBe(false);
-      expect(result.error).toBeDefined();
-      expect(result.result).toBeUndefined();
-    });
-
-    it('should validate address before any operation', async () => {
-      const invalidAddress: ContractAddress = {
-        address: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4',
-        network: 'testnet',
-      };
-
-      const result = await validator.invokeContractMethod(invalidAddress, 'transfer', {});
-
-      expect(result.success).toBe(false);
-      expect(result.error).toContain('Invalid');
-    });
+  it('returns guidance for wrong-length address', () => {
+    const result = validator.validateFormat('CAAA');
+    expect(result.valid).toBe(false);
+    expect(result.error?.code).toBe('CONTRACT_ADDRESS_INVALID_LENGTH');
+    expect(result.error?.guidance.steps.length).toBeGreaterThan(0);
   });
 
-  describe('Contract State Caching', () => {
-    it('should cache contract state', async () => {
-      const contractAddress: ContractAddress = {
-        address: 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4',
-        network: 'testnet',
-      };
-
-      const state1 = await validator.getContractState(contractAddress);
-      const state2 = await validator.getContractState(contractAddress);
-
-      expect(state1).toEqual(state2);
-    });
-
-    it('should clear cache without errors', () => {
-      expect(() => validator.clearCache()).not.toThrow();
-    });
-
-    it('should have different cache entries for different networks', async () => {
-      const address = 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4';
-
-      const testnetState = await validator.getContractState({
-        address,
-        network: 'testnet',
-      });
-
-      const mainnetState = await validator.getContractState({
-        address,
-        network: 'mainnet',
-      });
-
-      expect(testnetState.lastUpdated).toBeDefined();
-      expect(mainnetState.lastUpdated).toBeDefined();
-    });
+  it('returns guidance for G-prefix (mainnet vs testnet prefix mismatch)', () => {
+    const result = validator.validateFormat('G' + VALID_ADDRESS.slice(1));
+    expect(result.valid).toBe(false);
+    expect(result.error?.code).toBe('CONTRACT_ADDRESS_INVALID_PREFIX');
+    expect(result.error?.guidance.template.message).toContain('"C"');
   });
 
-  describe('Contract Methods Availability', () => {
-    it('should return available contract methods', async () => {
-      const contractAddress: ContractAddress = {
-        address: 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4',
-        network: 'testnet',
-      };
+  it('returns guidance for invalid charset', () => {
+    const result = validator.validateFormat('C' + '0'.repeat(55));
+    expect(result.valid).toBe(false);
+    expect(result.error?.code).toBe('CONTRACT_ADDRESS_INVALID_CHARSET');
+  });
 
-      const state = await validator.getContractState(contractAddress);
+  it('returns guidance for bad checksum', () => {
+    const corrupted = VALID_ADDRESS.slice(0, 55) + (VALID_ADDRESS[55] === 'A' ? 'B' : 'A');
+    const result = validator.validateFormat(corrupted);
+    expect(result.valid).toBe(false);
+    expect(result.error?.code).toBe('CONTRACT_ADDRESS_INVALID_CHECKSUM');
+    expect(result.error?.guidance.links.length).toBeGreaterThan(0);
+  });
+});
 
-      expect(state.methods.length).toBeGreaterThan(0);
-      expect(state.methods.some((m) => m.name === 'transfer')).toBe(true);
-      expect(state.methods.some((m) => m.name === 'balance_of')).toBe(true);
+// ── SorobanContractValidator.checkExistence ───────────────────────────────────
+
+describe('SorobanContractValidator.checkExistence', () => {
+  it('returns exists: false with error when format is invalid', async () => {
+    const validator = new SorobanContractValidator();
+    const result = await validator.checkExistence('INVALID', 'http://rpc.example.com');
+    expect(result.exists).toBe(false);
+    expect(result.callable).toBe(false);
+    expect(result.error).toBeTruthy();
+  });
+
+  it('returns exists: true when RPC returns entries', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ result: { entries: [{}] } }),
     });
+    const validator = new SorobanContractValidator(mockFetch as any);
+    const result = await validator.checkExistence(VALID_ADDRESS, 'http://rpc.example.com');
+    expect(result.exists).toBe(true);
+    expect(result.callable).toBe(true);
+  });
 
-    it('should include method parameters and return types', async () => {
-      const contractAddress: ContractAddress = {
-        address: 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4',
-        network: 'testnet',
-      };
-
-      const state = await validator.getContractState(contractAddress);
-      const transferMethod = state.methods.find((m) => m.name === 'transfer');
-
-      expect(transferMethod).toBeDefined();
-      expect(transferMethod!.params.length).toBeGreaterThan(0);
-      expect(transferMethod!.returns).toBeDefined();
+  it('returns exists: false when RPC returns empty entries', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ result: { entries: [] } }),
     });
+    const validator = new SorobanContractValidator(mockFetch as any);
+    const result = await validator.checkExistence(VALID_ADDRESS, 'http://rpc.example.com');
+    expect(result.exists).toBe(false);
+    expect(result.callable).toBe(false);
+  });
+
+  it('returns exists: false on HTTP error', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({ ok: false, status: 503 });
+    const validator = new SorobanContractValidator(mockFetch as any);
+    const result = await validator.checkExistence(VALID_ADDRESS, 'http://rpc.example.com');
+    expect(result.exists).toBe(false);
+    expect(result.error).toContain('503');
+  });
+
+  it('returns exists: false on network error', async () => {
+    const mockFetch = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+    const validator = new SorobanContractValidator(mockFetch as any);
+    const result = await validator.checkExistence(VALID_ADDRESS, 'http://rpc.example.com');
+    expect(result.exists).toBe(false);
+    expect(result.error).toContain('ECONNREFUSED');
+  });
+
+  it('handles RPC not-found error code', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ error: { code: -32600, message: 'not found' } }),
+    });
+    const validator = new SorobanContractValidator(mockFetch as any);
+    const result = await validator.checkExistence(VALID_ADDRESS, 'http://rpc.example.com');
+    expect(result.exists).toBe(false);
+  });
+});
+
+// ── Property-based tests ──────────────────────────────────────────────────────
+
+describe('property-based: random strings always produce a structured result', () => {
+  const randomStrings = [
+    '',
+    ' ',
+    '\t\n',
+    'abc',
+    'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4',
+    'C'.repeat(56),
+    'C' + 'A'.repeat(54) + '!',
+    'C' + '0'.repeat(55),
+    Array.from({ length: 56 }, () => String.fromCharCode(33 + Math.floor(Math.random() * 94))).join(''),
+    Array.from({ length: 100 }, () => 'A').join(''),
+  ];
+
+  for (const input of randomStrings) {
+    it(`validateContractAddress("${input.slice(0, 20)}…") returns a typed result`, () => {
+      const result = validateContractAddress(input);
+      expect(typeof result.valid).toBe('boolean');
+      if (!result.valid) {
+        expect(typeof result.code).toBe('string');
+        expect(typeof result.reason).toBe('string');
+      }
+    });
+  }
+
+  it('validateFormat never throws for arbitrary inputs', () => {
+    const validator = new SorobanContractValidator();
+    const inputs: unknown[] = [null, undefined, 42, {}, [], true, '', ' ', VALID_ADDRESS];
+    for (const input of inputs) {
+      expect(() => validator.validateFormat(input)).not.toThrow();
+    }
   });
 });
