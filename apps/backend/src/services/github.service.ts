@@ -15,8 +15,11 @@
  *
  * Rate limiting:
  *   GitHub returns 403/429 with a `Retry-After` (seconds) header when rate-
- *   limited. The service surfaces `retryAfterMs` in the thrown error so callers
- *   can implement their own back-off strategy without polling.
+ *   limited. The service retries up to 3 times with bounded exponential
+ *   backoff, honouring the `Retry-After` value when present. If all retries
+ *   are exhausted the last error is re-thrown so the caller can surface a
+ *   meaningful message. Transient network errors (NETWORK_ERROR) are retried
+ *   with the same strategy.
  *
  * Returns:
  *   { repository, resolvedName } — all identifiers needed for subsequent git
@@ -25,11 +28,75 @@
  */
 
 import type { CreateRepoRequest, GitHubErrorCode, Repository } from '@craft/types';
+import { computeDelay } from '../lib/api/retry';
 
 const GITHUB_API_BASE = 'https://api.github.com';
 const MAX_NAME_RETRIES = 5;
 const MAX_REPOSITORY_NAME_LENGTH = 100;
 const DEFAULT_REPOSITORY_TOPICS = ['craft', 'stellar', 'defi'];
+
+/** Maximum number of rate-limit / transient-error retries per API call. */
+const MAX_RATE_LIMIT_RETRIES = 3;
+/** Base delay (ms) for exponential backoff when no Retry-After header is present. */
+const BACKOFF_BASE_MS = 1_000;
+/** Hard cap on any single backoff delay (ms). */
+const BACKOFF_MAX_MS = 32_000;
+
+/**
+ * Executes `fn`, retrying up to MAX_RATE_LIMIT_RETRIES times on RATE_LIMITED
+ * or NETWORK_ERROR responses with bounded exponential backoff.
+ *
+ * When GitHub supplies a `Retry-After` value it is used as the delay floor;
+ * otherwise full-jitter exponential backoff is applied.
+ *
+ * Non-retryable errors (AUTH_FAILED, COLLISION, UNKNOWN) are re-thrown
+ * immediately without consuming a retry slot.
+ *
+ * @param fn    - Async operation to attempt.
+ * @param sleep - Injected sleep function (override in tests to avoid real delays).
+ */
+export async function withGitHubRetry<T>(
+    fn: () => Promise<T>,
+    sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+): Promise<T> {
+    let lastError: unknown;
+
+    for (let attempt = 0; attempt <= MAX_RATE_LIMIT_RETRIES; attempt++) {
+        try {
+            return await fn();
+        } catch (err: unknown) {
+            lastError = err;
+
+            const isGitHubError =
+                err instanceof Error && (err as { code?: string }).code !== undefined;
+            const code = isGitHubError ? (err as { code: string }).code : null;
+
+            // Only retry on transient errors; surface terminal errors immediately.
+            if (code !== 'RATE_LIMITED' && code !== 'NETWORK_ERROR') {
+                throw err;
+            }
+
+            if (attempt === MAX_RATE_LIMIT_RETRIES) {
+                break;
+            }
+
+            // Honour Retry-After when GitHub tells us how long to wait.
+            const retryAfterMs = (err as { retryAfterMs?: number }).retryAfterMs ?? 0;
+            const backoff = retryAfterMs > 0
+                ? retryAfterMs
+                : computeDelay(attempt, BACKOFF_BASE_MS, BACKOFF_MAX_MS);
+
+            console.warn(
+                `[GitHubService] ${code} — retrying in ${Math.round(backoff)}ms ` +
+                `(attempt ${attempt + 1}/${MAX_RATE_LIMIT_RETRIES})`,
+            );
+
+            await sleep(backoff);
+        }
+    }
+
+    throw lastError;
+}
 
 /**
  * Sanitizes an arbitrary string into a valid GitHub repository name.
@@ -118,9 +185,16 @@ export class GitHubService {
 
     /**
      * Create a GitHub repository, retrying with `-1`, `-2`, … suffixes on
-     * name collisions. Throws a GitHubApiError on unrecoverable failures.
+     * name collisions. Each attempt is wrapped in `withGitHubRetry` so
+     * transient rate-limit and network errors are retried with bounded
+     * exponential backoff before a collision suffix is tried.
+     *
+     * Throws a GitHubApiError on unrecoverable failures.
      */
-    async createRepository(request: CreateRepoRequest): Promise<CreateRepoResult> {
+    async createRepository(
+        request: CreateRepoRequest,
+        sleep?: (ms: number) => Promise<void>,
+    ): Promise<CreateRepoResult> {
         const baseName = sanitizeRepoName(request.name);
         let attempt = 0;
 
@@ -128,7 +202,10 @@ export class GitHubService {
             const candidateName = buildCandidateName(baseName, attempt);
 
             try {
-                const repository = await this.tryCreate(candidateName, request);
+                const repository = await withGitHubRetry(
+                    () => this.tryCreate(candidateName, request),
+                    sleep,
+                );
                 return { repository, resolvedName: candidateName };
             } catch (err: unknown) {
                 if (err instanceof GitHubApiError && err.code === 'COLLISION') {
