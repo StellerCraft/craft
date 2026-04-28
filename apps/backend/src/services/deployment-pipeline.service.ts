@@ -48,6 +48,7 @@ import { vercelService, type VercelService } from './vercel.service';
 import { buildVercelEnvVars } from '@/lib/env/env-template-generator';
 import { mapCategoryToFamily } from './template-generator.service';
 import type { TemplateFamilyId } from './code-generator.service';
+import { syntaxValidator, type SyntaxValidator } from './syntax-validator';
 
 // ── Request / result types ────────────────────────────────────────────────────
 
@@ -86,6 +87,7 @@ export class DeploymentPipelineService {
         private readonly _githubService: Pick<GitHubService, 'createRepository'> = githubService,
         private readonly _githubPushService: Pick<GitHubPushService, 'pushGeneratedCode'> = githubPushService,
         private readonly _vercelService: Pick<VercelService, 'createProject' | 'triggerDeployment'> = vercelService,
+        private readonly _syntaxValidator: Pick<SyntaxValidator, 'validate'> = syntaxValidator,
     ) {}
 
     /**
@@ -144,6 +146,35 @@ export class DeploymentPipelineService {
             deploymentId,
             'generating',
             `Generated ${generationResult.generatedFiles.length} files`,
+            'info',
+            { correlationId, fileCount: generationResult.generatedFiles.length },
+        );
+
+        // ── Step 2b: Validate syntax of generated files ───────────────────────
+        await this.setStatus(deploymentId, 'validating');
+        await this.log(deploymentId, 'validating', 'Validating generated file syntax', 'info', { correlationId });
+
+        const syntaxErrors: Array<{ file: string; message: string; line?: number }> = [];
+        for (const file of generationResult.generatedFiles) {
+            const validation = this._syntaxValidator.validate(file);
+            if (!validation.valid) {
+                for (const err of validation.errors) {
+                    syntaxErrors.push(err);
+                }
+            }
+        }
+
+        if (syntaxErrors.length > 0) {
+            const summary = syntaxErrors
+                .map((e) => `${e.file}: ${e.message}`)
+                .join('; ');
+            return this.fail(deploymentId, 'validating', `Syntax validation failed: ${summary}`, { correlationId, errorCount: syntaxErrors.length });
+        }
+
+        await this.log(
+            deploymentId,
+            'validating',
+            `Syntax validation passed for ${generationResult.generatedFiles.length} files`,
             'info',
             { correlationId, fileCount: generationResult.generatedFiles.length },
         );
@@ -389,4 +420,10 @@ export class DeploymentPipelineService {
     }
 }
 
-export const deploymentPipelineService = new DeploymentPipelineService();
+export const deploymentPipelineService = new DeploymentPipelineService(
+    templateGeneratorService,
+    githubService,
+    githubPushService,
+    vercelService,
+    syntaxValidator,
+);
