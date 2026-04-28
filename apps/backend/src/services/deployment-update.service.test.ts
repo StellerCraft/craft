@@ -1,15 +1,13 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { DeploymentUpdateService } from './deployment-update.service';
-import { createClient } from '@/lib/supabase/server';
-import { githubPushService } from './github-push.service';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CustomizationConfig } from '@craft/types';
+import { createClient } from '@/lib/supabase/server';
+import { DeploymentUpdateService } from './deployment-update.service';
+import { githubPushService } from './github-push.service';
 
-// Mock Supabase
 vi.mock('@/lib/supabase/server', () => ({
     createClient: vi.fn(),
 }));
 
-// Mock GitHub Push Service
 vi.mock('./github-push.service', () => ({
     githubPushService: {
         pushGeneratedCode: vi.fn(),
@@ -19,6 +17,8 @@ vi.mock('./github-push.service', () => ({
 describe('DeploymentUpdateService', () => {
     let service: DeploymentUpdateService;
     let mockSupabase: any;
+    let mockVercelService: any;
+    let mockRolloutMonitor: any;
 
     const mockDeploymentId = 'test-deployment-id';
     const mockUserId = 'test-user-id';
@@ -43,20 +43,32 @@ describe('DeploymentUpdateService', () => {
         },
     };
 
-    const mockPreviousState = {
+    const mockDeploymentRow = {
+        name: 'test-app',
         customization_config: { ...mockConfig, branding: { ...mockConfig.branding, appName: 'Old App' } },
         deployment_url: 'https://old-app.vercel.app',
+        vercel_project_id: 'vercel-project-id',
         vercel_deployment_id: 'old-vercel-id',
+        custom_domain: 'app.example.com',
+        repository_url: 'https://github.com/acme/test-app',
         status: 'completed',
+    };
+
+    const mockPreviousState = {
+        name: mockDeploymentRow.name,
+        customizationConfig: mockDeploymentRow.customization_config,
+        deploymentUrl: mockDeploymentRow.deployment_url,
+        vercelProjectId: mockDeploymentRow.vercel_project_id,
+        vercelDeploymentId: mockDeploymentRow.vercel_deployment_id,
+        customDomain: mockDeploymentRow.custom_domain,
+        repositoryUrl: mockDeploymentRow.repository_url,
+        status: mockDeploymentRow.status,
     };
 
     beforeEach(() => {
         vi.clearAllMocks();
-
-        // Mock crypto.randomUUID
         vi.spyOn(crypto, 'randomUUID').mockReturnValue(mockUpdateId as `${string}-${string}-${string}-${string}-${string}`);
 
-        // Setup mock Supabase client
         mockSupabase = {
             from: vi.fn().mockReturnThis(),
             select: vi.fn().mockReturnThis(),
@@ -67,20 +79,48 @@ describe('DeploymentUpdateService', () => {
             order: vi.fn().mockReturnThis(),
         };
 
+        mockVercelService = {
+            triggerDeployment: vi.fn().mockResolvedValue({
+                deploymentId: 'new-vercel-id',
+                deploymentUrl: 'https://new-app.vercel.app',
+                status: 'READY',
+            }),
+            getDeploymentStatus: vi.fn().mockResolvedValue({
+                status: 'ready',
+                url: 'https://new-app.vercel.app',
+                deploymentId: 'new-vercel-id',
+                createdAt: new Date(),
+            }),
+            listDeploymentAliases: vi.fn().mockResolvedValue([
+                { uid: 'alias-1', alias: 'app.example.com' },
+            ]),
+            assignAliasToDeployment: vi.fn().mockResolvedValue({
+                uid: 'alias-1',
+                alias: 'app.example.com',
+            }),
+        };
+
+        mockRolloutMonitor = {
+            getCandidateMetrics: vi.fn().mockResolvedValue({
+                errorRate: 0.001,
+                p99LatencyMs: 120,
+            }),
+        };
+
         (createClient as any).mockReturnValue(mockSupabase);
 
-        service = new DeploymentUpdateService(githubPushService as any);
+        service = new DeploymentUpdateService(
+            githubPushService as any,
+            mockVercelService,
+            mockRolloutMonitor,
+        );
 
-        // Reset the global failure flag
         (globalThis as any).__DEPLOYMENT_UPDATE_SHOULD_FAIL = false;
+        (globalThis as any).__DEPLOYMENT_UPDATE_MANUAL_ROLLBACK = false;
     });
 
-    it('should successfully update a deployment', async () => {
-        // Step 1: Mock getDeploymentState
-        mockSupabase.single.mockResolvedValueOnce({ data: mockPreviousState, error: null });
-
-        // Step 4: Mock finalizeUpdate and markUpdateCompleted
-        mockSupabase.single.mockResolvedValueOnce({ data: { previous_state: mockPreviousState }, error: null });
+    it('successfully updates a deployment via blue-green promotion', async () => {
+        mockSupabase.single.mockResolvedValueOnce({ data: mockDeploymentRow, error: null });
 
         const result = await service.updateDeployment({
             deploymentId: mockDeploymentId,
@@ -90,25 +130,28 @@ describe('DeploymentUpdateService', () => {
 
         expect(result.success).toBe(true);
         expect(result.rolledBack).toBe(false);
-        expect(result.deploymentUrl).toBe(mockPreviousState.deployment_url);
+        expect(result.deploymentUrl).toBe('https://new-app.vercel.app');
+        expect(mockVercelService.triggerDeployment).toHaveBeenCalledWith(
+            'vercel-project-id',
+            'acme/test-app',
+        );
+        expect(mockVercelService.assignAliasToDeployment).toHaveBeenCalledWith(
+            'new-vercel-id',
+            'app.example.com',
+        );
 
-        // Verify Supabase calls
-        expect(mockSupabase.from).toHaveBeenCalledWith('deployments');
-        expect(mockSupabase.from).toHaveBeenCalledWith('deployment_updates');
-        
-        // Verify state progression logs
-        const statusUpdates = mockSupabase.update.mock.calls
-            .filter((call: any) => call[0].status)
-            .map((call: any) => call[0].status);
-        
-        expect(statusUpdates).toContain('validating');
-        expect(statusUpdates).toContain('generating');
-        expect(statusUpdates).toContain('updating_repo');
-        expect(statusUpdates).toContain('redeploying');
-        expect(statusUpdates).toContain('completed');
+        const canaryUpdates = mockSupabase.update.mock.calls
+            .map((call: any[]) => call[0])
+            .filter((payload: any) => typeof payload.canary_percent === 'number')
+            .map((payload: any) => payload.canary_percent);
+
+        expect(canaryUpdates).toEqual(expect.arrayContaining([0, 5, 25, 50, 100]));
+        expect(mockSupabase.insert).toHaveBeenCalledWith(expect.objectContaining({
+            canary_percent: 0,
+        }));
     });
 
-    it('should fail if deployment is not found', async () => {
+    it('fails if deployment is not found', async () => {
         mockSupabase.single.mockResolvedValueOnce({ data: null, error: new Error('Not found') });
 
         const result = await service.updateDeployment({
@@ -121,10 +164,10 @@ describe('DeploymentUpdateService', () => {
         expect(result.errorMessage).toBe('Deployment not found or access denied');
     });
 
-    it('should fail if deployment is not in "completed" state', async () => {
-        mockSupabase.single.mockResolvedValueOnce({ 
-            data: { ...mockPreviousState, status: 'pending' }, 
-            error: null 
+    it('fails if deployment is not in completed state', async () => {
+        mockSupabase.single.mockResolvedValueOnce({
+            data: { ...mockDeploymentRow, status: 'pending' },
+            error: null,
         });
 
         const result = await service.updateDeployment({
@@ -137,25 +180,15 @@ describe('DeploymentUpdateService', () => {
         expect(result.errorMessage).toBe("Cannot update deployment in 'pending' state");
     });
 
-    it('should fail validation if appName is missing', async () => {
-        mockSupabase.single.mockResolvedValueOnce({ data: mockPreviousState, error: null });
-
-        // Rollback path: fetch previous_state from deployment_updates
-        mockSupabase.single.mockResolvedValueOnce({
-            data: {
-                previous_state: {
-                    customizationConfig: mockPreviousState.customization_config,
-                    deploymentUrl: mockPreviousState.deployment_url,
-                    vercelDeploymentId: mockPreviousState.vercel_deployment_id,
-                    status: mockPreviousState.status,
-                    repositoryUrl: null,
-                },
-            },
-            error: null,
-        });
+    it('fails validation if appName is missing and rolls back', async () => {
+        mockSupabase.single
+            .mockResolvedValueOnce({ data: mockDeploymentRow, error: null })
+            .mockResolvedValueOnce({
+                data: { previous_state: mockPreviousState },
+                error: null,
+            });
 
         const invalidConfig = { ...mockConfig, branding: { ...mockConfig.branding, appName: '' } };
-
         const result = await service.updateDeployment({
             deploymentId: mockDeploymentId,
             userId: mockUserId,
@@ -167,25 +200,13 @@ describe('DeploymentUpdateService', () => {
         expect(result.errorMessage).toBe('Invalid configuration: appName is required');
     });
 
-    it('should rollback if update pipeline fails', async () => {
-        // Step 1: Mock getDeploymentState
-        mockSupabase.single.mockResolvedValueOnce({ data: mockPreviousState, error: null });
-        
-        // Mock rollback state fetch — previous_state is stored with camelCase keys (DeploymentState)
-        mockSupabase.single.mockResolvedValueOnce({ 
-            data: {
-                previous_state: {
-                    customizationConfig: mockPreviousState.customization_config,
-                    deploymentUrl: mockPreviousState.deployment_url,
-                    vercelDeploymentId: mockPreviousState.vercel_deployment_id,
-                    status: mockPreviousState.status,
-                    repositoryUrl: null,
-                },
-            }, 
-            error: null 
-        });
-
-        // Trigger pipeline failure
+    it('rolls back if the pipeline fails before rollout', async () => {
+        mockSupabase.single
+            .mockResolvedValueOnce({ data: mockDeploymentRow, error: null })
+            .mockResolvedValueOnce({
+                data: { previous_state: mockPreviousState },
+                error: null,
+            });
         (globalThis as any).__DEPLOYMENT_UPDATE_SHOULD_FAIL = true;
 
         const result = await service.updateDeployment({
@@ -197,20 +218,16 @@ describe('DeploymentUpdateService', () => {
         expect(result.success).toBe(false);
         expect(result.rolledBack).toBe(true);
         expect(result.errorMessage).toBe('Update pipeline failed');
-
-        // Verify rollback happened - should restore previous state
         expect(mockSupabase.update).toHaveBeenCalledWith(expect.objectContaining({
-            customization_config: mockPreviousState.customization_config,
-            status: 'completed'
+            customization_config: mockPreviousState.customizationConfig,
+            status: 'completed',
         }));
     });
 
-    it('should handle rollback failure gracefully', async () => {
-        mockSupabase.single.mockResolvedValueOnce({ data: mockPreviousState, error: null });
-        
-        // Mock rollback state fetch to fail — no previous_state found
-        mockSupabase.single.mockResolvedValueOnce({ data: null, error: new Error('DB error') });
-
+    it('handles rollback failure gracefully', async () => {
+        mockSupabase.single
+            .mockResolvedValueOnce({ data: mockDeploymentRow, error: null })
+            .mockResolvedValueOnce({ data: null, error: new Error('DB error') });
         (globalThis as any).__DEPLOYMENT_UPDATE_SHOULD_FAIL = true;
 
         const result = await service.updateDeployment({
@@ -221,13 +238,12 @@ describe('DeploymentUpdateService', () => {
 
         expect(result.success).toBe(false);
         expect(result.rolledBack).toBe(false);
-        // When previous_state is not found, rollback returns false without marking as failed
         expect(result.errorMessage).toBe('Update pipeline failed');
     });
 
-    it('should successfully push to GitHub if githubPush is provided', async () => {
-        mockSupabase.single.mockResolvedValueOnce({ data: mockPreviousState, error: null });
-        
+    it('successfully pushes to GitHub when githubPush is provided', async () => {
+        mockSupabase.single.mockResolvedValueOnce({ data: mockDeploymentRow, error: null });
+
         const mockCommitRef = { sha: 'test-sha', url: 'https://github.com/test' };
         (githubPushService.pushGeneratedCode as any).mockResolvedValue(mockCommitRef);
 
@@ -241,11 +257,91 @@ describe('DeploymentUpdateService', () => {
                 token: 'token',
                 branch: 'main',
                 generatedFiles: [],
-            }
+            },
         });
 
         expect(result.success).toBe(true);
         expect(githubPushService.pushGeneratedCode).toHaveBeenCalled();
         expect(result.commitRef).toEqual(mockCommitRef);
+        expect(mockVercelService.triggerDeployment).toHaveBeenCalledWith('vercel-project-id', 'owner/repo');
+    });
+
+    it('auto-rolls back on candidate error-rate spike', async () => {
+        mockSupabase.single
+            .mockResolvedValueOnce({ data: mockDeploymentRow, error: null })
+            .mockResolvedValueOnce({
+                data: { previous_state: mockPreviousState },
+                error: null,
+            });
+        mockRolloutMonitor.getCandidateMetrics.mockResolvedValueOnce({
+            errorRate: 0.08,
+            p99LatencyMs: 140,
+        });
+
+        const result = await service.updateDeployment({
+            deploymentId: mockDeploymentId,
+            userId: mockUserId,
+            customizationConfig: mockConfig,
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.rolledBack).toBe(true);
+        expect(result.errorMessage).toContain('Automatic rollback triggered');
+        expect(mockVercelService.assignAliasToDeployment).not.toHaveBeenCalled();
+    });
+
+    it('supports manual rollback during rollout monitoring', async () => {
+        mockSupabase.single
+            .mockResolvedValueOnce({ data: mockDeploymentRow, error: null })
+            .mockResolvedValueOnce({
+                data: { previous_state: mockPreviousState },
+                error: null,
+            });
+        mockRolloutMonitor.getCandidateMetrics.mockResolvedValueOnce({
+            errorRate: 0.001,
+            p99LatencyMs: 120,
+            forceRollback: true,
+        });
+
+        const result = await service.updateDeployment({
+            deploymentId: mockDeploymentId,
+            userId: mockUserId,
+            customizationConfig: mockConfig,
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.rolledBack).toBe(true);
+        expect(result.errorMessage).toContain('Manual rollback requested');
+    });
+
+    it('reverts aliases to the previous deployment if alias switch fails mid-promotion', async () => {
+        mockSupabase.single
+            .mockResolvedValueOnce({ data: mockDeploymentRow, error: null })
+            .mockResolvedValueOnce({
+                data: { previous_state: mockPreviousState },
+                error: null,
+            });
+        mockVercelService.listDeploymentAliases.mockResolvedValue([
+            { uid: 'alias-1', alias: 'app.example.com' },
+            { uid: 'alias-2', alias: 'api.example.com' },
+        ]);
+        mockVercelService.assignAliasToDeployment
+            .mockResolvedValueOnce({ uid: 'alias-1', alias: 'app.example.com' })
+            .mockRejectedValueOnce(new Error('Vercel alias update failed'))
+            .mockResolvedValueOnce({ uid: 'alias-1', alias: 'app.example.com' });
+
+        const result = await service.updateDeployment({
+            deploymentId: mockDeploymentId,
+            userId: mockUserId,
+            customizationConfig: mockConfig,
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.rolledBack).toBe(true);
+        expect(mockVercelService.assignAliasToDeployment).toHaveBeenNthCalledWith(
+            3,
+            'old-vercel-id',
+            'app.example.com',
+        );
     });
 });

@@ -36,6 +36,8 @@ export type VercelErrorCode =
     | 'NETWORK_ERROR'
     | 'PROJECT_EXISTS'
     | 'DOMAIN_EXISTS'
+    | 'DOMAIN_ALREADY_EXISTS'
+    | 'DOMAIN_NOT_FOUND'
     | 'UNKNOWN';
 
 // ── Domain / certificate types ────────────────────────────────────────────────
@@ -97,6 +99,13 @@ export interface TriggerDeploymentResult {
     deploymentUrl: string;
     /** Raw Vercel deployment status at creation time. */
     status: string;
+}
+
+export interface VercelAlias {
+    uid: string;
+    alias: string;
+    created?: string;
+    redirect?: string | null;
 }
 
 // ── Deployment status types (Issue #92) ─────────────────────────────────────
@@ -390,6 +399,40 @@ export class VercelService {
         };
     }
 
+    async listDeploymentAliases(deploymentId: string): Promise<VercelAlias[]> {
+        const data = await this.request<{ aliases?: Array<Record<string, unknown>> }>(
+            `/v2/deployments/${deploymentId}/aliases`,
+            { method: 'GET' },
+        );
+
+        return (data.aliases ?? []).map((alias) => ({
+            uid: alias.uid as string,
+            alias: alias.alias as string,
+            created: alias.created as string | undefined,
+            redirect: (alias.redirect as string | null | undefined) ?? null,
+        }));
+    }
+
+    async assignAliasToDeployment(deploymentId: string, alias: string): Promise<VercelAlias> {
+        const data = await this.request<Record<string, unknown>>(
+            `/v2/deployments/${deploymentId}/aliases`,
+            {
+                method: 'POST',
+                body: JSON.stringify({
+                    alias,
+                    redirect: null,
+                }),
+            },
+        );
+
+        return {
+            uid: data.uid as string,
+            alias: data.alias as string,
+            created: data.created as string | undefined,
+            redirect: (data.redirect as string | null | undefined) ?? null,
+        };
+    }
+
 
     /**
      * Verify that the configured token can reach the Vercel API.
@@ -447,7 +490,10 @@ export class VercelService {
         } catch (err: unknown) {
             const vercelErr = err as VercelApiError;
             // 404 means Vercel hasn't issued a cert yet — treat as pending
-            if (vercelErr.code === 'UNKNOWN' && vercelErr.message.includes('404')) {
+            if (
+                vercelErr.code === 'UNKNOWN' &&
+                (vercelErr.message.includes('404') || vercelErr.message.toLowerCase().includes('not found'))
+            ) {
                 return { domain, state: 'pending' };
             }
             throw err;
@@ -714,7 +760,10 @@ export class VercelService {
                 method: 'DELETE',
             });
         } catch (error: unknown) {
-            if (error instanceof VercelApiError && error.code === 'DOMAIN_NOT_FOUND') {
+            if (
+                error instanceof VercelApiError &&
+                (error.code === 'DOMAIN_NOT_FOUND' || error.message.toLowerCase().includes('not found'))
+            ) {
                 // Domain doesn't exist, which is fine for cleanup
                 return;
             }
@@ -744,7 +793,10 @@ export class VercelService {
                 deploymentId: data.deploymentId as string | undefined,
             };
         } catch (error: unknown) {
-            if (error instanceof VercelApiError && error.code === 'DOMAIN_NOT_FOUND') {
+            if (
+                error instanceof VercelApiError &&
+                (error.code === 'DOMAIN_NOT_FOUND' || error.message.toLowerCase().includes('not found'))
+            ) {
                 return null;
             }
             throw error;
