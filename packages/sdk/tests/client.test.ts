@@ -329,7 +329,36 @@ describe('Payment methods', () => {
       client.createCheckout({ priceId: 'p', successUrl: 's', cancelUrl: 'c' }),
     ).rejects.toBeInstanceOf(CraftApiError);
   });
+
+  it('getSubscription throws CraftApiError on 401 when unauthorized', async () => {
+    // Request: GET /api/payments/subscription
+    // Response: 401 Unauthorized { error: 'Unauthorized' }
+    vi.stubGlobal('fetch', mockFetch({ error: 'Unauthorized' }, 401));
+    const err = await client.getSubscription().catch(e => e);
+    expect(err).toBeInstanceOf(CraftApiError);
+    expect(err.status).toBe(401);
+  });
+
+  it('cancelSubscription throws CraftApiError on 500 internal error', async () => {
+    // Request: POST /api/payments/cancel
+    // Response: 500 Internal Server Error { error: 'Internal Server Error' }
+    vi.stubGlobal('fetch', mockFetch({ error: 'Internal Server Error' }, 500));
+    const err = await client.cancelSubscription().catch(e => e);
+    expect(err).toBeInstanceOf(CraftApiError);
+    expect(err.status).toBe(500);
+  });
+
+  it('throws CraftApiError with 401 if setAccessToken not called before protected method', async () => {
+    // Request: GET /api/payments/subscription (without Authorization header)
+    // Response: 401 Unauthorized { error: 'Unauthorized' }
+    const unauthedClient = new CraftClient({ baseUrl: BASE_URL });
+    vi.stubGlobal('fetch', mockFetch({ error: 'Unauthorized' }, 401));
+    const err = await unauthedClient.getSubscription().catch(e => e);
+    expect(err).toBeInstanceOf(CraftApiError);
+    expect(err.status).toBe(401);
+  });
 });
+
 
 describe('Deployment methods', () => {
   let client: CraftClient;
@@ -387,6 +416,15 @@ describe('Deployment methods', () => {
     const err = await client.getDeploymentAnalytics('dep-x').catch(e => e);
     expect(err).toBeInstanceOf(CraftApiError);
     expect(err.status).toBe(403);
+  });
+
+  it('getDeploymentHealth throws CraftApiError on 404 not found', async () => {
+    // Request: GET /api/deployments/dep-missing/health
+    // Response: 404 Not Found { error: 'Deployment not found' }
+    vi.stubGlobal('fetch', mockFetch({ error: 'Deployment not found' }, 404));
+    const err = await client.getDeploymentHealth('dep-missing').catch(e => e);
+    expect(err).toBeInstanceOf(CraftApiError);
+    expect(err.status).toBe(404);
   });
 });
 
