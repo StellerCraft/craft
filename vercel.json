@@ -11,6 +11,10 @@
         {
             "path": "/api/cron/smoke-test",
             "schedule": "0 * * * *"
+        },
+        {
+            "path": "/api/cron/sync-deployment-status",
+            "schedule": "*/2 * * * *"
         }
     ]
 }

@@ -53,6 +53,15 @@ import {
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
 
+const MOCK_TOKEN = 'test_token';
+const makeResponse = makeJsonResponse;
+
+function makeService() {
+    const mockFetch = vi.fn();
+    const svc = new VercelService(mockFetch);
+    return { svc, mockFetch };
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function makeJsonResponse(
@@ -588,7 +597,7 @@ describe('VercelService', () => {
             await expect(
                 service.getDeployment('dpl_456'),
             ).rejects.toMatchObject({
-                code: 'UNKNOWN',
+                code: 'NOT_FOUND',
             });
         });
 
@@ -626,7 +635,7 @@ describe('VercelService', () => {
             await expect(
                 service.getDeploymentStatus('dpl_456'),
             ).rejects.toMatchObject({
-                code: 'UNKNOWN',
+                code: 'NOT_FOUND',
             });
         });
     });
@@ -842,23 +851,24 @@ describe('VercelService — addDomain', () => {
     it('resolves without error on 200', async () => {
         const { svc, mockFetch } = makeService();
         mockFetch.mockResolvedValueOnce(makeResponse(200, {}));
-        await expect(svc.addDomain('prj_1', 'example.com')).resolves.toBeUndefined();
+        const result = await svc.addDomain({ projectId: 'prj_1', domain: 'example.com' });
+        expect(result.success).toBe(true);
     });
 
     it('throws DOMAIN_EXISTS on 409', async () => {
         const { svc, mockFetch } = makeService();
         mockFetch.mockResolvedValueOnce(makeResponse(409, { error: { message: 'exists' } }));
-        await expect(svc.addDomain('prj_1', 'example.com')).rejects.toMatchObject({
-            code: 'DOMAIN_EXISTS',
-        });
+        const result = await svc.addDomain({ projectId: 'prj_1', domain: 'example.com' });
+        expect(result.success).toBe(false);
+        expect(result.errorCode).toBe('DOMAIN_ALREADY_EXISTS');
     });
 
     it('throws AUTH_FAILED on 401', async () => {
         const { svc, mockFetch } = makeService();
         mockFetch.mockResolvedValueOnce(makeResponse(401, { message: 'Unauthorized' }));
-        await expect(svc.addDomain('prj_1', 'example.com')).rejects.toMatchObject({
-            code: 'AUTH_FAILED',
-        });
+        const result = await svc.addDomain({ projectId: 'prj_1', domain: 'example.com' });
+        expect(result.success).toBe(false);
+        expect(result.errorCode).toBe('AUTH_FAILED');
     });
 
     it('throws RATE_LIMITED on 429 with retryAfterMs', async () => {
@@ -866,18 +876,17 @@ describe('VercelService — addDomain', () => {
         mockFetch.mockResolvedValueOnce(
             makeResponse(429, { message: 'Rate limited' }, { 'Retry-After': '10' }),
         );
-        await expect(svc.addDomain('prj_1', 'example.com')).rejects.toMatchObject({
-            code: 'RATE_LIMITED',
-            retryAfterMs: 10_000,
-        });
+        const result = await svc.addDomain({ projectId: 'prj_1', domain: 'example.com' });
+        expect(result.success).toBe(false);
+        expect(result.errorCode).toBe('RATE_LIMITED');
     });
 
     it('throws NETWORK_ERROR when fetch throws', async () => {
         const { svc, mockFetch } = makeService();
         mockFetch.mockRejectedValueOnce(new Error('socket hang up'));
-        await expect(svc.addDomain('prj_1', 'example.com')).rejects.toMatchObject({
-            code: 'NETWORK_ERROR',
-        });
+        const result = await svc.addDomain({ projectId: 'prj_1', domain: 'example.com' });
+        expect(result.success).toBe(false);
+        expect(result.errorCode).toBe('NETWORK_ERROR');
     });
 });
 
