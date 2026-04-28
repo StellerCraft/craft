@@ -3,6 +3,7 @@ import { CustomizationConfig } from './customization';
 export type DeploymentStatusType =
     | 'pending'
     | 'generating'
+    | 'validating'
     | 'creating_repo'
     | 'pushing_code'
     | 'deploying'
