@@ -98,6 +98,16 @@ function makeGeneratorMock(success = true) {
     };
 }
 
+function makeSyntaxValidatorMock(valid = true) {
+    return {
+        validate: vi.fn().mockReturnValue(
+            valid
+                ? { valid: true, errors: [] }
+                : { valid: false, errors: [{ file: 'src/index.ts', message: "'}' expected", line: 1 }] },
+        ),
+    };
+}
+
 function makeGithubMock(fail = false) {
     return {
         createRepository: fail
@@ -589,5 +599,178 @@ describe('DeploymentPipelineService — logging integration (#101)', () => {
             expect(log).toHaveProperty('created_at');
             expect(typeof log.created_at).toBe('string');
         }
+    });
+});
+
+// ── Issue #067 — Syntax validation hook ──────────────────────────────────────
+//
+// Verifies that the pipeline runs SyntaxValidator on every generated file
+// between code generation and GitHub repo creation, surfaces errors with
+// file references, and marks the deployment failed at the 'validating' stage.
+
+describe('DeploymentPipelineService — syntax validation hook (#067)', () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+        mockInsert.mockResolvedValue({ error: null });
+        mockUpdate.mockReturnValue({ eq: vi.fn().mockResolvedValue({ error: null }) });
+    });
+
+    it('proceeds past validation when all generated files are syntactically valid', async () => {
+        const svc = new DeploymentPipelineService(
+            makeGeneratorMock(),
+            makeGithubMock(),
+            makeGithubPushMock(),
+            makeVercelMock(),
+            makeSyntaxValidatorMock(true),
+        );
+
+        const result = await svc.deploy(request);
+
+        expect(result.success).toBe(true);
+        expect(result.deploymentUrl).toBe('https://craft-my-dex-app.vercel.app');
+    });
+
+    it('fails at validating stage when a generated file has a syntax error', async () => {
+        const svc = new DeploymentPipelineService(
+            makeGeneratorMock(),
+            makeGithubMock(),
+            makeGithubPushMock(),
+            makeVercelMock(),
+            makeSyntaxValidatorMock(false),
+        );
+
+        const result = await svc.deploy(request);
+
+        expect(result.success).toBe(false);
+        expect(result.failedStage).toBe('validating');
+    });
+
+    it('includes the file path in the error message when validation fails', async () => {
+        const svc = new DeploymentPipelineService(
+            makeGeneratorMock(),
+            makeGithubMock(),
+            makeGithubPushMock(),
+            makeVercelMock(),
+            makeSyntaxValidatorMock(false),
+        );
+
+        const result = await svc.deploy(request);
+
+        expect(result.errorMessage).toContain('src/index.ts');
+    });
+
+    it('does not create a GitHub repo when validation fails', async () => {
+        const githubMock = makeGithubMock();
+        const svc = new DeploymentPipelineService(
+            makeGeneratorMock(),
+            githubMock,
+            makeGithubPushMock(),
+            makeVercelMock(),
+            makeSyntaxValidatorMock(false),
+        );
+
+        await svc.deploy(request);
+
+        expect(githubMock.createRepository).not.toHaveBeenCalled();
+    });
+
+    it('calls validate once per generated file', async () => {
+        const validatorMock = makeSyntaxValidatorMock(true);
+        const svc = new DeploymentPipelineService(
+            makeGeneratorMock(),
+            makeGithubMock(),
+            makeGithubPushMock(),
+            makeVercelMock(),
+            validatorMock,
+        );
+
+        await svc.deploy(request);
+
+        // makeGeneratorMock returns 1 file
+        expect(validatorMock.validate).toHaveBeenCalledTimes(1);
+        expect(validatorMock.validate).toHaveBeenCalledWith({ path: 'src/index.ts', content: 'export {}', type: 'code' });
+    });
+
+    it('persists validating status before running validation', async () => {
+        const svc = new DeploymentPipelineService(
+            makeGeneratorMock(),
+            makeGithubMock(),
+            makeGithubPushMock(),
+            makeVercelMock(),
+            makeSyntaxValidatorMock(true),
+        );
+
+        await svc.deploy(request);
+
+        const statusUpdates = mockUpdate.mock.calls
+            .map((call: any[]) => call[0])
+            .filter((p: any) => p.status)
+            .map((p: any) => p.status);
+
+        expect(statusUpdates).toContain('validating');
+    });
+
+    it('writes a validating log entry on success', async () => {
+        const svc = new DeploymentPipelineService(
+            makeGeneratorMock(),
+            makeGithubMock(),
+            makeGithubPushMock(),
+            makeVercelMock(),
+            makeSyntaxValidatorMock(true),
+        );
+
+        await svc.deploy(request);
+
+        const logs = mockInsert.mock.calls
+            .map((call: any[]) => call[0])
+            .filter((p: any) => p.stage === 'validating');
+
+        expect(logs.length).toBeGreaterThan(0);
+    });
+
+    it('writes an error-level log at validating stage when validation fails', async () => {
+        const svc = new DeploymentPipelineService(
+            makeGeneratorMock(),
+            makeGithubMock(),
+            makeGithubPushMock(),
+            makeVercelMock(),
+            makeSyntaxValidatorMock(false),
+        );
+
+        await svc.deploy(request);
+
+        const errorLog = mockInsert.mock.calls
+            .map((call: any[]) => call[0])
+            .find((p: any) => p.stage === 'validating' && p.level === 'error');
+
+        expect(errorLog).toBeDefined();
+        expect(errorLog.message).toContain('Syntax validation failed');
+    });
+
+    it('validating stage appears between generating and creating_repo in the status sequence', async () => {
+        const svc = new DeploymentPipelineService(
+            makeGeneratorMock(),
+            makeGithubMock(),
+            makeGithubPushMock(),
+            makeVercelMock(),
+            makeSyntaxValidatorMock(true),
+        );
+
+        await svc.deploy(request);
+
+        const statusUpdates = mockUpdate.mock.calls
+            .map((call: any[]) => call[0])
+            .filter((p: any) => p.status)
+            .map((p: any) => p.status);
+
+        const genIdx = statusUpdates.indexOf('generating');
+        const valIdx = statusUpdates.indexOf('validating');
+        const repoIdx = statusUpdates.indexOf('creating_repo');
+
+        expect(genIdx).not.toBe(-1);
+        expect(valIdx).not.toBe(-1);
+        expect(repoIdx).not.toBe(-1);
+        expect(genIdx).toBeLessThan(valIdx);
+        expect(valIdx).toBeLessThan(repoIdx);
     });
 });
