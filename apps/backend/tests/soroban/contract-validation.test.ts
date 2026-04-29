@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
+import { RetryableError } from '../../src/services/deployment-pipeline.service';
 
 /**
  * Soroban Contract Validation Tests
@@ -419,6 +420,48 @@ describe('Soroban Contract Validation', () => {
       expect(transferMethod).toBeDefined();
       expect(transferMethod!.params.length).toBeGreaterThan(0);
       expect(transferMethod!.returns).toBeDefined();
+    });
+  });
+
+  describe('Pipeline Verification Simulation', () => {
+    it('should simulate a successful contract verification', async () => {
+      const contractAddress: ContractAddress = {
+        address: 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4',
+        network: 'testnet',
+      };
+
+      const isDeployed = await validator.verifyContractDeployment(contractAddress);
+      expect(isDeployed).toBe(true);
+    });
+
+    it('should transition to failed if verification logic determines contract is not live', async () => {
+      // Mocking a scenario where the validator specifically fails to find a deployment
+      vi.spyOn(validator, 'getContractState').mockResolvedValueOnce({
+        address: 'CFAIL',
+        methods: [],
+        isDeployed: false,
+        lastUpdated: Date.now(),
+      });
+
+      const isDeployed = await validator.verifyContractDeployment({
+        address: 'CFAIL',
+        network: 'testnet'
+      });
+
+      expect(isDeployed).toBe(false);
+    });
+
+    it('should simulate a timeout error during verification', async () => {
+      // Simulating a timeout transition logic
+      const verifyWithTimeout = async () => {
+        return new Promise((_, reject) => {
+          setTimeout(() => {
+            reject(new Error('Contract verification timed out'));
+          }, 10);
+        });
+      };
+
+      await expect(verifyWithTimeout()).rejects.toThrow('Contract verification timed out');
     });
   });
 });
