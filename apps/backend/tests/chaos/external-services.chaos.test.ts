@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { CircuitBreaker as RealCircuitBreaker, CircuitOpenError } from '@/lib/api/circuit-breaker';
 
 /**
  * Chaos Engineering Tests for External Service Failures
@@ -207,6 +208,56 @@ describe('Chaos Engineering: External Service Failures', () => {
       } catch (error) {
         expect((error as Error).message).toContain('Domain verification');
       }
+    });
+
+    it('should transition through open/half-open/closed for Vercel calls', async () => {
+      let mockTime = 1000;
+      const realBreaker = new RealCircuitBreaker({ 
+        name: 'vercel', 
+        failureThreshold: 2, 
+        resetTimeoutMs: 1000,
+        now: () => mockTime
+      });
+
+      const failingCall = vi.fn(async () => {
+        throw new Error('Vercel API Down');
+      });
+
+      // State: CLOSED. Fail 2 times.
+      await expect(realBreaker.call(() => failingCall())).rejects.toThrow('Vercel API Down');
+      expect(realBreaker.currentState).toBe('CLOSED');
+      
+      await expect(realBreaker.call(() => failingCall())).rejects.toThrow('Vercel API Down');
+      expect(realBreaker.currentState).toBe('OPEN');
+
+      // Next call fails fast with CircuitOpenError
+      await expect(realBreaker.call(() => failingCall())).rejects.toThrow(CircuitOpenError);
+
+      // Advance clock to trigger HALF_OPEN
+      mockTime += 1500;
+
+      const successCall = vi.fn(async () => ({ success: true }));
+      const result = await realBreaker.call(() => successCall());
+      expect(result.success).toBe(true);
+      expect(realBreaker.currentState).toBe('CLOSED');
+    });
+
+    it('should fail fast if circuit opens mid-deployment', async () => {
+      const realBreaker = new RealCircuitBreaker({ name: 'vercel', failureThreshold: 1 });
+      const failingCall = vi.fn(async () => {
+        throw new Error('Mid-deploy outage');
+      });
+
+      // First call fails, opening the circuit
+      await expect(realBreaker.call(() => failingCall())).rejects.toThrow('Mid-deploy outage');
+      expect(realBreaker.currentState).toBe('OPEN');
+
+      // Second call fails fast
+      const startTime = Date.now();
+      await expect(realBreaker.call(() => failingCall())).rejects.toThrow(CircuitOpenError);
+      const duration = Date.now() - startTime;
+      
+      expect(duration).toBeLessThan(100); // Fails fast, does not hang
     });
   });
 

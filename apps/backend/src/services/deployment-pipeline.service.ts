@@ -49,6 +49,7 @@ import { buildVercelEnvVars } from '@/lib/env/env-template-generator';
 import { mapCategoryToFamily } from './template-generator.service';
 import type { TemplateFamilyId } from './code-generator.service';
 import { syntaxValidator, type SyntaxValidator } from './syntax-validator';
+import { artifactSigningService, type ArtifactSigningService } from './artifact-signing.service';
 
 // ── Request / result types ────────────────────────────────────────────────────
 
@@ -96,6 +97,7 @@ export class DeploymentPipelineService {
         private readonly _githubPushService: Pick<GitHubPushService, 'pushGeneratedCode'> = githubPushService,
         private readonly _vercelService: Pick<VercelService, 'createProject' | 'triggerDeployment'> = vercelService,
         private readonly _syntaxValidator: Pick<SyntaxValidator, 'validate'> = syntaxValidator,
+        private readonly _artifactSigningService: Pick<ArtifactSigningService, 'signArtifact' | 'verifyArtifact'> = artifactSigningService,
     ) {}
 
     /**
@@ -187,6 +189,19 @@ export class DeploymentPipelineService {
             { correlationId, fileCount: generationResult.generatedFiles.length },
         );
 
+        // ── Step 2c: Sign artifact ─────────────────────────────────────────────
+        await this.setStatus(deploymentId, 'signing');
+        await this.log(deploymentId, 'signing', 'Signing generated artifact', 'info', { correlationId });
+
+        const artifactContent = JSON.stringify(generationResult.generatedFiles);
+        const { checksum: artifactChecksum, signature: artifactSignature } =
+            this._artifactSigningService.signArtifact(artifactContent);
+
+        await this.log(deploymentId, 'signing', 'Artifact signed', 'info', {
+            correlationId,
+            checksum: artifactChecksum,
+        });
+
         // ── Step 3: Create GitHub repository ─────────────────────────────────
         await this.setStatus(deploymentId, 'creating_repo');
         await this.log(deploymentId, 'creating_repo', 'Creating GitHub repository', 'info', { correlationId });
@@ -236,6 +251,28 @@ export class DeploymentPipelineService {
         // ── Step 4: Push generated code ───────────────────────────────────────
         await this.setStatus(deploymentId, 'pushing_code');
         await this.log(deploymentId, 'pushing_code', 'Pushing generated code to repository', 'info', { correlationId });
+
+        const isArtifactValid = this._artifactSigningService.verifyArtifact(
+            artifactContent,
+            artifactChecksum,
+            artifactSignature,
+        );
+
+        if (!isArtifactValid) {
+            return this.fail(
+                deploymentId,
+                'pushing_code',
+                'Artifact verification failed: checksum or signature mismatch — aborting push',
+                { correlationId, checksum: artifactChecksum },
+            );
+        }
+
+        await this.log(deploymentId, 'pushing_code', 'Artifact verified', 'info', {
+            correlationId,
+            checksum: artifactChecksum,
+            deploymentId,
+            timestamp: new Date().toISOString(),
+        });
 
         const githubToken = process.env.GITHUB_TOKEN ?? '';
         const [owner, repo] = repoFullName.split('/');
@@ -477,4 +514,5 @@ export const deploymentPipelineService = new DeploymentPipelineService(
     githubPushService,
     vercelService,
     syntaxValidator,
+    artifactSigningService,
 );

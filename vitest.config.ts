@@ -31,6 +31,9 @@ export default defineConfig({
     test: {
         globals: true,
         environment: 'node',
+        env: {
+            ARTIFACT_SIGNING_SECRET: 'test-artifact-signing-secret-32b!!',
+        },
         coverage: {
             provider: 'v8',
             reporter: ['text', 'json', 'html'],

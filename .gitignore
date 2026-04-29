@@ -38,6 +38,7 @@ next-env.d.ts
 # Exclude markdown files except design.md and README.md
 *.md
 !README.md
+!CONTRIBUTING.md
 !design.md
 !.craft/specs/craft-platform/design.md
 !docs/*.md
