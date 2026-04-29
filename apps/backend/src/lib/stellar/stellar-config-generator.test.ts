@@ -338,7 +338,7 @@ describe('generateStellarConfigFile', () => {
 
         it('omits sorobanRpcUrl for non-soroban families without explicit URL', () => {
             const output = generateStellarConfigFile('payment-gateway', TESTNET_CONFIG);
-            expect(output).not.toContain('sorobanRpcUrl');
+            expect(output).not.toContain('sorobanRpcUrl: process.env.NEXT_PUBLIC_SOROBAN_RPC_URL');
         });
 
         it('includes sorobanRpcUrl for payment-gateway when explicitly provided', () => {

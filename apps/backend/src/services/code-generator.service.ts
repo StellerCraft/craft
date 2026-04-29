@@ -40,6 +40,11 @@ export const DEFAULT_HORIZON_URL: Record<'mainnet' | 'testnet', string> = {
     testnet: 'https://horizon-testnet.stellar.org',
 };
 
+export const DEFAULT_SOROBAN_RPC_URL: Record<'mainnet' | 'testnet', string> = {
+    mainnet: 'https://soroban.stellar.org',
+    testnet: 'https://soroban-testnet.stellar.org',
+};
+
 // ── Template families ─────────────────────────────────────────────────────────
 
 export type TemplateFamilyId =

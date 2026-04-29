@@ -111,10 +111,13 @@ export async function withGitHubRetry<T>(
  */
 export function sanitizeRepoName(raw: string): string {
     let name = raw.replace(/[^a-zA-Z0-9\-_.]/g, '-');
-    name = name.replace(/^\.+/, '');
+    name = name.replace(/^[.\-]+/, '');
     name = name.replace(/-{2,}/g, '-');
+    name = name.replace(/_{2,}/g, '_');
     name = name.replace(/[-_.]+$/, '');
-    return name.slice(0, MAX_REPOSITORY_NAME_LENGTH) || 'repo';
+    name = name.slice(0, MAX_REPOSITORY_NAME_LENGTH);
+    name = name.replace(/[-_.]+$/, '');
+    return name || 'repo';
 }
 
 function sanitizeRepoTopics(topics?: string[]): string[] {

@@ -20,7 +20,7 @@
  */
 
 import type { CustomizationConfig } from '@craft/types';
-import { NETWORK_PASSPHRASE, DEFAULT_HORIZON_URL } from '@/services/code-generator.service';
+import { NETWORK_PASSPHRASE, DEFAULT_HORIZON_URL, DEFAULT_SOROBAN_RPC_URL } from '@/services/code-generator.service';
 import type { TemplateFamilyId } from '@/services/code-generator.service';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -74,6 +74,7 @@ export function buildEnvVarEntries(
     const { branding, features, stellar } = cfg;
     const passphrase = NETWORK_PASSPHRASE[stellar.network];
     const horizonUrl = stellar.horizonUrl || DEFAULT_HORIZON_URL[stellar.network];
+    const sorobanRpcUrl = stellar.sorobanRpcUrl || DEFAULT_SOROBAN_RPC_URL[stellar.network];
 
     const allTargets: VercelEnvTarget[] = ['production', 'preview', 'development'];
 
@@ -177,7 +178,7 @@ export function buildEnvVarEntries(
     if (stellar.sorobanRpcUrl || family === 'soroban-defi') {
         entries.push({
             key: 'NEXT_PUBLIC_SOROBAN_RPC_URL',
-            value: stellar.sorobanRpcUrl ?? 'https://soroban-testnet.stellar.org',
+            value: sorobanRpcUrl,
             required: family === 'soroban-defi',
             description: 'Soroban RPC endpoint for smart contract interactions',
             targets: allTargets,
@@ -202,14 +203,12 @@ export function buildEnvVarEntries(
     }
 
     // ── Contract addresses (soroban-defi, asset-issuance) ────────────────────
-    if (
-        (family === 'soroban-defi' || family === 'asset-issuance') &&
-        stellar.contractAddresses &&
-        Object.keys(stellar.contractAddresses).length > 0
-    ) {
+    if (family === 'soroban-defi' || family === 'asset-issuance') {
         entries.push({
             key: 'NEXT_PUBLIC_CONTRACT_ADDRESSES',
-            value: JSON.stringify(stellar.contractAddresses),
+            value: stellar.contractAddresses && Object.keys(stellar.contractAddresses).length > 0
+                ? JSON.stringify(stellar.contractAddresses)
+                : '{}',
             required: false,
             description: 'JSON map of Soroban contract addresses',
             targets: allTargets,

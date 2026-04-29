@@ -22,6 +22,7 @@ const VALID_STAGES = [
     'failed',
     'redeploying',
     'deleted',
+    'build',
 ] as const;
 
 export type ParseResult =
@@ -355,5 +356,56 @@ export const deploymentLogsService = {
             level: row.level,
             message: row.message,
         }));
+    },
+    
+    /**
+     * Sync logs from Vercel for a deployment.
+     * Fetches logs from Vercel API and upserts them into deployment_logs.
+     * 
+     * @param deploymentId - Internal deployment ID
+     * @param supabase - Supabase client instance
+     */
+    async syncVercelLogs(
+        deploymentId: string,
+        supabase: SupabaseClient,
+    ): Promise<void> {
+        const { data: deployment, error: fetchError } = await supabase
+            .from('deployments')
+            .select('vercel_deployment_id')
+            .eq('id', deploymentId)
+            .single();
+
+        if (fetchError || !deployment?.vercel_deployment_id) {
+            // Vercel deployment not yet created or error fetching - skip sync
+            return;
+        }
+
+        const { vercelService } = await import('./vercel.service');
+        const vercelLogs = await vercelService.getDeploymentLogs(deployment.vercel_deployment_id);
+
+        if (!vercelLogs.logs.length) return;
+
+        const logRows = vercelLogs.logs.map(log => ({
+            // Unique ID to prevent duplicates during multiple syncs
+            // Format: vlc_${vercelDeploymentId}_${originalTimestamp}_${hash}
+            // But since Vercel log entries are somewhat ephemeral, we'll use 
+            // a deterministic ID based on deployment and message content if possible,
+            // or just the Vercel-provided ID if it's unique enough.
+            // In vercel.service.ts, we generate: `${deploymentId}-${event.created}`
+            id: `vlc_${log.id}`,
+            deployment_id: deploymentId,
+            stage: 'build',
+            message: log.message,
+            level: log.level,
+            created_at: log.timestamp,
+        }));
+
+        const { error: upsertError } = await supabase
+            .from('deployment_logs')
+            .upsert(logRows, { onConflict: 'id' });
+
+        if (upsertError) {
+            console.error('[deployment-logs] failed to upsert Vercel logs:', upsertError);
+        }
     },
 };

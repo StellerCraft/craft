@@ -2,6 +2,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { CustomizationDraftService, normalizeDraftConfig } from './customization-draft.service';
 import type { CustomizationConfig } from '@craft/types';
 
+// ── DeploymentUpdateService mock ──────────────────────────────────────────────
+const mockUpdateDeployment = vi.fn();
+vi.mock('./deployment-update.service', () => ({
+    deploymentUpdateService: { updateDeployment: (...args: any[]) => mockUpdateDeployment(...args) },
+}));
+
 // ── Supabase mock ─────────────────────────────────────────────────────────────
 //
 // All Supabase query-builder calls (eq, select, upsert) are chained on a single
@@ -372,6 +378,74 @@ describe('CustomizationDraftService', () => {
 
             expect(caughtError).not.toBeNull();
             expect(caughtError!.message).toBe('Forbidden');
+        });
+    });
+
+    // ── promoteDraft ──────────────────────────────────────────────────────────
+
+    describe('promoteDraft', () => {
+        const deploymentId = 'dep-001';
+
+        it('throws "Draft not found" when no draft exists for the user+template', async () => {
+            mockSingle.mockResolvedValueOnce({ data: null, error: { code: 'PGRST116', message: 'no rows' } });
+
+            await expect(service.promoteDraft(userId, templateId, deploymentId)).rejects.toThrow('Draft not found');
+        });
+
+        it('throws with validationErrors when the draft config is invalid', async () => {
+            const invalidConfig = {
+                ...validConfig,
+                branding: { ...validConfig.branding, appName: '' }, // fails min(1)
+            };
+            const invalidRow = { ...dbRow, customization_config: invalidConfig };
+            mockSingle.mockResolvedValueOnce({ data: invalidRow, error: null });
+
+            let caught: any;
+            try {
+                await service.promoteDraft(userId, templateId, deploymentId);
+            } catch (e) {
+                caught = e;
+            }
+
+            expect(caught).toBeDefined();
+            expect(caught.validationErrors).toBeDefined();
+            expect(Array.isArray(caught.validationErrors)).toBe(true);
+        });
+
+        it('calls updateDeployment with correct deploymentId, userId, and config on valid draft', async () => {
+            mockSingle.mockResolvedValueOnce({ data: dbRow, error: null });
+            mockUpdateDeployment.mockResolvedValueOnce({
+                success: true,
+                deploymentId,
+                rolledBack: false,
+            });
+
+            await service.promoteDraft(userId, templateId, deploymentId);
+
+            expect(mockUpdateDeployment).toHaveBeenCalledWith({
+                deploymentId,
+                userId,
+                customizationConfig: expect.objectContaining({
+                    branding: expect.objectContaining({ appName: 'My DEX' }),
+                }),
+            });
+        });
+
+        it('returns the UpdateDeploymentResult from updateDeployment', async () => {
+            mockSingle.mockResolvedValueOnce({ data: dbRow, error: null });
+            const expected = { success: true, deploymentId, rolledBack: false, deploymentUrl: 'https://x.vercel.app' };
+            mockUpdateDeployment.mockResolvedValueOnce(expected);
+
+            const result = await service.promoteDraft(userId, templateId, deploymentId);
+
+            expect(result).toEqual(expected);
+        });
+
+        it('propagates errors thrown by updateDeployment', async () => {
+            mockSingle.mockResolvedValueOnce({ data: dbRow, error: null });
+            mockUpdateDeployment.mockRejectedValueOnce(new Error('DB connection lost'));
+
+            await expect(service.promoteDraft(userId, templateId, deploymentId)).rejects.toThrow('DB connection lost');
         });
     });
 });
