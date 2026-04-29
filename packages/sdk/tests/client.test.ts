@@ -146,6 +146,15 @@ describe('CraftClient initialization', () => {
     expect(fetch.mock.calls[0][1].headers['Authorization']).toBeUndefined();
     vi.unstubAllGlobals();
   });
+
+  it('sends API-Version: v1 header on all requests', () => {
+    const client = new CraftClient({ baseUrl: BASE_URL, accessToken: 'tok' });
+    const fetch = mockFetch(TEMPLATE_LIST);
+    vi.stubGlobal('fetch', fetch);
+    client.listTemplates();
+    expect(fetch.mock.calls[0][1].headers['API-Version']).toBe('v1');
+    vi.unstubAllGlobals();
+  });
 });
 
 describe('Auth methods', () => {
