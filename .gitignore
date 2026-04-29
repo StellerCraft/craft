@@ -41,6 +41,7 @@ next-env.d.ts
 !design.md
 !.craft/specs/craft-platform/design.md
 !docs/*.md
+!docs/**/*.md
 
 # Exclude spec files
 .craft/specs/craft-platform/requirements.md
