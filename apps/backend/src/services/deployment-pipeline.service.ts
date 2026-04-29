@@ -45,11 +45,13 @@ import { templateGeneratorService, type TemplateGeneratorService } from './templ
 import { githubService, type GitHubService } from './github.service';
 import { githubPushService, type GitHubPushService } from './github-push.service';
 import { vercelService, type VercelService } from './vercel.service';
+import { buildGraph, CircularDependencyError, DeploymentNode } from './dependency-graph';
 import { buildVercelEnvVars } from '@/lib/env/env-template-generator';
 import { mapCategoryToFamily } from './template-generator.service';
 import type { TemplateFamilyId } from './code-generator.service';
 import { syntaxValidator, type SyntaxValidator } from './syntax-validator';
-import type { DeploymentUpdateService } from './deployment-update.service';
+import { artifactSigningService, ArtifactSigningService } from './artifact-signing.service';
+import { deploymentUpdateService, DeploymentUpdateService } from './deployment-update.service';
 
 // ── Request / result types ────────────────────────────────────────────────────
 
@@ -102,6 +104,7 @@ export class DeploymentPipelineService {
         private readonly _githubPushService: Pick<GitHubPushService, 'pushGeneratedCode'> = githubPushService,
         private readonly _vercelService: Pick<VercelService, 'createProject' | 'triggerDeployment'> = vercelService,
         private readonly _syntaxValidator: Pick<SyntaxValidator, 'validate'> = syntaxValidator,
+        private readonly _artifactSigningService: ArtifactSigningService = artifactSigningService,
         private readonly _deploymentUpdateService: Pick<DeploymentUpdateService, 'rollbackUpdate'> | null = null,
     ) {}
 
@@ -111,14 +114,49 @@ export class DeploymentPipelineService {
      */
     async deploy(request: DeploymentPipelineRequest): Promise<DeploymentPipelineResult> {
         const supabase = createClient();
+        const deploymentId = crypto.randomUUID();
         const { userId, templateId, customization, name, updateContext } = request;
+
+        // ── Step 0: Validate Dependency Graph ─────────────────────────────────
+        // Build graph from customization config or template defaults
+        const nodes = ((customization as any).nodes || []) as DeploymentNode[];
+        
+        try {
+            if (nodes.length > 0) {
+                const graph = buildGraph(nodes);
+                if (graph.hasCycle()) {
+                    // This will throw CircularDependencyError which we catch below
+                    graph.topologicalOrder();
+                }
+                const order = graph.topologicalOrder();
+                
+                await this.log(
+                    deploymentId,
+                    'pending',
+                    `Validated dependency graph. Topological order: ${order.join(' -> ')}`,
+                    'info',
+                    { topologicalOrder: order },
+                );
+            }
+        } catch (error: any) {
+            const errorMessage = error instanceof CircularDependencyError
+                ? `Circular dependency detected: ${error.message}`
+                : error.message;
+
+            return {
+                success: false,
+                deploymentId,
+                correlationId: '', // Placeholder as correlation ID is created after this step
+                failedStage: 'pending',
+                errorMessage,
+            };
+        }
 
         // ── Correlation ID ────────────────────────────────────────────────────
         const correlationId = crypto.randomUUID();
         const logger = createLogger({ correlationId, userId, service: 'deployment-pipeline' });
 
         // ── Step 1: Create deployment record ─────────────────────────────────
-        const deploymentId = crypto.randomUUID();
 
         const { error: insertError } = await supabase.from('deployments').insert({
             id: deploymentId,
@@ -532,11 +570,6 @@ export const deploymentPipelineService = new DeploymentPipelineService(
     githubPushService,
     vercelService,
     syntaxValidator,
-    // Lazy import to avoid circular dependency — resolved at module load time
-    // after both services are initialised.
-    (() => {
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const { deploymentUpdateService } = require('./deployment-update.service') as typeof import('./deployment-update.service');
-        return deploymentUpdateService;
-    })(),
+    artifactSigningService,
+    deploymentUpdateService,
 );
