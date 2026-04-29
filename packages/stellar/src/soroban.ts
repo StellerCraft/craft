@@ -1,5 +1,17 @@
 import { SorobanRpc, Contract, TransactionBuilder, Networks, BASE_FEE, xdr } from 'stellar-sdk';
 import { config } from './config';
+import { parseStellarError } from './errors';
+
+// Minimal AppError shape — matches apps/backend/src/lib/api/retryable-error.ts
+export interface AppError {
+    status?: number;
+    message: string;
+    code?: string;
+}
+
+export type InvokeContractResult<T = SorobanRpc.Api.SimulateTransactionResponse> =
+    | { ok: true; result: T }
+    | { ok: false; error: AppError };
 
 const SOROBAN_RPC_URLS = {
     mainnet: 'https://soroban-mainnet.stellar.org',
@@ -200,4 +212,53 @@ export async function sendSorobanTransaction(
     }
 
     return getResult;
+}
+
+/**
+ * Invoke a Soroban contract method via simulation and return a typed result.
+ *
+ * Wraps `simulateContractCall` and maps any RPC error through `parseStellarError`
+ * so callers receive a discriminated union instead of a raw thrown error.
+ *
+ * @param contractId - The contract address (C...)
+ * @param method - The contract method name
+ * @param args - XDR-encoded method arguments
+ * @param sourcePublicKey - The source account public key
+ * @param _simulate - Optional override for `simulateContractCall` (for testing)
+ * @returns `{ ok: true, result }` on success or `{ ok: false, error: AppError }` on failure
+ *
+ * @example
+ * ```typescript
+ * const res = await invokeContractMethod(contractId, 'transfer', args, pubKey);
+ * if (!res.ok) {
+ *   console.error(res.error.message); // typed, user-friendly message
+ * }
+ * ```
+ */
+export async function invokeContractMethod(
+    contractId: string,
+    method: string,
+    args: xdr.ScVal[],
+    sourcePublicKey: string,
+    _simulate: typeof simulateContractCall = simulateContractCall,
+): Promise<InvokeContractResult> {
+    try {
+        const result = await _simulate(contractId, method, args, sourcePublicKey);
+        return { ok: true, result };
+    } catch (raw: unknown) {
+        const parsed = parseStellarError(raw);
+        return {
+            ok: false,
+            error: {
+                message: parsed.message,
+                code: parsed.code,
+                // Map retryable network/rate-limit errors to an HTTP-like status
+                // so callers using isRetryableError(AppError) work correctly.
+                status: parsed.retryable && parsed.code === 'RATE_LIMITED' ? 429
+                    : parsed.retryable && parsed.code === 'CONNECTION_TIMEOUT' ? undefined
+                    : parsed.retryable ? undefined
+                    : 400,
+            },
+        };
+    }
 }
