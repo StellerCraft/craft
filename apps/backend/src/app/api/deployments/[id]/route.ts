@@ -1,66 +1,12 @@
-/**
- * GET /api/deployments/[id]
- *
- * Returns deployment details for a single deployment.
- * Enforces ownership checks and returns normalized deployment metadata.
- *
- * Authentication: requires a valid Supabase session (401 if missing).
- * Ownership: the authenticated user must own the deployment.
- *            Non-owners and missing deployments both return 404 to prevent
- *            existence leakage.
- *
- * Response includes:
- *   - Normalized deployment metadata (id, name, status, timestamps)
- *   - Provider identifiers (template_id, vercel_project_id)
- *   - URLs (deployment_url, repository_url)
- *   - Customization configuration
- *   - Error message (if failed)
- *
- * Responses:
- *   200 — Deployment details object
- *   401 — Not authenticated
- *   404 — Deployment not found (or not owned by caller)
- *   500 — Unexpected server error
- *
- * Issue: #107
- * Branch: issue-107-create-the-deployment-detail-route
- */
-
-/**
- * DELETE /api/deployments/[id]
- *
- * Deletes a deployment and all associated resources (GitHub repository, Vercel project).
- * Enforces ownership checks and performs safe cleanup of external services.
- *
- * Authentication: requires a valid Supabase session (401 if missing).
- * Ownership: the authenticated user must own the deployment.
- *            Non-owners and missing deployments both return 404 to prevent
- *            existence leakage.
- *
- * Deletion flow:
- *   1. Verify deployment exists and user owns it
- *   2. Delete GitHub repository (if repository_url exists)
- *   3. Delete Vercel project (if vercel_project_id exists)
- *   4. Delete deployment record (cascades to logs and analytics)
- *
- * Responses:
- *   200 — Deployment deleted successfully
- *         { success: true, deploymentId: string }
- *   401 — Not authenticated
- *   404 — Deployment not found (or not owned by caller)
- *   500 — Unexpected server error
- *
- * Issue: #110
- * Branch: issue-110-create-the-deployment-deletion-route
- */
-
 import { NextRequest, NextResponse } from 'next/server';
 import { withAuth } from '@/lib/api/with-auth';
 import { githubService } from '@/services/github.service';
 import { vercelService } from '@/services/vercel.service';
+import { resolveIpAddress } from '@/lib/api/logger';
 
-export const GET = withAuth(async (req: NextRequest, { params, user, supabase }) => {
+export const GET = withAuth(async (req: NextRequest, { params, user, supabase, log }) => {
     const deploymentId = (params as { id: string }).id;
+    const ipAddress = resolveIpAddress(req);
 
     // Fetch deployment with ownership check — return 404 for both missing and non-owned
     // deployments to prevent existence leakage (issue spec: non-owners receive 404, not 403).
@@ -77,6 +23,18 @@ export const GET = withAuth(async (req: NextRequest, { params, user, supabase })
     if (deployment.user_id !== user.id) {
         return NextResponse.json({ error: 'Deployment not found' }, { status: 404 });
     }
+
+    // Emit audit log for reading deployment with PII (customization_config may contain env vars)
+    log.audit({
+        userId: user.id,
+        action: 'deployment.read',
+        resourceId: deploymentId,
+        resourceType: 'deployment',
+        ipAddress,
+        metadata: {
+            fields: ['customization_config'],
+        },
+    });
 
     // Build normalized response with deployment metadata, provider identifiers, and URLs
     const response = {
@@ -99,8 +57,9 @@ export const GET = withAuth(async (req: NextRequest, { params, user, supabase })
     return NextResponse.json(response);
 });
 
-export const DELETE = withAuth(async (req: NextRequest, { params, user, supabase }) => {
+export const DELETE = withAuth(async (req: NextRequest, { params, user, supabase, log }) => {
     const deploymentId = (params as { id: string }).id;
+    const ipAddress = resolveIpAddress(req);
 
     // Fetch deployment with ownership check — return 404 for both missing and non-owned
     // deployments to prevent existence leakage (issue spec: non-owners receive 404, not 403).
@@ -118,6 +77,19 @@ export const DELETE = withAuth(async (req: NextRequest, { params, user, supabase
         return NextResponse.json({ error: 'Deployment not found' }, { status: 404 });
     }
 
+    // Emit audit log for deployment deletion (includes PII via customization_config)
+    log.audit({
+        userId: user.id,
+        action: 'deployment.delete',
+        resourceId: deploymentId,
+        resourceType: 'deployment',
+        ipAddress,
+        metadata: {
+            repository_url: deployment.repository_url,
+            vercel_project_id: deployment.vercel_project_id,
+        },
+    });
+
     // Best-effort cleanup of external resources before DB deletion.
     // Errors are logged but don't block the deployment record deletion.
 
@@ -132,7 +104,7 @@ export const DELETE = withAuth(async (req: NextRequest, { params, user, supabase
             }
         } catch (error: unknown) {
             const message = error instanceof Error ? error.message : 'Unknown error';
-            console.error(`[deployment-delete] GitHub cleanup failed for ${deploymentId}:`, message);
+            log.error(`GitHub cleanup failed for ${deploymentId}`, error);
             // Continue — DB deletion should succeed regardless
         }
     }
@@ -143,7 +115,7 @@ export const DELETE = withAuth(async (req: NextRequest, { params, user, supabase
             await vercelService.deleteProject(deployment.vercel_project_id);
         } catch (error: unknown) {
             const message = error instanceof Error ? error.message : 'Unknown error';
-            console.error(`[deployment-delete] Vercel cleanup failed for ${deploymentId}:`, message);
+            log.error(`Vercel cleanup failed for ${deploymentId}`, error);
             // Continue — DB deletion should succeed regardless
         }
     }
@@ -155,7 +127,7 @@ export const DELETE = withAuth(async (req: NextRequest, { params, user, supabase
         .eq('id', deploymentId);
 
     if (deleteError) {
-        console.error(`[deployment-delete] Database deletion failed for ${deploymentId}:`, deleteError.message);
+        log.error(`Database deletion failed for ${deploymentId}`, deleteError);
         return NextResponse.json(
             { error: 'Failed to delete deployment' },
             { status: 500 }
@@ -166,4 +138,39 @@ export const DELETE = withAuth(async (req: NextRequest, { params, user, supabase
         success: true,
         deploymentId,
     });
+
+  export async function DELETE(
+  request: Request,
+  { params }: { params: { id: string } }) 
+  {
+      try {
+        const deploymentId = params.id;
+
+    // 1. Fetch the deployment to get the github_repo_id before deleting
+    const deployment = await DeploymentService.findById(deploymentId);
+    
+    if (!deployment) {
+      return NextResponse.json({ error: 'Deployment not found' }, { status: 404 });
+    }
+
+    // 2. Soft-delete the DB row
+    await DeploymentService.softDelete(deploymentId);
+
+    // 3. Trigger GitHub Repo Cleanup (Non-fatal)
+    if (deployment.github_repo_id) {
+      try {
+        // Run cleanup asynchronously or await it, but catch errors locally
+        await RepositoryCleanupService.cleanup(deployment.github_repo_id);
+      } catch (githubError) {
+        // Acceptance Criteria: Treat GitHub API errors as non-fatal — log and continue
+        console.error(`[Non-Fatal] Failed to cleanup GitHub repo ${deployment.github_repo_id} for deployment ${deploymentId}:`, githubError);
+      }
+    }
+
+    return NextResponse.json({ success: true, message: 'Deployment deleted' });
+  } catch (error) {
+    console.error('Failed to delete deployment:', error);
+    return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
+      }
+
 });

@@ -25,6 +25,12 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { NextRequest } from 'next/server';
+import { DELETE } from './route';
+import { DeploymentService } from '@/services/deployment.service';
+import { RepositoryCleanupService } from '@/services/github/repository-cleanup.service';
+
+// Mock the external service
+jest.mock('@/services/github/repository-cleanup.service');
 
 // ---------------------------------------------------------------------------
 // Supabase mock
@@ -315,6 +321,62 @@ describe('GET /api/deployments/[id]', () => {
 // ---------------------------------------------------------------------------
 
 describe('DELETE /api/deployments/[id]', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('should call cleanup(github_repo_id) after DB row is soft-deleted', async () => {
+    // Arrange
+    const mockDeployment = { id: 'dep-123', github_repo_id: 'repo-456' };
+    jest.spyOn(DeploymentService, 'findById').mockResolvedValue(mockDeployment as any);
+    const softDeleteSpy = jest.spyOn(DeploymentService, 'softDelete').mockResolvedValue(true);
+    
+    // Act
+    const response = await DELETE({} as Request, { params: { id: 'dep-123' } });
+    
+    // Assert
+    expect(softDeleteSpy).toHaveBeenCalledWith('dep-123');
+    expect(RepositoryCleanupService.cleanup).toHaveBeenCalledWith('repo-456');
+    expect(response.status).toBe(200);
+  });
+
+  it('should treat GitHub cleanup failures as non-fatal and still return 200', async () => {
+    // Arrange
+    const mockDeployment = { id: 'dep-123', github_repo_id: 'repo-456' };
+    jest.spyOn(DeploymentService, 'findById').mockResolvedValue(mockDeployment as any);
+    jest.spyOn(DeploymentService, 'softDelete').mockResolvedValue(true);
+    
+    // Simulate GitHub API failure
+    (RepositoryCleanupService.cleanup as jest.Mock).mockRejectedValue(new Error('GitHub API Rate Limit'));
+    const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation();
+
+    // Act
+    const response = await DELETE({} as Request, { params: { id: 'dep-123' } });
+    
+    // Assert
+    expect(RepositoryCleanupService.cleanup).toHaveBeenCalledWith('repo-456');
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[Non-Fatal] Failed to cleanup GitHub repo'),
+      expect.any(Error)
+    );
+    expect(response.status).toBe(200); // Verify DB record delete completes despite external error
+  });
+
+  it('should skip cleanup if github_repo_id is null', async () => {
+    // Arrange
+    const mockDeployment = { id: 'dep-123', github_repo_id: null };
+    jest.spyOn(DeploymentService, 'findById').mockResolvedValue(mockDeployment as any);
+    jest.spyOn(DeploymentService, 'softDelete').mockResolvedValue(true);
+    
+    // Act
+    const response = await DELETE({} as Request, { params: { id: 'dep-123' } });
+    
+    // Assert
+    expect(RepositoryCleanupService.cleanup).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+  });
+
+    
     beforeEach(() => {
         vi.clearAllMocks();
         mockGetUser.mockResolvedValue({ data: { user: fakeUser }, error: null });

@@ -16,6 +16,9 @@ export interface ProfileState {
 // Zod schema
 // ---------------------------------------------------------------------------
 
+export const CONNECTION_STATUSES = ['online', 'offline', 'busy', 'away'] as const;
+export type ConnectionStatus = (typeof CONNECTION_STATUSES)[number];
+
 export const profileSchema = z.object({
     displayName: z
         .string({ required_error: 'Display name is required.' })
@@ -31,6 +34,17 @@ export const profileSchema = z.object({
         .url('Avatar URL must be a valid URL.')
         .optional()
         .or(z.literal('')),
+    website: z
+        .string()
+        .url('Website must be a valid URL.')
+        .optional()
+        .or(z.literal('')),
+    connectionStatus: z
+        .enum(CONNECTION_STATUSES, {
+            errorMap: () => ({ message: 'Invalid connection status.' }),
+        })
+        .optional()
+        .default('online'),
 });
 
 // ---------------------------------------------------------------------------
@@ -89,6 +103,8 @@ export async function updateProfileAction(
         displayName: formData.get('displayName') as string,
         bio: (formData.get('bio') as string) ?? '',
         avatarUrl: (formData.get('avatarUrl') as string) ?? '',
+        website: (formData.get('website') as string) ?? '',
+        connectionStatus: (formData.get('connectionStatus') as string) ?? 'online',
     };
 
     // Zod validation

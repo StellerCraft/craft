@@ -116,7 +116,7 @@ export default function TemplateCatalogPage() {
 
   const handleSelectTemplate = useCallback(
     (template: Template) => {
-      router.push(`/app/customize?templateId=${template.id}`);
+      router.push(`/app/templates/${template.id}`);
     },
     [router],
   );

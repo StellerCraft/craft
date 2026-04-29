@@ -26,7 +26,7 @@ export interface LogContext {
 }
 
 export interface LogEntry {
-    level: 'info' | 'warn' | 'error';
+    level: 'info' | 'warn' | 'error' | 'audit';
     message: string;
     correlationId: string;
     timestamp: string;
@@ -36,10 +36,30 @@ export interface LogEntry {
     metadata: Record<string, unknown>;
 }
 
+export interface AuditLogEntry {
+    level: 'audit';
+    userId: string;
+    action: string;
+    resourceId: string;
+    resourceType: string;
+    timestamp: string;
+    correlationId: string;
+    ipAddress?: string;
+    metadata: Record<string, unknown>;
+}
+
 export interface Logger {
     info(message: string, metadata?: Record<string, unknown>): void;
     warn(message: string, metadata?: Record<string, unknown>): void;
     error(message: string, err?: unknown, metadata?: Record<string, unknown>): void;
+    audit(params: {
+        userId: string;
+        action: string;
+        resourceId: string;
+        resourceType: string;
+        ipAddress?: string;
+        metadata?: Record<string, unknown>;
+    }): void;
 }
 
 // ── Correlation ID ────────────────────────────────────────────────────────────
@@ -58,20 +78,43 @@ export function resolveCorrelationId(req: NextRequest): string {
     return crypto.randomUUID();
 }
 
+/**
+ * Extracts the client IP address from the request.
+ * Checks X-Forwarded-For (from proxies/CDN) first, then falls back to X-Real-IP.
+ */
+export function resolveIpAddress(req: NextRequest): string {
+    const forwarded = req.headers.get('x-forwarded-for');
+    if (forwarded) {
+        // X-Forwarded-For can contain multiple IPs, take the first one
+        return forwarded.split(',')[0].trim();
+    }
+    const realIp = req.headers.get('x-real-ip');
+    if (realIp) {
+        return realIp;
+    }
+    return 'unknown';
+}
+
 // ── Logger factory ────────────────────────────────────────────────────────────
 
 /**
  * Creates a logger bound to a fixed context (correlation ID, user, etc.).
  * All entries are written to `console` as JSON so they are captured by
  * Vercel's log drain and any structured logging aggregator.
+ * 
+ * Audit log entries are written to a separate sink (console.log with 'audit' level)
+ * for compliance tracking and SOC2 CC7 requirements.
  */
 export function createLogger(ctx: LogContext): Logger {
-    function write(entry: LogEntry): void {
+    function write(entry: LogEntry | AuditLogEntry): void {
         const line = JSON.stringify(entry);
         if (entry.level === 'error') {
             console.error(line);
         } else if (entry.level === 'warn') {
             console.warn(line);
+        } else if (entry.level === 'audit') {
+            // Audit logs go to stdout with a distinct level for filtering
+            console.log(line);
         } else {
             console.log(line);
         }
@@ -97,6 +140,28 @@ export function createLogger(ctx: LogContext): Logger {
         return entry;
     }
 
+    function buildAuditEntry(params: {
+        userId: string;
+        action: string;
+        resourceId: string;
+        resourceType: string;
+        ipAddress?: string;
+        metadata?: Record<string, unknown>;
+    }): AuditLogEntry {
+        const { correlationId } = ctx;
+        return {
+            level: 'audit',
+            userId: params.userId,
+            action: params.action,
+            resourceId: params.resourceId,
+            resourceType: params.resourceType,
+            timestamp: new Date().toISOString(),
+            correlationId,
+            ipAddress: params.ipAddress,
+            metadata: params.metadata || {},
+        };
+    }
+
     return {
         info(message, metadata) {
             write(buildEntry('info', message, undefined, metadata));
@@ -106,6 +171,9 @@ export function createLogger(ctx: LogContext): Logger {
         },
         error(message, err, metadata) {
             write(buildEntry('error', message, err, metadata));
+        },
+        audit(params) {
+            write(buildAuditEntry(params));
         },
     };
 }
