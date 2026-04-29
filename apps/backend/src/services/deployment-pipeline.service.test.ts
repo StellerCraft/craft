@@ -23,6 +23,7 @@ vi.mock('./template-generator.service', () => ({
 import { DeploymentPipelineService } from './deployment-pipeline.service';
 import type { DeploymentPipelineRequest } from './deployment-pipeline.service';
 import type { CustomizationConfig } from '@craft/types';
+import type { DeploymentNode } from './dependency-graph';
 
 // ── Supabase mock ─────────────────────────────────────────────────────────────
 
@@ -266,7 +267,6 @@ describe('DeploymentPipelineService', () => {
         expect(result.success).toBe(false);
         expect(result.errorMessage).toContain('Failed to create deployment record');
     });
-
     it('always returns a deploymentId even on failure', async () => {
         const svc = new DeploymentPipelineService(
             makeGeneratorMock(false),
@@ -279,6 +279,55 @@ describe('DeploymentPipelineService', () => {
 
         expect(result.deploymentId).toBeTruthy();
         expect(typeof result.deploymentId).toBe('string');
+    });
+
+    it('fails at pending stage when customization contains a circular dependency', async () => {
+        const svc = new DeploymentPipelineService(
+            makeGeneratorMock(),
+            makeGithubMock(),
+            makeGithubPushMock(),
+            makeVercelMock(),
+        );
+
+        const nodes: DeploymentNode[] = [
+            { id: 'a', dependsOn: ['b'] },
+            { id: 'b', dependsOn: ['a'] },
+        ];
+
+        const reqWithCycle: DeploymentPipelineRequest = {
+            ...request,
+            customization: { ...customization, nodes } as any,
+        };
+
+        const result = await svc.deploy(reqWithCycle);
+
+        expect(result.success).toBe(false);
+        expect(result.failedStage).toBe('pending');
+        expect(result.errorMessage).toContain('Circular dependency detected');
+    });
+
+    it('fails at pending stage when customization contains a missing node dependency', async () => {
+        const svc = new DeploymentPipelineService(
+            makeGeneratorMock(),
+            makeGithubMock(),
+            makeGithubPushMock(),
+            makeVercelMock(),
+        );
+
+        const nodes: DeploymentNode[] = [
+            { id: 'a', dependsOn: ['ghost'] },
+        ];
+
+        const reqWithMissing: DeploymentPipelineRequest = {
+            ...request,
+            customization: { ...customization, nodes } as any,
+        };
+
+        const result = await svc.deploy(reqWithMissing);
+
+        expect(result.success).toBe(false);
+        expect(result.failedStage).toBe('pending');
+        expect(result.errorMessage).toContain('depends on missing node "ghost"');
     });
 });
 
