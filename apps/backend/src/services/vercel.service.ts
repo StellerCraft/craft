@@ -23,6 +23,7 @@
  */
 
 import type { VercelEnvVar } from '@/lib/env/env-template-generator';
+import { CircuitBreaker } from '@/lib/api/circuit-breaker';
 
 export type { VercelEnvVar };
 
@@ -268,8 +269,13 @@ interface FetchLike {
     (input: string, init?: RequestInit): Promise<Response>;
 }
 
+const vercelCircuitBreaker = new CircuitBreaker({ name: 'vercel' });
+
 export class VercelService {
-    constructor(private readonly _fetch: FetchLike = fetch) {}
+    constructor(
+        private readonly _fetch: FetchLike = fetch,
+        public readonly breaker: CircuitBreaker = vercelCircuitBreaker
+    ) {}
 
     private get token(): string {
         return process.env.VERCEL_TOKEN ?? '';
@@ -305,29 +311,31 @@ export class VercelService {
         /** Optional status code that should be treated as a specific error before assertOk. */
         earlyThrow?: { status: number; code: VercelErrorCode; message: string },
     ): Promise<T> {
-        const headers = this.buildHeaders(); // throws AUTH_FAILED if token missing
+        return this.breaker.call(async () => {
+            const headers = this.buildHeaders(); // throws AUTH_FAILED if token missing
 
-        let res: Response;
-        try {
-            res = await this._fetch(this.url(path), {
-                ...init,
-                headers: { ...headers, ...(init.headers ?? {}) },
-            });
-        } catch (err: unknown) {
-            throw new VercelApiError(
-                err instanceof Error ? err.message : 'Network request failed',
-                'NETWORK_ERROR',
-            );
-        }
+            let res: Response;
+            try {
+                res = await this._fetch(this.url(path), {
+                    ...init,
+                    headers: { ...headers, ...(init.headers ?? {}) },
+                });
+            } catch (err: unknown) {
+                throw new VercelApiError(
+                    err instanceof Error ? err.message : 'Network request failed',
+                    'NETWORK_ERROR',
+                );
+            }
 
-        const data = await res.json().catch(() => ({})) as Record<string, unknown>;
+            const data = await res.json().catch(() => ({})) as Record<string, unknown>;
 
-        if (earlyThrow && res.status === earlyThrow.status) {
-            throw new VercelApiError(earlyThrow.message, earlyThrow.code);
-        }
+            if (earlyThrow && res.status === earlyThrow.status) {
+                throw new VercelApiError(earlyThrow.message, earlyThrow.code);
+            }
 
-        this.assertOk(res, data);
-        return data as T;
+            this.assertOk(res, data);
+            return data as T;
+        });
     }
 
     /**
