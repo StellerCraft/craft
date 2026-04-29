@@ -44,14 +44,14 @@ import type { DeploymentStatusType } from '@craft/types';
 import { templateGeneratorService, type TemplateGeneratorService } from './template-generator.service';
 import { githubService, type GitHubService } from './github.service';
 import { githubPushService, type GitHubPushService } from './github-push.service';
-import { deploymentUpdateService, DeploymentUpdateService } from './deployment-update.service';
-import { buildGraph, CircularDependencyError, DeploymentNode } from './dependency-graph';
 import { vercelService, type VercelService } from './vercel.service';
+import { buildGraph, CircularDependencyError, DeploymentNode } from './dependency-graph';
 import { buildVercelEnvVars } from '@/lib/env/env-template-generator';
 import { mapCategoryToFamily } from './template-generator.service';
 import type { TemplateFamilyId } from './code-generator.service';
 import { syntaxValidator, type SyntaxValidator } from './syntax-validator';
-import type { DeploymentUpdateService } from './deployment-update.service';
+import { artifactSigningService, ArtifactSigningService } from './artifact-signing.service';
+import { deploymentUpdateService, DeploymentUpdateService } from './deployment-update.service';
 
 // ── Request / result types ────────────────────────────────────────────────────
 
@@ -571,11 +571,5 @@ export const deploymentPipelineService = new DeploymentPipelineService(
     vercelService,
     syntaxValidator,
     artifactSigningService,
-    // Lazy import to avoid circular dependency — resolved at module load time
-    // after both services are initialised.
-    (() => {
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const { deploymentUpdateService } = require('./deployment-update.service') as typeof import('./deployment-update.service');
-        return deploymentUpdateService;
-    })(),
+    deploymentUpdateService,
 );

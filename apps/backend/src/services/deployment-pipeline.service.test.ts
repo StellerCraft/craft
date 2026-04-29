@@ -109,6 +109,13 @@ function makeSyntaxValidatorMock(valid = true) {
     };
 }
 
+function makeArtifactSigningMock() {
+    return {
+        signArtifact: vi.fn().mockReturnValue({ checksum: 'mock-checksum', signature: 'mock-signature' }),
+        verifyArtifact: vi.fn().mockReturnValue(true),
+    };
+}
+
 function makeGithubMock(fail = false) {
     return {
         createRepository: fail
@@ -181,6 +188,8 @@ describe('DeploymentPipelineService', () => {
             makeGithubMock(),
             makeGithubPushMock(),
             makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
         );
 
         const result = await svc.deploy(request);
@@ -198,6 +207,8 @@ describe('DeploymentPipelineService', () => {
             makeGithubMock(),
             makeGithubPushMock(),
             makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
         );
 
         const result = await svc.deploy(request);
@@ -213,6 +224,8 @@ describe('DeploymentPipelineService', () => {
             makeGithubMock(true),
             makeGithubPushMock(),
             makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
         );
 
         const result = await svc.deploy(request);
@@ -228,6 +241,8 @@ describe('DeploymentPipelineService', () => {
             makeGithubMock(),
             makeGithubPushMock(true),
             makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
         );
 
         const result = await svc.deploy(request);
@@ -243,6 +258,8 @@ describe('DeploymentPipelineService', () => {
             makeGithubMock(),
             makeGithubPushMock(),
             makeVercelMock(true),
+            makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
         );
 
         const result = await svc.deploy(request);
@@ -260,6 +277,8 @@ describe('DeploymentPipelineService', () => {
             makeGithubMock(),
             makeGithubPushMock(),
             makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
         );
 
         const result = await svc.deploy(request);
@@ -273,6 +292,8 @@ describe('DeploymentPipelineService', () => {
             makeGithubMock(),
             makeGithubPushMock(),
             makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
         );
 
         const result = await svc.deploy(request);
@@ -287,6 +308,8 @@ describe('DeploymentPipelineService', () => {
             makeGithubMock(),
             makeGithubPushMock(),
             makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
         );
 
         const nodes: DeploymentNode[] = [
@@ -312,6 +335,8 @@ describe('DeploymentPipelineService', () => {
             makeGithubMock(),
             makeGithubPushMock(),
             makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
         );
 
         const nodes: DeploymentNode[] = [
@@ -350,6 +375,8 @@ describe('DeploymentPipelineService — status tracking persistence (#100)', () 
             makeGithubMock(),
             makeGithubPushMock(),
             makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
         );
 
         await svc.deploy(request);
@@ -373,6 +400,8 @@ describe('DeploymentPipelineService — status tracking persistence (#100)', () 
             makeGithubMock(),
             makeGithubPushMock(),
             makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
         );
 
         await svc.deploy(request);
@@ -394,6 +423,8 @@ describe('DeploymentPipelineService — status tracking persistence (#100)', () 
             makeGithubMock(),
             makeGithubPushMock(),
             makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
         );
 
         await svc.deploy(request);
@@ -412,6 +443,8 @@ describe('DeploymentPipelineService — status tracking persistence (#100)', () 
             makeGithubMock(),
             makeGithubPushMock(),
             makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
         );
 
         await svc.deploy(request);
@@ -433,6 +466,8 @@ describe('DeploymentPipelineService — status tracking persistence (#100)', () 
             makeGithubMock(),
             makeGithubPushMock(),
             makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
         );
 
         await svc.deploy(request);
@@ -453,6 +488,8 @@ describe('DeploymentPipelineService — status tracking persistence (#100)', () 
             makeGithubMock(),
             makeGithubPushMock(),
             makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
         );
 
         await svc.deploy(request);
@@ -494,6 +531,8 @@ describe('DeploymentPipelineService — logging integration (#101)', () => {
             makeGithubMock(),
             makeGithubPushMock(),
             makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
         );
 
         await svc.deploy(request);
@@ -510,6 +549,8 @@ describe('DeploymentPipelineService — logging integration (#101)', () => {
             makeGithubMock(),
             makeGithubPushMock(),
             makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
         );
 
         const result = await svc.deploy(request);
@@ -527,6 +568,8 @@ describe('DeploymentPipelineService — logging integration (#101)', () => {
             makeGithubMock(),
             makeGithubPushMock(),
             makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
         );
 
         await svc.deploy(request);
@@ -543,6 +586,8 @@ describe('DeploymentPipelineService — logging integration (#101)', () => {
             makeGithubMock(true),
             makeGithubPushMock(),
             makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
         );
 
         await svc.deploy(request);
@@ -558,6 +603,8 @@ describe('DeploymentPipelineService — logging integration (#101)', () => {
             makeGithubMock(),
             makeGithubPushMock(true),
             makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
         );
 
         await svc.deploy(request);
@@ -573,6 +620,8 @@ describe('DeploymentPipelineService — logging integration (#101)', () => {
             makeGithubMock(),
             makeGithubPushMock(),
             makeVercelMock(true),
+            makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
         );
 
         await svc.deploy(request);
@@ -588,6 +637,8 @@ describe('DeploymentPipelineService — logging integration (#101)', () => {
             makeGithubMock(),
             makeGithubPushMock(),
             makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
         );
 
         await svc.deploy(request);
@@ -605,6 +656,8 @@ describe('DeploymentPipelineService — logging integration (#101)', () => {
             makeGithubMock(),
             makeGithubPushMock(),
             makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
         );
 
         await svc.deploy(request);
@@ -623,6 +676,8 @@ describe('DeploymentPipelineService — logging integration (#101)', () => {
             makeGithubMock(),
             makeGithubPushMock(),
             makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
         );
 
         await svc.deploy(request);
@@ -640,6 +695,8 @@ describe('DeploymentPipelineService — logging integration (#101)', () => {
             makeGithubMock(),
             makeGithubPushMock(),
             makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
         );
 
         await svc.deploy(request);
@@ -671,6 +728,7 @@ describe('DeploymentPipelineService — syntax validation hook (#067)', () => {
             makeGithubPushMock(),
             makeVercelMock(),
             makeSyntaxValidatorMock(true),
+            makeArtifactSigningMock(),
         );
 
         const result = await svc.deploy(request);
@@ -686,6 +744,7 @@ describe('DeploymentPipelineService — syntax validation hook (#067)', () => {
             makeGithubPushMock(),
             makeVercelMock(),
             makeSyntaxValidatorMock(false),
+            makeArtifactSigningMock(),
         );
 
         const result = await svc.deploy(request);
@@ -701,6 +760,7 @@ describe('DeploymentPipelineService — syntax validation hook (#067)', () => {
             makeGithubPushMock(),
             makeVercelMock(),
             makeSyntaxValidatorMock(false),
+            makeArtifactSigningMock(),
         );
 
         const result = await svc.deploy(request);
@@ -731,6 +791,7 @@ describe('DeploymentPipelineService — syntax validation hook (#067)', () => {
             makeGithubPushMock(),
             makeVercelMock(),
             validatorMock,
+            makeArtifactSigningMock(),
         );
 
         await svc.deploy(request);
@@ -747,6 +808,7 @@ describe('DeploymentPipelineService — syntax validation hook (#067)', () => {
             makeGithubPushMock(),
             makeVercelMock(),
             makeSyntaxValidatorMock(true),
+            makeArtifactSigningMock(),
         );
 
         await svc.deploy(request);
@@ -766,6 +828,7 @@ describe('DeploymentPipelineService — syntax validation hook (#067)', () => {
             makeGithubPushMock(),
             makeVercelMock(),
             makeSyntaxValidatorMock(true),
+            makeArtifactSigningMock(),
         );
 
         await svc.deploy(request);
@@ -784,6 +847,7 @@ describe('DeploymentPipelineService — syntax validation hook (#067)', () => {
             makeGithubPushMock(),
             makeVercelMock(),
             makeSyntaxValidatorMock(false),
+            makeArtifactSigningMock(),
         );
 
         await svc.deploy(request);
@@ -803,6 +867,7 @@ describe('DeploymentPipelineService — syntax validation hook (#067)', () => {
             makeGithubPushMock(),
             makeVercelMock(),
             makeSyntaxValidatorMock(true),
+            makeArtifactSigningMock(),
         );
 
         await svc.deploy(request);
@@ -854,6 +919,7 @@ describe('DeploymentPipelineService — rollback on failure (#480)', () => {
             makeGithubPushMock(),
             makeVercelMock(),
             makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
             updateSvc,
         );
 
@@ -872,6 +938,7 @@ describe('DeploymentPipelineService — rollback on failure (#480)', () => {
             makeGithubPushMock(),
             makeVercelMock(),
             makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
             updateSvc,
         );
 
@@ -890,6 +957,7 @@ describe('DeploymentPipelineService — rollback on failure (#480)', () => {
             makeGithubPushMock(true),
             makeVercelMock(),
             makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
             updateSvc,
         );
 
@@ -908,6 +976,7 @@ describe('DeploymentPipelineService — rollback on failure (#480)', () => {
             makeGithubPushMock(),
             makeVercelMock(true),
             makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
             updateSvc,
         );
 
@@ -929,6 +998,7 @@ describe('DeploymentPipelineService — rollback on failure (#480)', () => {
             makeGithubPushMock(),
             makeVercelMock(),
             makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
             updateSvc,
         );
 
@@ -945,6 +1015,7 @@ describe('DeploymentPipelineService — rollback on failure (#480)', () => {
             makeGithubPushMock(),
             makeVercelMock(),
             makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
             updateSvc,
         );
 
@@ -1009,6 +1080,7 @@ describe('DeploymentPipelineService — rollback on failure (#480)', () => {
             makeGithubPushMock(),
             makeVercelMock(),
             makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
             updateSvc,
         );
 
