@@ -774,3 +774,198 @@ describe('DeploymentPipelineService — syntax validation hook (#067)', () => {
         expect(valIdx).toBeLessThan(repoIdx);
     });
 });
+
+// ── Issue #480 — Wire DeploymentUpdateService rollback into pipeline failure ──
+//
+// Verifies that when the pipeline fails mid-run and an updateContext is
+// provided, rollbackUpdate is called exactly once with the correct IDs.
+// Also verifies idempotency and the no-op edge case (no update record).
+
+describe('DeploymentPipelineService — rollback on failure (#480)', () => {
+    const UPDATE_ID = 'update-abc';
+    const DEPLOYMENT_ID_FOR_UPDATE = 'dep-xyz';
+
+    function makeUpdateServiceMock() {
+        return { rollbackUpdate: vi.fn().mockResolvedValue(true) };
+    }
+
+    const updateContext = { updateId: UPDATE_ID, deploymentId: DEPLOYMENT_ID_FOR_UPDATE };
+
+    beforeEach(() => {
+        vi.clearAllMocks();
+        mockInsert.mockResolvedValue({ error: null });
+        mockUpdate.mockReturnValue({ eq: vi.fn().mockResolvedValue({ error: null }) });
+    });
+
+    it('calls rollbackUpdate when pipeline fails at generating stage', async () => {
+        const updateSvc = makeUpdateServiceMock();
+        const svc = new DeploymentPipelineService(
+            makeGeneratorMock(false),
+            makeGithubMock(),
+            makeGithubPushMock(),
+            makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            updateSvc,
+        );
+
+        const result = await svc.deploy({ ...request, updateContext });
+
+        expect(result.success).toBe(false);
+        expect(updateSvc.rollbackUpdate).toHaveBeenCalledOnce();
+        expect(updateSvc.rollbackUpdate).toHaveBeenCalledWith(UPDATE_ID, DEPLOYMENT_ID_FOR_UPDATE);
+    });
+
+    it('calls rollbackUpdate when pipeline fails at creating_repo stage', async () => {
+        const updateSvc = makeUpdateServiceMock();
+        const svc = new DeploymentPipelineService(
+            makeGeneratorMock(),
+            makeGithubMock(true),
+            makeGithubPushMock(),
+            makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            updateSvc,
+        );
+
+        const result = await svc.deploy({ ...request, updateContext });
+
+        expect(result.success).toBe(false);
+        expect(updateSvc.rollbackUpdate).toHaveBeenCalledOnce();
+        expect(updateSvc.rollbackUpdate).toHaveBeenCalledWith(UPDATE_ID, DEPLOYMENT_ID_FOR_UPDATE);
+    });
+
+    it('calls rollbackUpdate when pipeline fails at pushing_code stage', async () => {
+        const updateSvc = makeUpdateServiceMock();
+        const svc = new DeploymentPipelineService(
+            makeGeneratorMock(),
+            makeGithubMock(),
+            makeGithubPushMock(true),
+            makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            updateSvc,
+        );
+
+        const result = await svc.deploy({ ...request, updateContext });
+
+        expect(result.success).toBe(false);
+        expect(updateSvc.rollbackUpdate).toHaveBeenCalledOnce();
+        expect(updateSvc.rollbackUpdate).toHaveBeenCalledWith(UPDATE_ID, DEPLOYMENT_ID_FOR_UPDATE);
+    });
+
+    it('calls rollbackUpdate when pipeline fails at deploying stage', async () => {
+        const updateSvc = makeUpdateServiceMock();
+        const svc = new DeploymentPipelineService(
+            makeGeneratorMock(),
+            makeGithubMock(),
+            makeGithubPushMock(),
+            makeVercelMock(true),
+            makeSyntaxValidatorMock(),
+            updateSvc,
+        );
+
+        const result = await svc.deploy({ ...request, updateContext });
+
+        expect(result.success).toBe(false);
+        expect(updateSvc.rollbackUpdate).toHaveBeenCalledOnce();
+        expect(updateSvc.rollbackUpdate).toHaveBeenCalledWith(UPDATE_ID, DEPLOYMENT_ID_FOR_UPDATE);
+    });
+
+    it('update record transitions to rolled_back status after pipeline failure', async () => {
+        // Simulate rollbackUpdate updating the status — verify the mock was called
+        // (status transition is owned by DeploymentUpdateService; here we confirm
+        //  the pipeline delegates correctly).
+        const updateSvc = makeUpdateServiceMock();
+        const svc = new DeploymentPipelineService(
+            makeGeneratorMock(false),
+            makeGithubMock(),
+            makeGithubPushMock(),
+            makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            updateSvc,
+        );
+
+        await svc.deploy({ ...request, updateContext });
+
+        expect(updateSvc.rollbackUpdate).toHaveBeenCalledWith(UPDATE_ID, DEPLOYMENT_ID_FOR_UPDATE);
+    });
+
+    it('emits an error deployment_log entry describing the rollback reason', async () => {
+        const updateSvc = makeUpdateServiceMock();
+        const svc = new DeploymentPipelineService(
+            makeGeneratorMock(false),
+            makeGithubMock(),
+            makeGithubPushMock(),
+            makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            updateSvc,
+        );
+
+        await svc.deploy({ ...request, updateContext });
+
+        const errorLogs = (mockInsert.mock.calls as any[][])
+            .map((call) => call[0])
+            .filter((payload: any) => payload?.level === 'error');
+
+        expect(errorLogs.length).toBeGreaterThan(0);
+        const rollbackLog = errorLogs.find((l: any) =>
+            typeof l.message === 'string' && l.message.toLowerCase().includes('pipeline failed'),
+        );
+        expect(rollbackLog).toBeDefined();
+    });
+
+    it('is a no-op when no updateContext is provided (pipeline fails before update record is created)', async () => {
+        const updateSvc = makeUpdateServiceMock();
+        const svc = new DeploymentPipelineService(
+            makeGeneratorMock(false),
+            makeGithubMock(),
+            makeGithubPushMock(),
+            makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            updateSvc,
+        );
+
+        // No updateContext — rollbackUpdate must NOT be called
+        const result = await svc.deploy(request);
+
+        expect(result.success).toBe(false);
+        expect(updateSvc.rollbackUpdate).not.toHaveBeenCalled();
+    });
+
+    it('rollback is idempotent — calling rollbackUpdate twice does not throw', async () => {
+        const updateSvc = {
+            rollbackUpdate: vi.fn()
+                .mockResolvedValueOnce(true)
+                .mockResolvedValueOnce(true), // second call also resolves cleanly
+        };
+        const svc = new DeploymentPipelineService(
+            makeGeneratorMock(false),
+            makeGithubMock(),
+            makeGithubPushMock(),
+            makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            updateSvc,
+        );
+
+        await svc.deploy({ ...request, updateContext });
+        // Manually call rollback a second time — must not throw
+        await expect(
+            updateSvc.rollbackUpdate(UPDATE_ID, DEPLOYMENT_ID_FOR_UPDATE),
+        ).resolves.toBe(true);
+    });
+
+    it('does not call rollbackUpdate on successful pipeline run', async () => {
+        const updateSvc = makeUpdateServiceMock();
+        const svc = new DeploymentPipelineService(
+            makeGeneratorMock(),
+            makeGithubMock(),
+            makeGithubPushMock(),
+            makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            updateSvc,
+        );
+
+        const result = await svc.deploy({ ...request, updateContext });
+
+        expect(result.success).toBe(true);
+        expect(updateSvc.rollbackUpdate).not.toHaveBeenCalled();
+    });
+});

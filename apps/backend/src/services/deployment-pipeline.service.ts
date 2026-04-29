@@ -49,6 +49,7 @@ import { buildVercelEnvVars } from '@/lib/env/env-template-generator';
 import { mapCategoryToFamily } from './template-generator.service';
 import type { TemplateFamilyId } from './code-generator.service';
 import { syntaxValidator, type SyntaxValidator } from './syntax-validator';
+import type { DeploymentUpdateService } from './deployment-update.service';
 
 // ── Request / result types ────────────────────────────────────────────────────
 
@@ -58,6 +59,11 @@ export interface DeploymentPipelineRequest {
     customization: CustomizationConfig;
     /** Human-readable name for the deployment (used as repo name). */
     name: string;
+    /** Optional update context — if present, rollback will be called on failure. */
+    updateContext?: {
+        updateId: string;
+        deploymentId: string;
+    };
 }
 
 export interface DeploymentPipelineResult {
@@ -88,6 +94,7 @@ export class DeploymentPipelineService {
         private readonly _githubPushService: Pick<GitHubPushService, 'pushGeneratedCode'> = githubPushService,
         private readonly _vercelService: Pick<VercelService, 'createProject' | 'triggerDeployment'> = vercelService,
         private readonly _syntaxValidator: Pick<SyntaxValidator, 'validate'> = syntaxValidator,
+        private readonly _deploymentUpdateService: Pick<DeploymentUpdateService, 'rollbackUpdate'> | null = null,
     ) {}
 
     /**
@@ -96,7 +103,7 @@ export class DeploymentPipelineService {
      */
     async deploy(request: DeploymentPipelineRequest): Promise<DeploymentPipelineResult> {
         const supabase = createClient();
-        const { userId, templateId, customization, name } = request;
+        const { userId, templateId, customization, name, updateContext } = request;
 
         // ── Correlation ID ────────────────────────────────────────────────────
         const correlationId = crypto.randomUUID();
@@ -139,7 +146,7 @@ export class DeploymentPipelineService {
 
         if (!generationResult.success) {
             const msg = generationResult.errors.map((e) => e.message).join('; ');
-            return this.fail(deploymentId, 'generating', `Code generation failed: ${msg}`, { correlationId });
+            return this.fail(deploymentId, 'generating', `Code generation failed: ${msg}`, { correlationId }, updateContext);
         }
 
         await this.log(
@@ -168,7 +175,7 @@ export class DeploymentPipelineService {
             const summary = syntaxErrors
                 .map((e) => `${e.file}: ${e.message}`)
                 .join('; ');
-            return this.fail(deploymentId, 'validating', `Syntax validation failed: ${summary}`, { correlationId, errorCount: syntaxErrors.length });
+            return this.fail(deploymentId, 'validating', `Syntax validation failed: ${summary}`, { correlationId, errorCount: syntaxErrors.length }, updateContext);
         }
 
         await this.log(
@@ -222,6 +229,7 @@ export class DeploymentPipelineService {
                 'creating_repo',
                 `GitHub repository creation failed: ${svcErr.message ?? 'unknown error'}`,
                 { correlationId, code: svcErr.code, retryAfterMs: svcErr.retryAfterMs },
+                updateContext,
             );
         }
 
@@ -253,7 +261,7 @@ export class DeploymentPipelineService {
             );
         } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : 'Unknown push error';
-            return this.fail(deploymentId, 'pushing_code', `Code push failed: ${msg}`, { correlationId });
+            return this.fail(deploymentId, 'pushing_code', `Code push failed: ${msg}`, { correlationId }, updateContext);
         }
 
         // ── Step 5 & 6: Create Vercel project + trigger deployment ────────────
@@ -323,6 +331,7 @@ export class DeploymentPipelineService {
                 'deploying',
                 `Vercel deployment failed: ${svcErr.message ?? 'unknown error'}`,
                 { correlationId, code: svcErr.code },
+                updateContext,
             );
         }
 
@@ -394,6 +403,7 @@ export class DeploymentPipelineService {
         stage: DeploymentStatusType,
         errorMessage: string,
         metadata?: Record<string, unknown>,
+        updateContext?: { updateId: string; deploymentId: string },
     ): Promise<DeploymentPipelineResult> {
         const supabase = createClient();
 
@@ -407,6 +417,16 @@ export class DeploymentPipelineService {
             .eq('id', deploymentId);
 
         await this.log(deploymentId, stage, errorMessage, 'error', metadata);
+
+        // Roll back the associated update record when one is active
+        if (updateContext && this._deploymentUpdateService) {
+            const rollbackReason = `Pipeline failed at stage '${stage}': ${errorMessage}`;
+            await this.log(updateContext.deploymentId, stage, rollbackReason, 'error', metadata);
+            await this._deploymentUpdateService.rollbackUpdate(
+                updateContext.updateId,
+                updateContext.deploymentId,
+            );
+        }
 
         const correlationId = (metadata?.correlationId as string | undefined) ?? '';
 
@@ -426,4 +446,11 @@ export const deploymentPipelineService = new DeploymentPipelineService(
     githubPushService,
     vercelService,
     syntaxValidator,
+    // Lazy import to avoid circular dependency — resolved at module load time
+    // after both services are initialised.
+    (() => {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const { deploymentUpdateService } = require('./deployment-update.service') as typeof import('./deployment-update.service');
+        return deploymentUpdateService;
+    })(),
 );

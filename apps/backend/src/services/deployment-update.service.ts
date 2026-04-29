@@ -323,9 +323,10 @@ export class DeploymentUpdateService {
     }
 
     /**
-     * Rollback to the previous deployment state
+     * Rollback to the previous deployment state.
+     * Idempotent — calling it on an already-rolled-back record is a no-op.
      */
-    private async rollbackUpdate(
+    async rollbackUpdate(
         updateId: string,
         deploymentId: string
     ): Promise<boolean> {
@@ -335,9 +336,14 @@ export class DeploymentUpdateService {
             // Get the previous state from the update record
             const { data: updateRecord } = await supabase
                 .from('deployment_updates')
-                .select('previous_state')
+                .select('previous_state, status')
                 .eq('id', updateId)
                 .single();
+
+            // Idempotency: already rolled back — no-op
+            if (updateRecord?.status === 'rolled_back') {
+                return true;
+            }
 
             if (!updateRecord?.previous_state) {
                 console.error('No previous state found for rollback');
