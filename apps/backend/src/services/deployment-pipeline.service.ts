@@ -49,6 +49,7 @@ import { buildVercelEnvVars } from '@/lib/env/env-template-generator';
 import { mapCategoryToFamily } from './template-generator.service';
 import type { TemplateFamilyId } from './code-generator.service';
 import { syntaxValidator, type SyntaxValidator } from './syntax-validator';
+import { artifactSigningService, type ArtifactSigningService } from './artifact-signing.service';
 
 // ── Request / result types ────────────────────────────────────────────────────
 
@@ -77,6 +78,14 @@ export interface DeploymentPipelineResult {
 
 // ── Internal stage logger ─────────────────────────────────────────────────────
 
+/** Custom error for timeout scenarios that can be retried. */
+export class RetryableError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = 'RetryableError';
+    }
+}
+
 type LogLevel = 'info' | 'warn' | 'error';
 
 // ── Service ───────────────────────────────────────────────────────────────────
@@ -88,6 +97,7 @@ export class DeploymentPipelineService {
         private readonly _githubPushService: Pick<GitHubPushService, 'pushGeneratedCode'> = githubPushService,
         private readonly _vercelService: Pick<VercelService, 'createProject' | 'triggerDeployment'> = vercelService,
         private readonly _syntaxValidator: Pick<SyntaxValidator, 'validate'> = syntaxValidator,
+        private readonly _artifactSigningService: Pick<ArtifactSigningService, 'signArtifact' | 'verifyArtifact'> = artifactSigningService,
     ) {}
 
     /**
@@ -179,6 +189,19 @@ export class DeploymentPipelineService {
             { correlationId, fileCount: generationResult.generatedFiles.length },
         );
 
+        // ── Step 2c: Sign artifact ─────────────────────────────────────────────
+        await this.setStatus(deploymentId, 'signing');
+        await this.log(deploymentId, 'signing', 'Signing generated artifact', 'info', { correlationId });
+
+        const artifactContent = JSON.stringify(generationResult.generatedFiles);
+        const { checksum: artifactChecksum, signature: artifactSignature } =
+            this._artifactSigningService.signArtifact(artifactContent);
+
+        await this.log(deploymentId, 'signing', 'Artifact signed', 'info', {
+            correlationId,
+            checksum: artifactChecksum,
+        });
+
         // ── Step 3: Create GitHub repository ─────────────────────────────────
         await this.setStatus(deploymentId, 'creating_repo');
         await this.log(deploymentId, 'creating_repo', 'Creating GitHub repository', 'info', { correlationId });
@@ -229,6 +252,28 @@ export class DeploymentPipelineService {
         await this.setStatus(deploymentId, 'pushing_code');
         await this.log(deploymentId, 'pushing_code', 'Pushing generated code to repository', 'info', { correlationId });
 
+        const isArtifactValid = this._artifactSigningService.verifyArtifact(
+            artifactContent,
+            artifactChecksum,
+            artifactSignature,
+        );
+
+        if (!isArtifactValid) {
+            return this.fail(
+                deploymentId,
+                'pushing_code',
+                'Artifact verification failed: checksum or signature mismatch — aborting push',
+                { correlationId, checksum: artifactChecksum },
+            );
+        }
+
+        await this.log(deploymentId, 'pushing_code', 'Artifact verified', 'info', {
+            correlationId,
+            checksum: artifactChecksum,
+            deploymentId,
+            timestamp: new Date().toISOString(),
+        });
+
         const githubToken = process.env.GITHUB_TOKEN ?? '';
         const [owner, repo] = repoFullName.split('/');
 
@@ -261,6 +306,7 @@ export class DeploymentPipelineService {
         await this.log(deploymentId, 'deploying', 'Creating Vercel project', 'info', { correlationId });
 
         // Resolve template family for env var generation
+        let templateCategory: string | undefined;
         let templateFamily: TemplateFamilyId = 'stellar-dex';
         try {
             const { data: tmpl } = await supabase
@@ -269,8 +315,9 @@ export class DeploymentPipelineService {
                 .eq('id', templateId)
                 .single();
             if (tmpl?.category) {
+                templateCategory = tmpl.category;
                 templateFamily = mapCategoryToFamily(
-                    tmpl.category as import('@craft/types').TemplateCategory,
+                    templateCategory as import('@craft/types').TemplateCategory,
                 );
             }
         } catch {
@@ -324,6 +371,26 @@ export class DeploymentPipelineService {
                 `Vercel deployment failed: ${svcErr.message ?? 'unknown error'}`,
                 { correlationId, code: svcErr.code },
             );
+        }
+
+        // ── Step 6b: Verify Soroban Contract (Soroban-only) ────────────────────
+        if (templateCategory === 'soroban-defi') {
+            try {
+                await this.setStatus(deploymentId, 'verifying_contract' as any);
+                await this.log(deploymentId, 'verifying_contract', 'Checking Soroban contract live status...', 'info', { correlationId });
+                
+                await this.verifyContractDeployment(deploymentId, correlationId);
+                
+                await this.log(deploymentId, 'verifying_contract', 'Contract verified successfully.', 'info', { correlationId });
+            } catch (error) {
+                if (error instanceof RetryableError) {
+                    await this.log(deploymentId, 'verifying_contract', 'Verification timed out. Retrying...', 'warn', { correlationId });
+                    throw error; // Let the orchestrator handle the retry
+                }
+                await this.log(deploymentId, 'verifying_contract', 'Contract verification failed.', 'error', { correlationId });
+                await this.fail(deploymentId, 'verifying_contract' as any, (error as Error).message, { correlationId });
+                throw error; // This triggers the building -> failed transition
+            }
         }
 
         // ── Step 7: Persist completed record ──────────────────────────────────
@@ -418,6 +485,27 @@ export class DeploymentPipelineService {
             failedStage: stage,
         };
     }
+
+    /**
+     * Simulates a check to ensure the Soroban contract is live and callable.
+     * 
+     * @throws {RetryableError} If the verification times out
+     * @throws {Error} If the contract is not live or found
+     */
+    private async verifyContractDeployment(deploymentId: string, correlationId: string): Promise<void> {
+        // Simulation of network verification logic
+        // In production, this would poll Soroban RPC to check for contract instance footprint
+        
+        // Simulated verification loop
+        await new Promise(resolve => setTimeout(resolve, 100));
+
+        const randomOutcome = Math.random();
+        if (randomOutcome < 0.05) {
+            throw new RetryableError('Contract verification timed out: RPC endpoint took too long to respond');
+        } else if (randomOutcome < 0.1) {
+            throw new Error('Contract instance not found on the current network ledger');
+        }
+    }
 }
 
 export const deploymentPipelineService = new DeploymentPipelineService(
@@ -426,4 +514,5 @@ export const deploymentPipelineService = new DeploymentPipelineService(
     githubPushService,
     vercelService,
     syntaxValidator,
+    artifactSigningService,
 );

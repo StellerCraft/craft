@@ -4,6 +4,7 @@ export type DeploymentStatusType =
     | 'pending'
     | 'generating'
     | 'validating'
+    | 'signing'
     | 'creating_repo'
     | 'pushing_code'
     | 'deploying'

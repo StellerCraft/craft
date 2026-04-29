@@ -1,5 +1,7 @@
 import { createClient } from '@/lib/supabase/server';
 import type { CustomizationConfig } from '@craft/types';
+import { validateCustomizationConfig } from '@/lib/customization/validate';
+import { deploymentUpdateService, type UpdateDeploymentResult } from './deployment-update.service';
 
 const DEFAULT_CONFIG: CustomizationConfig = {
     branding: {
@@ -131,6 +133,35 @@ export class CustomizationDraftService {
         if (deployment.user_id !== userId) throw new Error('Forbidden');
 
         return this.getDraft(userId, deployment.template_id);
+    }
+
+    /**
+     * Promote a draft to a live deployment.
+     * Validates the draft config, then delegates to DeploymentUpdateService.
+     * The caller must supply the target deploymentId.
+     *
+     * @throws Error if the draft is not found, belongs to another user, or config is invalid.
+     */
+    async promoteDraft(
+        userId: string,
+        templateId: string,
+        deploymentId: string
+    ): Promise<UpdateDeploymentResult> {
+        const draft = await this.getDraft(userId, templateId);
+        if (!draft) {
+            throw new Error('Draft not found');
+        }
+
+        const validation = validateCustomizationConfig(draft.customizationConfig);
+        if (!validation.valid) {
+            throw Object.assign(new Error('Invalid draft configuration'), { validationErrors: validation.errors });
+        }
+
+        return deploymentUpdateService.updateDeployment({
+            deploymentId,
+            userId,
+            customizationConfig: draft.customizationConfig,
+        });
     }
 
     private mapRow(row: any): CustomizationDraft {

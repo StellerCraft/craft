@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useFormState, useFormStatus } from 'react-dom';
-import { updateProfileAction, type ProfileState } from './actions';
+import { updateProfileAction, type ProfileState, CONNECTION_STATUSES } from './actions';
 
 const initialState: ProfileState = { status: 'idle', message: '' };
 
@@ -64,6 +64,8 @@ interface ProfileSettingsFormProps {
         email?: string;
         bio?: string;
         avatarUrl?: string;
+        website?: string;
+        connectionStatus?: string;
     };
 }
 
@@ -181,6 +183,46 @@ export default function ProfileSettingsForm({ defaultValues }: ProfileSettingsFo
                     className={`${inputClasses} ${state.fieldErrors?.avatarUrl ? 'border-error focus:ring-error' : ''}`}
                 />
                 <FieldError id="avatarUrl-error" message={state.fieldErrors?.avatarUrl} />
+            </div>
+
+            {/* Website */}
+            <div>
+                <label htmlFor="website" className={labelClasses}>
+                    Website
+                </label>
+                <input
+                    id="website"
+                    name="website"
+                    type="url"
+                    aria-describedby={state.fieldErrors?.website ? 'website-error' : undefined}
+                    aria-invalid={!!state.fieldErrors?.website}
+                    defaultValue={defaultValues?.website ?? ''}
+                    placeholder="https://yourwebsite.com"
+                    className={`${inputClasses} ${state.fieldErrors?.website ? 'border-error focus:ring-error' : ''}`}
+                />
+                <FieldError id="website-error" message={state.fieldErrors?.website} />
+            </div>
+
+            {/* Connection Status */}
+            <div>
+                <label htmlFor="connectionStatus" className={labelClasses}>
+                    Connection status
+                </label>
+                <select
+                    id="connectionStatus"
+                    name="connectionStatus"
+                    aria-describedby={state.fieldErrors?.connectionStatus ? 'connectionStatus-error' : undefined}
+                    aria-invalid={!!state.fieldErrors?.connectionStatus}
+                    defaultValue={defaultValues?.connectionStatus ?? 'online'}
+                    className={`${inputClasses} ${state.fieldErrors?.connectionStatus ? 'border-error focus:ring-error' : ''}`}
+                >
+                    {CONNECTION_STATUSES.map((s) => (
+                        <option key={s} value={s}>
+                            {s.charAt(0).toUpperCase() + s.slice(1)}
+                        </option>
+                    ))}
+                </select>
+                <FieldError id="connectionStatus-error" message={state.fieldErrors?.connectionStatus} />
             </div>
 
             {/* Actions */}

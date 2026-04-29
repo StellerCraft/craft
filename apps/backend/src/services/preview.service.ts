@@ -14,6 +14,7 @@ import type {
     CustomizationConfig,
     DeepPartial,
     MockTransaction,
+    PreviewAsset,
     StellarMockData,
     Template,
     TemplateCategory,
@@ -21,6 +22,7 @@ import type {
 } from '@craft/types';
 import { validateCustomizationConfig } from '@/lib/customization/validate';
 import { normalizeDraftConfig } from '@/services/customization-draft.service';
+import { generatePreviewCss as generateEnhancedPreviewCss, generatePreviewHtml, generatePreviewAssets } from '@/lib/preview/html-transform';
 
 export interface PreviewConfig {
     templateId: string;
@@ -55,10 +57,12 @@ export const VIEWPORT_DIMENSIONS: Record<ViewportClass, { width: number; height:
 };
 
 export interface PreviewData {
+    html: string;
+    css: string;
+    assets: PreviewAsset[];
     branding: CustomizationConfig['branding'];
     features: CustomizationConfig['features'];
     mockData: StellarMockData;
-    css: string;
     viewport: { width: number; height: number; class: ViewportClass };
 }
 
@@ -66,26 +70,12 @@ export function deriveLayoutMetadata(viewport: ViewportClass): { width: number; 
     return VIEWPORT_DIMENSIONS[viewport];
 }
 
+/**
+ * Generate preview CSS with branding tokens applied.
+ * @deprecated Use generateEnhancedPreviewCss from html-transform instead
+ */
 export function generatePreviewCss(config: CustomizationConfig, viewport: ViewportClass): string {
-    const { branding } = config;
-    const dimensions = VIEWPORT_DIMENSIONS[viewport];
-    
-    return `
-        :root {
-            --color-primary: ${branding.primaryColor};
-            --color-secondary: ${branding.secondaryColor};
-            --font-family: ${branding.fontFamily};
-            --viewport-width: ${dimensions.width}px;
-            --viewport-height: ${dimensions.height}px;
-        }
-        
-        body {
-            background: linear-gradient(135deg, ${branding.primaryColor} 0%, ${branding.secondaryColor} 100%);
-            font-family: ${branding.fontFamily}, system-ui, sans-serif;
-            width: ${dimensions.width}px;
-            height: ${dimensions.height}px;
-        }
-    `.trim();
+    return generateEnhancedPreviewCss(config, viewport);
 }
 
 const DEFAULT_CONFIG: CustomizationConfig = {
@@ -235,11 +225,14 @@ export class PreviewService {
 
         // If called with viewport parameter, return PreviewData
         if (isViewportParam || (isConfigInput && savedConfig === null && secondParam !== undefined)) {
+            const mockData = this.generateMockData(merged);
             return {
+                html: generatePreviewHtml(merged, mockData, viewport),
+                css: generatePreviewCss(merged, viewport),
+                assets: generatePreviewAssets(merged),
                 branding: merged.branding,
                 features: merged.features,
-                mockData: this.generateMockData(merged),
-                css: generatePreviewCss(merged, viewport),
+                mockData,
                 viewport: { ...VIEWPORT_DIMENSIONS[viewport], class: viewport },
             };
         }

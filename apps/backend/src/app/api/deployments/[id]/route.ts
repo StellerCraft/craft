@@ -138,4 +138,39 @@ export const DELETE = withAuth(async (req: NextRequest, { params, user, supabase
         success: true,
         deploymentId,
     });
+
+  export async function DELETE(
+  request: Request,
+  { params }: { params: { id: string } }) 
+  {
+      try {
+        const deploymentId = params.id;
+
+    // 1. Fetch the deployment to get the github_repo_id before deleting
+    const deployment = await DeploymentService.findById(deploymentId);
+    
+    if (!deployment) {
+      return NextResponse.json({ error: 'Deployment not found' }, { status: 404 });
+    }
+
+    // 2. Soft-delete the DB row
+    await DeploymentService.softDelete(deploymentId);
+
+    // 3. Trigger GitHub Repo Cleanup (Non-fatal)
+    if (deployment.github_repo_id) {
+      try {
+        // Run cleanup asynchronously or await it, but catch errors locally
+        await RepositoryCleanupService.cleanup(deployment.github_repo_id);
+      } catch (githubError) {
+        // Acceptance Criteria: Treat GitHub API errors as non-fatal — log and continue
+        console.error(`[Non-Fatal] Failed to cleanup GitHub repo ${deployment.github_repo_id} for deployment ${deploymentId}:`, githubError);
+      }
+    }
+
+    return NextResponse.json({ success: true, message: 'Deployment deleted' });
+  } catch (error) {
+    console.error('Failed to delete deployment:', error);
+    return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
+      }
+
 });

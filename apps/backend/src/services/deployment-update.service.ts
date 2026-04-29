@@ -2,7 +2,7 @@
  * DeploymentUpdateService
  *
  * Handles deployment updates with rollback on failure.
- * 
+ *
  * Property 38 (design.md): Failed updates must NOT replace the last known good deployment.
  * When an update fails at any stage, the deployment must rollback to the previous
  * successful state, preserving:
@@ -14,14 +14,25 @@
  */
 
 import { createClient } from '@/lib/supabase/server';
-import type { DeploymentStatusType, CustomizationConfig } from '@craft/types';
-import type { GeneratedFile } from '@craft/types';
+import type { CustomizationConfig, DeploymentStatusType, GeneratedFile } from '@craft/types';
 import {
     githubPushService,
     type GitHubCommitReference,
     type GitHubPushService,
 } from './github-push.service';
 import { parseRepoIdentity } from './github-repository-update.service';
+import {
+    BlueGreenSwitcher,
+    DEFAULT_CANARY_STEPS,
+    RolloutEngine,
+    type DeploymentVersion,
+} from './rollout-strategy.service';
+import {
+    VercelService,
+    type NormalizedDeploymentStatus,
+    type TriggerDeploymentResult,
+    type VercelAlias,
+} from './vercel.service';
 
 export interface DeploymentUpdate {
     id: string;
@@ -29,13 +40,15 @@ export interface DeploymentUpdate {
     userId: string;
     newCustomizationConfig: CustomizationConfig;
     status: DeploymentUpdateStatus;
+    canaryPercent: number;
     previousState: DeploymentState | null;
     errorMessage?: string;
     createdAt: Date;
     completedAt?: Date;
+    canaryPercent?: number;
 }
 
-export type DeploymentUpdateStatus = 
+export type DeploymentUpdateStatus =
     | 'pending'
     | 'validating'
     | 'generating'
@@ -46,9 +59,12 @@ export type DeploymentUpdateStatus =
     | 'failed';
 
 export interface DeploymentState {
+    name: string;
     customizationConfig: CustomizationConfig;
     deploymentUrl: string | null;
+    vercelProjectId: string | null;
     vercelDeploymentId: string | null;
+    customDomain: string | null;
     status: DeploymentStatusType;
     repositoryUrl: string | null;
 }
@@ -82,11 +98,71 @@ export interface UpdateDeploymentResult {
 interface PipelineExecutionResult {
     success: boolean;
     commitRef?: GitHubCommitReference;
+    deploymentUrl?: string;
+    vercelDeploymentId?: string;
+    canaryPercent: number;
+    rollbackReason?: string;
+}
+
+export interface RolloutMetrics {
+    errorRate: number;
+    p99LatencyMs: number;
+    forceRollback?: boolean;
+}
+
+export interface RolloutMonitorContext {
+    updateId: string;
+    deploymentId: string;
+    candidateDeploymentId: string;
+    candidateDeploymentUrl: string;
+    canaryPercent: number;
+}
+
+export interface RolloutMonitor {
+    getCandidateMetrics(context: RolloutMonitorContext): Promise<RolloutMetrics>;
+}
+
+interface DeploymentUpdateVercelClient {
+    triggerDeployment(projectId: string, gitRepo: string): Promise<TriggerDeploymentResult>;
+    getDeploymentStatus(deploymentId: string): Promise<NormalizedDeploymentStatus>;
+    listDeploymentAliases(deploymentId: string): Promise<VercelAlias[]>;
+    assignAliasToDeployment(deploymentId: string, alias: string): Promise<VercelAlias>;
+}
+
+class HttpRolloutMonitor implements RolloutMonitor {
+    async getCandidateMetrics(context: RolloutMonitorContext): Promise<RolloutMetrics> {
+        const injected = (globalThis as any).__DEPLOYMENT_UPDATE_ROLLOUT_METRICS;
+        if (typeof injected === 'function') {
+            return injected(context);
+        }
+
+        const startedAt = Date.now();
+        try {
+            const response = await fetch(context.candidateDeploymentUrl, {
+                method: 'HEAD',
+                signal: AbortSignal.timeout(10_000),
+            });
+
+            return {
+                errorRate: response.ok ? 0 : 1,
+                p99LatencyMs: Date.now() - startedAt,
+                forceRollback: (globalThis as any).__DEPLOYMENT_UPDATE_MANUAL_ROLLBACK === true,
+            };
+        } catch {
+            return {
+                errorRate: 1,
+                p99LatencyMs: 10_000,
+                forceRollback: (globalThis as any).__DEPLOYMENT_UPDATE_MANUAL_ROLLBACK === true,
+            };
+        }
+    }
 }
 
 export class DeploymentUpdateService {
     constructor(
-        private readonly _githubPushService: Pick<GitHubPushService, 'pushGeneratedCode'> = githubPushService
+        private readonly _githubPushService: Pick<GitHubPushService, 'pushGeneratedCode'> = githubPushService,
+        private readonly _vercelService: DeploymentUpdateVercelClient = new VercelService(),
+        private readonly _rolloutMonitor: RolloutMonitor = new HttpRolloutMonitor(),
     ) {}
 
     /**
@@ -94,16 +170,12 @@ export class DeploymentUpdateService {
      * If the update fails, automatically rollback to the previous good state.
      */
     async updateDeployment(request: UpdateDeploymentRequest): Promise<UpdateDeploymentResult> {
-        const supabase = createClient();
         const { deploymentId, userId, customizationConfig, githubPush } = request;
-
-        // Create update record
         const updateId = crypto.randomUUID();
-        
+
         try {
-            // Step 1: Get current deployment state (the "last known good" state)
             const previousState = await this.getDeploymentState(deploymentId, userId);
-            
+
             if (!previousState) {
                 return {
                     success: false,
@@ -113,7 +185,6 @@ export class DeploymentUpdateService {
                 };
             }
 
-            // Verify deployment is in completed state (can only update completed deployments)
             if (previousState.status !== 'completed') {
                 return {
                     success: false,
@@ -123,38 +194,34 @@ export class DeploymentUpdateService {
                 };
             }
 
-            // Create update record with previous state
             await this.createUpdateRecord(updateId, deploymentId, userId, customizationConfig, previousState);
-
-            // Step 2: Validate the new configuration
             await this.validateUpdate(updateId, customizationConfig);
 
-            // Step 3: Simulate update pipeline (in real implementation, this would:
-            //         - Generate new code
-            //         - Update repository
-            //         - Trigger Vercel redeployment
-            const pipeline = await this.executeUpdatePipeline(updateId, customizationConfig, githubPush, previousState);
+            const pipeline = await this.executeUpdatePipeline(
+                updateId,
+                deploymentId,
+                customizationConfig,
+                githubPush,
+                previousState,
+            );
 
             if (!pipeline.success) {
-                throw new Error('Update pipeline failed');
+                throw new Error(pipeline.rollbackReason || 'Update pipeline failed');
             }
 
-            // Step 4: Update deployment with new config
-            await this.finalizeUpdate(deploymentId, customizationConfig);
+            await this.finalizeUpdate(deploymentId, customizationConfig, pipeline);
             await this.markUpdateCompleted(updateId);
 
             return {
                 success: true,
                 deploymentId,
                 rolledBack: false,
-                deploymentUrl: previousState.deploymentUrl ?? undefined,
+                deploymentUrl: pipeline.deploymentUrl ?? previousState.deploymentUrl ?? undefined,
                 commitRef: pipeline.commitRef,
             };
-
         } catch (error: any) {
             console.error('Deployment update failed, initiating rollback:', error);
 
-            // Step 5: Rollback to previous state
             const rollbackSuccess = await this.rollbackUpdate(updateId, deploymentId);
 
             return {
@@ -166,18 +233,15 @@ export class DeploymentUpdateService {
         }
     }
 
-    /**
-     * Get the current state of a deployment
-     */
     private async getDeploymentState(
         deploymentId: string,
-        userId: string
+        userId: string,
     ): Promise<DeploymentState | null> {
         const supabase = createClient();
 
         const { data: deployment, error } = await supabase
             .from('deployments')
-            .select('customization_config, deployment_url, vercel_deployment_id, status, repository_url')
+            .select('name, customization_config, deployment_url, vercel_project_id, vercel_deployment_id, custom_domain, status, repository_url')
             .eq('id', deploymentId)
             .eq('user_id', userId)
             .single();
@@ -187,23 +251,23 @@ export class DeploymentUpdateService {
         }
 
         return {
+            name: deployment.name,
             customizationConfig: deployment.customization_config as CustomizationConfig,
             deploymentUrl: deployment.deployment_url,
+            vercelProjectId: deployment.vercel_project_id ?? null,
             vercelDeploymentId: deployment.vercel_deployment_id,
+            customDomain: deployment.custom_domain ?? null,
             status: deployment.status as DeploymentStatusType,
             repositoryUrl: deployment.repository_url ?? null,
         };
     }
 
-    /**
-     * Create an update record for tracking
-     */
     private async createUpdateRecord(
         updateId: string,
         deploymentId: string,
         userId: string,
         newConfig: CustomizationConfig,
-        previousState: DeploymentState
+        previousState: DeploymentState,
     ): Promise<void> {
         const supabase = createClient();
 
@@ -214,21 +278,18 @@ export class DeploymentUpdateService {
             new_customization_config: newConfig,
             previous_state: previousState,
             status: 'pending',
+            canary_percent: 0,
             created_at: new Date().toISOString(),
+            canary_percent: 0,
         });
     }
 
-    /**
-     * Validate the new customization configuration
-     */
     private async validateUpdate(
         updateId: string,
-        config: CustomizationConfig
+        config: CustomizationConfig,
     ): Promise<void> {
-        // Update status
-        await this.updateUpdateStatus(updateId, 'validating');
+        await this.updateUpdateStatus(updateId, 'validating', { canaryPercent: 0 });
 
-        // Basic validation
         if (!config.branding?.appName || config.branding.appName.length === 0) {
             throw new Error('Invalid configuration: appName is required');
         }
@@ -238,25 +299,23 @@ export class DeploymentUpdateService {
         }
     }
 
-    /**
-     * Execute the update pipeline (simulated for testing)
-     * This can be configured to fail for property testing
-     */
     private async executeUpdatePipeline(
         updateId: string,
+        deploymentId: string,
         config: CustomizationConfig,
         githubPush?: UpdateDeploymentRequest['githubPush'],
-        previousState?: DeploymentState
+        previousState?: DeploymentState,
     ): Promise<PipelineExecutionResult> {
-        await this.updateUpdateStatus(updateId, 'generating');
-        
-        // Simulate code generation
+        await this.updateUpdateStatus(updateId, 'generating', { canaryPercent: 0 });
         await this.simulateWork();
 
-        await this.updateUpdateStatus(updateId, 'updating_repo');
+        await this.updateUpdateStatus(updateId, 'updating_repo', { canaryPercent: 0 });
 
         let commitRef: GitHubCommitReference | undefined;
+        let repoFullName: string | undefined;
+
         if (githubPush) {
+            repoFullName = `${githubPush.owner}/${githubPush.repo}`;
             commitRef = await this._githubPushService.pushGeneratedCode({
                 owner: githubPush.owner,
                 repo: githubPush.repo,
@@ -271,8 +330,8 @@ export class DeploymentUpdateService {
                 authorEmail: githubPush.authorEmail,
             });
         } else if (previousState?.repositoryUrl) {
-            // Auto-resolve owner/repo from the stored repository URL (reuse logic)
             const { owner, repo } = parseRepoIdentity(previousState.repositoryUrl);
+            repoFullName = `${owner}/${repo}`;
             const token = process.env.GITHUB_TOKEN ?? '';
             commitRef = await this._githubPushService.pushGeneratedCode({
                 owner,
@@ -283,32 +342,122 @@ export class DeploymentUpdateService {
                 commitMessage: `chore: update generated workspace (${new Date().toISOString()})`,
             });
         } else {
-            // Preserve simulated behavior for callers that do not opt into GitHub push.
             await this.simulateWork();
         }
 
-        await this.updateUpdateStatus(updateId, 'redeploying');
-        
-        // Simulate Vercel redeployment
-        await this.simulateWork();
+        await this.updateUpdateStatus(updateId, 'redeploying', { canaryPercent: 0 });
 
-        // For property testing, we use a global flag to simulate failures
-        // In production, this would be actual pipeline logic
-        const shouldFail = (global as any).__DEPLOYMENT_UPDATE_SHOULD_FAIL === true;
-        
+        const shouldFail = (globalThis as any).__DEPLOYMENT_UPDATE_SHOULD_FAIL === true;
         if (shouldFail) {
-            return { success: false, commitRef };
+            return {
+                success: false,
+                commitRef,
+                canaryPercent: 0,
+                rollbackReason: 'Update pipeline failed',
+            };
         }
 
-        return { success: true, commitRef };
+        if (!previousState?.vercelProjectId || !repoFullName) {
+            await this.simulateWork();
+            return {
+                success: true,
+                commitRef,
+                deploymentUrl: previousState?.deploymentUrl ?? undefined,
+                vercelDeploymentId: previousState?.vercelDeploymentId ?? undefined,
+                canaryPercent: 0,
+            };
+        }
+
+        const candidate = await this._vercelService.triggerDeployment(
+            previousState.vercelProjectId,
+            repoFullName,
+        );
+        const candidateStatus = await this._vercelService.getDeploymentStatus(candidate.deploymentId);
+        if (candidateStatus.status === 'failed' || candidateStatus.status === 'canceled') {
+            return {
+                success: false,
+                commitRef,
+                deploymentUrl: candidate.deploymentUrl,
+                vercelDeploymentId: candidate.deploymentId,
+                canaryPercent: 0,
+                rollbackReason: 'Candidate deployment did not become ready',
+            };
+        }
+
+        const stableVersion: DeploymentVersion = {
+            id: previousState.vercelDeploymentId ?? 'stable',
+            errorRate: 0,
+            p99LatencyMs: 0,
+        };
+        const candidateVersion: DeploymentVersion = {
+            id: candidate.deploymentId,
+            errorRate: 0,
+            p99LatencyMs: 0,
+        };
+        const rollout = new RolloutEngine(stableVersion, candidateVersion);
+
+        for (const canaryPercent of DEFAULT_CANARY_STEPS) {
+            rollout.setTrafficPercent(canaryPercent);
+            await this.updateUpdateStatus(updateId, 'redeploying', { canaryPercent });
+
+            const metrics = await this._rolloutMonitor.getCandidateMetrics({
+                updateId,
+                deploymentId,
+                candidateDeploymentId: candidate.deploymentId,
+                candidateDeploymentUrl: candidate.deploymentUrl,
+                canaryPercent,
+            });
+
+            candidateVersion.errorRate = metrics.errorRate;
+            candidateVersion.p99LatencyMs = metrics.p99LatencyMs;
+
+            if (metrics.forceRollback || rollout.evaluateAndMaybeRollback()) {
+                return {
+                    success: false,
+                    commitRef,
+                    deploymentUrl: candidate.deploymentUrl,
+                    vercelDeploymentId: candidate.deploymentId,
+                    canaryPercent: 0,
+                    rollbackReason: metrics.forceRollback
+                        ? 'Manual rollback requested during rollout'
+                        : 'Automatic rollback triggered during rollout',
+                };
+            }
+        }
+
+        const switcher = new BlueGreenSwitcher(stableVersion, candidateVersion, 'blue');
+        if (!switcher.switchToStandby()) {
+            return {
+                success: false,
+                commitRef,
+                deploymentUrl: candidate.deploymentUrl,
+                vercelDeploymentId: candidate.deploymentId,
+                canaryPercent: 0,
+                rollbackReason: 'Candidate failed blue-green promotion health gate',
+            };
+        }
+
+        const aliases = await this.getPromotionAliases(previousState);
+        if (previousState.vercelDeploymentId && aliases.length > 0) {
+            await this.switchAliasesWithRollback(previousState.vercelDeploymentId, candidate.deploymentId, aliases);
+        }
+
+        rollout.promote();
+        await this.updateUpdateStatus(updateId, 'redeploying', { canaryPercent: 100 });
+
+        return {
+            success: true,
+            commitRef,
+            deploymentUrl: candidate.deploymentUrl,
+            vercelDeploymentId: candidate.deploymentId,
+            canaryPercent: 100,
+        };
     }
 
-    /**
-     * Finalize the update by updating the deployment record
-     */
     private async finalizeUpdate(
         deploymentId: string,
-        config: CustomizationConfig
+        config: CustomizationConfig,
+        pipeline: PipelineExecutionResult,
     ): Promise<void> {
         const supabase = createClient();
 
@@ -316,23 +465,21 @@ export class DeploymentUpdateService {
             .from('deployments')
             .update({
                 customization_config: config,
+                deployment_url: pipeline.deploymentUrl,
+                vercel_deployment_id: pipeline.vercelDeploymentId,
                 status: 'completed',
                 updated_at: new Date().toISOString(),
             })
             .eq('id', deploymentId);
     }
 
-    /**
-     * Rollback to the previous deployment state
-     */
     private async rollbackUpdate(
         updateId: string,
-        deploymentId: string
+        deploymentId: string,
     ): Promise<boolean> {
         try {
             const supabase = createClient();
 
-            // Get the previous state from the update record
             const { data: updateRecord } = await supabase
                 .from('deployment_updates')
                 .select('previous_state')
@@ -346,37 +493,33 @@ export class DeploymentUpdateService {
 
             const previousState = updateRecord.previous_state as DeploymentState;
 
-            // Restore the deployment to its previous state
             await supabase
                 .from('deployments')
                 .update({
                     customization_config: previousState.customizationConfig,
                     deployment_url: previousState.deploymentUrl,
                     vercel_deployment_id: previousState.vercelDeploymentId,
-                    status: 'completed', // Ensure it's back to completed state
-                    error_message: null, // Clear any error messages
+                    status: 'completed',
+                    error_message: null,
                     updated_at: new Date().toISOString(),
                 })
                 .eq('id', deploymentId);
 
-            // Mark the update as rolled back
-            await this.updateUpdateStatus(updateId, 'rolled_back');
+            await this.updateUpdateStatus(updateId, 'rolled_back', { canaryPercent: 0 });
 
             console.log(`Successfully rolled back deployment ${deploymentId}`);
             return true;
         } catch (error: any) {
             console.error('Rollback failed:', error);
-            await this.updateUpdateStatus(updateId, 'failed');
+            await this.updateUpdateStatus(updateId, 'failed', { canaryPercent: 0 });
             return false;
         }
     }
 
-    /**
-     * Update the status of an update record
-     */
     private async updateUpdateStatus(
         updateId: string,
-        status: DeploymentUpdateStatus
+        status: DeploymentUpdateStatus,
+        options: { canaryPercent?: number; errorMessage?: string } = {},
     ): Promise<void> {
         const supabase = createClient();
 
@@ -384,14 +527,13 @@ export class DeploymentUpdateService {
             .from('deployment_updates')
             .update({
                 status,
+                ...(options.canaryPercent !== undefined ? { canary_percent: options.canaryPercent } : {}),
+                ...(options.errorMessage !== undefined ? { error_message: options.errorMessage } : {}),
                 updated_at: new Date().toISOString(),
             })
             .eq('id', updateId);
     }
 
-    /**
-     * Mark an update as completed
-     */
     private async markUpdateCompleted(updateId: string): Promise<void> {
         const supabase = createClient();
 
@@ -399,28 +541,63 @@ export class DeploymentUpdateService {
             .from('deployment_updates')
             .update({
                 status: 'completed',
+                canary_percent: 100,
                 completed_at: new Date().toISOString(),
                 updated_at: new Date().toISOString(),
             })
             .eq('id', updateId);
     }
 
-    /**
-     * Simulate async work (for pipeline simulation)
-     */
-    private async simulateWork(): Promise<void> {
-        // In real implementation, this would be actual work
-        // For testing, we just yield to the event loop
-        await new Promise(resolve => setTimeout(resolve, 0));
+    private async getPromotionAliases(previousState: DeploymentState): Promise<string[]> {
+        const aliases = new Set<string>();
+
+        if (previousState.vercelDeploymentId) {
+            const activeAliases = await this._vercelService.listDeploymentAliases(previousState.vercelDeploymentId);
+            for (const alias of activeAliases) {
+                aliases.add(alias.alias);
+            }
+        }
+
+        if (aliases.size === 0 && previousState.customDomain) {
+            aliases.add(previousState.customDomain);
+        }
+
+        return [...aliases];
     }
 
-    /**
-     * Get update history for a deployment
-     */
+    private async switchAliasesWithRollback(
+        previousDeploymentId: string,
+        candidateDeploymentId: string,
+        aliases: string[],
+    ): Promise<void> {
+        const switched: string[] = [];
+
+        try {
+            for (const alias of aliases) {
+                await this._vercelService.assignAliasToDeployment(candidateDeploymentId, alias);
+                switched.push(alias);
+            }
+        } catch (error) {
+            for (const alias of switched.reverse()) {
+                try {
+                    await this._vercelService.assignAliasToDeployment(previousDeploymentId, alias);
+                } catch (rollbackError) {
+                    console.error('Failed to revert alias after promotion error:', rollbackError);
+                }
+            }
+            throw error;
+        }
+    }
+
+    private async simulateWork(): Promise<void> {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
     async getUpdateHistory(deploymentId: string): Promise<Array<{
         id: string;
         status: DeploymentUpdateStatus;
         rolledBack: boolean;
+        canaryPercent: number;
         errorMessage?: string;
         createdAt: Date;
         completedAt?: Date;
@@ -429,7 +606,7 @@ export class DeploymentUpdateService {
 
         const { data, error } = await supabase
             .from('deployment_updates')
-            .select('id, status, error_message, created_at, completed_at')
+            .select('id, status, canary_percent, error_message, created_at, completed_at')
             .eq('deployment_id', deploymentId)
             .order('created_at', { ascending: false });
 
@@ -441,6 +618,7 @@ export class DeploymentUpdateService {
             id: record.id,
             status: record.status as DeploymentUpdateStatus,
             rolledBack: record.status === 'rolled_back',
+            canaryPercent: record.canary_percent ?? 0,
             errorMessage: record.error_message ?? undefined,
             createdAt: new Date(record.created_at),
             completedAt: record.completed_at ? new Date(record.completed_at) : undefined,
@@ -448,5 +626,4 @@ export class DeploymentUpdateService {
     }
 }
 
-// Export singleton instance
 export const deploymentUpdateService = new DeploymentUpdateService();
