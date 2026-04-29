@@ -2,33 +2,27 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useFormState, useFormStatus } from 'react-dom';
-import { updateProfileAction, type ProfileState, CONNECTION_STATUSES } from './actions';
+import Link from 'next/link';
+import { completeOnboardingAction } from './actions';
+import { CONNECTION_STATUSES, type ProfileState } from '../settings/profile/actions';
 
 const initialState: ProfileState = { status: 'idle', message: '' };
 
 // ---------------------------------------------------------------------------
-// Save button with optimistic feedback via useFormStatus
+// Submit button
 // ---------------------------------------------------------------------------
 
-function SaveButton({ savedRecently }: { savedRecently: boolean }) {
+function SubmitButton() {
     const { pending } = useFormStatus();
-
-    let label = 'Save changes';
-    if (pending) label = 'Saving…';
-    else if (savedRecently) label = 'Saved!';
-
     return (
         <button
             type="submit"
             disabled={pending}
             aria-busy={pending}
-            className={`inline-flex items-center gap-2 rounded-lg px-5 py-2.5 text-sm font-semibold
-                transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-surface-tint focus:ring-offset-2
-                disabled:opacity-60 disabled:cursor-not-allowed
-                ${savedRecently && !pending
-                    ? 'bg-green-600 text-white'
-                    : 'bg-gradient-primary text-on-primary hover:opacity-90'
-                }`}
+            className="w-full rounded-lg bg-gradient-primary px-4 py-2.5 text-sm font-semibold text-on-primary
+                       hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-surface-tint focus:ring-offset-2
+                       disabled:opacity-60 disabled:cursor-not-allowed transition-all duration-200
+                       flex items-center justify-center gap-2"
         >
             {pending && (
                 <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -36,7 +30,7 @@ function SaveButton({ savedRecently }: { savedRecently: boolean }) {
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                 </svg>
             )}
-            {label}
+            {pending ? 'Saving…' : 'Complete setup'}
         </button>
     );
 }
@@ -55,34 +49,57 @@ function FieldError({ id, message }: { id: string; message?: string }) {
 }
 
 // ---------------------------------------------------------------------------
-// Main form
+// Completion state
 // ---------------------------------------------------------------------------
 
-interface ProfileSettingsFormProps {
-    defaultValues?: {
-        displayName?: string;
-        email?: string;
-        bio?: string;
-        avatarUrl?: string;
-        website?: string;
-        connectionStatus?: string;
-    };
+function CompletionState() {
+    return (
+        <div
+            role="status"
+            aria-live="polite"
+            className="text-center space-y-6 py-8"
+            data-testid="onboarding-complete"
+        >
+            <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-green-100">
+                <svg
+                    className="h-8 w-8 text-green-600"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    aria-hidden="true"
+                >
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+            </div>
+            <div>
+                <h2 className="text-2xl font-bold font-headline text-on-surface">
+                    You&apos;re all set!
+                </h2>
+                <p className="mt-2 text-on-surface-variant">
+                    Your profile has been saved. Welcome to CRAFT.
+                </p>
+            </div>
+            <Link
+                href="/app"
+                className="inline-flex items-center gap-2 rounded-lg bg-gradient-primary px-6 py-2.5
+                           text-sm font-semibold text-on-primary hover:opacity-90
+                           focus:outline-none focus:ring-2 focus:ring-surface-tint focus:ring-offset-2
+                           transition-all duration-200"
+            >
+                Go to dashboard
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+            </Link>
+        </div>
+    );
 }
 
-export default function ProfileSettingsForm({ defaultValues }: ProfileSettingsFormProps) {
-    const [state, formAction] = useFormState(updateProfileAction, initialState);
-    const [savedRecently, setSavedRecently] = useState(false);
-    const timerRef = useRef<ReturnType<typeof setTimeout>>();
+// ---------------------------------------------------------------------------
+// Entry state (the form)
+// ---------------------------------------------------------------------------
 
-    // Flash "Saved!" for 2 seconds after a successful save
-    useEffect(() => {
-        if (state.status === 'success') {
-            setSavedRecently(true);
-            timerRef.current = setTimeout(() => setSavedRecently(false), 2000);
-        }
-        return () => clearTimeout(timerRef.current);
-    }, [state]);
-
+function EntryState({ state, formAction }: { state: ProfileState; formAction: (payload: FormData) => void }) {
     const inputClasses =
         'w-full rounded-lg border border-outline-variant bg-surface-container-lowest ' +
         'px-3 py-2 text-sm text-on-surface shadow-sm placeholder:text-on-surface-variant/50 ' +
@@ -92,17 +109,10 @@ export default function ProfileSettingsForm({ defaultValues }: ProfileSettingsFo
     const labelClasses = 'block text-sm font-medium text-on-surface mb-1';
 
     return (
-        <form action={formAction} noValidate className="space-y-6">
-            {/* Form-level banner */}
+        <form action={formAction} noValidate className="space-y-5" data-testid="onboarding-form">
             {state.status === 'error' && !state.fieldErrors && (
                 <div role="alert" className="rounded-lg bg-error-container/50 border border-error/20 px-4 py-3">
                     <p className="text-sm text-on-error-container">{state.message}</p>
-                </div>
-            )}
-
-            {state.status === 'success' && (
-                <div role="status" className="rounded-lg bg-green-50 border border-green-200 px-4 py-3">
-                    <p className="text-sm text-green-800">{state.message}</p>
                 </div>
             )}
 
@@ -119,36 +129,16 @@ export default function ProfileSettingsForm({ defaultValues }: ProfileSettingsFo
                     aria-required="true"
                     aria-describedby={state.fieldErrors?.displayName ? 'displayName-error' : undefined}
                     aria-invalid={!!state.fieldErrors?.displayName}
-                    defaultValue={defaultValues?.displayName ?? ''}
                     placeholder="Your display name"
                     className={`${inputClasses} ${state.fieldErrors?.displayName ? 'border-error focus:ring-error' : ''}`}
                 />
                 <FieldError id="displayName-error" message={state.fieldErrors?.displayName} />
             </div>
 
-            {/* Email (read-only) */}
-            <div>
-                <label htmlFor="email" className={labelClasses}>
-                    Email address
-                </label>
-                <input
-                    id="email"
-                    name="email"
-                    type="email"
-                    disabled
-                    readOnly
-                    value={defaultValues?.email ?? ''}
-                    className={`${inputClasses} cursor-not-allowed`}
-                />
-                <p className="mt-1 text-xs text-on-surface-variant">
-                    Email cannot be changed here. Contact support if you need to update it.
-                </p>
-            </div>
-
             {/* Bio */}
             <div>
                 <label htmlFor="bio" className={labelClasses}>
-                    Bio
+                    Bio <span className="text-xs text-on-surface-variant font-normal">(optional)</span>
                 </label>
                 <textarea
                     id="bio"
@@ -157,7 +147,6 @@ export default function ProfileSettingsForm({ defaultValues }: ProfileSettingsFo
                     maxLength={160}
                     aria-describedby={state.fieldErrors?.bio ? 'bio-error' : 'bio-hint'}
                     aria-invalid={!!state.fieldErrors?.bio}
-                    defaultValue={defaultValues?.bio ?? ''}
                     placeholder="A short bio about yourself (max 160 characters)"
                     className={`${inputClasses} resize-none ${state.fieldErrors?.bio ? 'border-error focus:ring-error' : ''}`}
                 />
@@ -167,28 +156,10 @@ export default function ProfileSettingsForm({ defaultValues }: ProfileSettingsFo
                 }
             </div>
 
-            {/* Avatar URL */}
-            <div>
-                <label htmlFor="avatarUrl" className={labelClasses}>
-                    Avatar URL
-                </label>
-                <input
-                    id="avatarUrl"
-                    name="avatarUrl"
-                    type="url"
-                    aria-describedby={state.fieldErrors?.avatarUrl ? 'avatarUrl-error' : undefined}
-                    aria-invalid={!!state.fieldErrors?.avatarUrl}
-                    defaultValue={defaultValues?.avatarUrl ?? ''}
-                    placeholder="https://example.com/avatar.jpg"
-                    className={`${inputClasses} ${state.fieldErrors?.avatarUrl ? 'border-error focus:ring-error' : ''}`}
-                />
-                <FieldError id="avatarUrl-error" message={state.fieldErrors?.avatarUrl} />
-            </div>
-
             {/* Website */}
             <div>
                 <label htmlFor="website" className={labelClasses}>
-                    Website
+                    Website <span className="text-xs text-on-surface-variant font-normal">(optional)</span>
                 </label>
                 <input
                     id="website"
@@ -196,7 +167,6 @@ export default function ProfileSettingsForm({ defaultValues }: ProfileSettingsFo
                     type="url"
                     aria-describedby={state.fieldErrors?.website ? 'website-error' : undefined}
                     aria-invalid={!!state.fieldErrors?.website}
-                    defaultValue={defaultValues?.website ?? ''}
                     placeholder="https://yourwebsite.com"
                     className={`${inputClasses} ${state.fieldErrors?.website ? 'border-error focus:ring-error' : ''}`}
                 />
@@ -211,9 +181,9 @@ export default function ProfileSettingsForm({ defaultValues }: ProfileSettingsFo
                 <select
                     id="connectionStatus"
                     name="connectionStatus"
+                    defaultValue="online"
                     aria-describedby={state.fieldErrors?.connectionStatus ? 'connectionStatus-error' : undefined}
                     aria-invalid={!!state.fieldErrors?.connectionStatus}
-                    defaultValue={defaultValues?.connectionStatus ?? 'online'}
                     className={`${inputClasses} ${state.fieldErrors?.connectionStatus ? 'border-error focus:ring-error' : ''}`}
                 >
                     {CONNECTION_STATUSES.map((s) => (
@@ -225,10 +195,29 @@ export default function ProfileSettingsForm({ defaultValues }: ProfileSettingsFo
                 <FieldError id="connectionStatus-error" message={state.fieldErrors?.connectionStatus} />
             </div>
 
-            {/* Actions */}
-            <div className="flex items-center justify-end pt-2">
-                <SaveButton savedRecently={savedRecently} />
-            </div>
+            <SubmitButton />
         </form>
     );
+}
+
+// ---------------------------------------------------------------------------
+// Main component — switches between entry and completion states
+// ---------------------------------------------------------------------------
+
+export default function OnboardingForm() {
+    const [state, formAction] = useFormState(completeOnboardingAction, initialState);
+    const [completed, setCompleted] = useState(false);
+    const timerRef = useRef<ReturnType<typeof setTimeout>>();
+
+    useEffect(() => {
+        if (state.status === 'success') {
+            // Small delay so the success banner is visible before switching
+            timerRef.current = setTimeout(() => setCompleted(true), 300);
+        }
+        return () => clearTimeout(timerRef.current);
+    }, [state]);
+
+    if (completed) return <CompletionState />;
+
+    return <EntryState state={state} formAction={formAction} />;
 }
