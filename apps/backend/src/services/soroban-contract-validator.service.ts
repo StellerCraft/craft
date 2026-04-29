@@ -10,15 +10,35 @@
  * this service wraps it and adds RPC-based existence checking.
  *
  * Feature: soroban-contract-address-validation
- * Issue: #248
+ * Issue: #475
  */
 
 import {
     validateContractAddress,
     type ContractValidationResult,
 } from '@/lib/stellar/contract-validation';
+import { getErrorGuidance } from '@/lib/errors/guidance';
+import type { ErrorGuidance } from '@craft/types';
 
 export type { ContractValidationResult };
+
+/**
+ * Structured validation error returned by the service.
+ * Includes the raw code, a human-readable reason, and aligned guidance.
+ */
+export interface ValidationError {
+    /** Error code matching a guidance catalogue entry (e.g. CONTRACT_ADDRESS_EMPTY). */
+    code: string;
+    /** Human-readable explanation of the failure. */
+    reason: string;
+    /** Actionable guidance from the catalogue. */
+    guidance: ErrorGuidance;
+}
+
+export interface ContractFormatResult {
+    valid: boolean;
+    error?: ValidationError;
+}
 
 export interface ContractExistenceResult {
     exists: boolean;
@@ -36,16 +56,34 @@ export class SorobanContractValidator {
 
     /**
      * Validate contract address format only (no network call).
+     * Returns a structured result with guidance on failure.
      */
-    validateFormat(address: unknown): ContractValidationResult {
+    validateFormat(address: unknown): ContractFormatResult {
         if (typeof address !== 'string') {
+            const code = 'CONTRACT_ADDRESS_EMPTY';
             return {
                 valid: false,
-                reason: 'Contract address must be a string',
-                code: 'CONTRACT_ADDRESS_NOT_STRING' as any,
+                error: {
+                    code,
+                    reason: 'Contract address must be a string',
+                    guidance: getErrorGuidance('stellar', code),
+                },
             };
         }
-        return validateContractAddress(address);
+
+        const result = validateContractAddress(address);
+        if (!result.valid) {
+            return {
+                valid: false,
+                error: {
+                    code: result.code,
+                    reason: result.reason,
+                    guidance: getErrorGuidance('stellar', result.code),
+                },
+            };
+        }
+
+        return { valid: true };
     }
 
     /**
@@ -53,13 +91,13 @@ export class SorobanContractValidator {
      * Uses getLedgerEntries to check if the contract's WASM entry exists.
      */
     async checkExistence(contractId: string, sorobanRpcUrl: string): Promise<ContractExistenceResult> {
-        const formatResult = validateContractAddress(contractId);
+        const formatResult = this.validateFormat(contractId);
         if (!formatResult.valid) {
             return {
                 exists: false,
                 contractId,
                 callable: false,
-                error: formatResult.reason,
+                error: formatResult.error?.reason,
             };
         }
 

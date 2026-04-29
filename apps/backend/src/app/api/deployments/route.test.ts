@@ -78,6 +78,23 @@ function makeTableMock(results: { data: unknown; error: unknown; count?: number 
   };
 }
 
+function get(url: string, headers?: Record<string, string>) {
+  return new NextRequest(url, {
+    method: 'GET',
+    headers: headers ?? {},
+  });
+}
+
+function postWithVersion(url: string, body: unknown, version?: string) {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (version) headers['API-Version'] = version;
+  return new NextRequest(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+  });
+}
+
 describe('POST /api/deployments', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -197,5 +214,178 @@ describe('POST /api/deployments', () => {
     const body = await res.json();
     expect(body.id).toBe('dep-1');
     expect(body.status).toBe('generating');
+  });
+});
+
+describe('GET /api/deployments', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetUser.mockResolvedValue({ data: { user: fakeUser }, error: null });
+  });
+
+  it('returns 401 when unauthenticated', async () => {
+    mockGetUser.mockResolvedValue({ data: { user: null }, error: null });
+    const { GET } = await import('./route');
+    const res = await GET(get('http://localhost/api/deployments'), { params: {} as any });
+    expect(res.status).toBe(401);
+  });
+
+  it('returns user deployments', async () => {
+    const deploymentRows = [
+      { id: 'dep-1', name: 'App 1', status: 'deployed', template_id: 'tpl-1', created_at: '2024-01-01', updated_at: '2024-01-02', deployed_at: '2024-01-02', deployment_url: 'https://app-1.vercel.app' },
+    ];
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'deployments') {
+        return {
+          select: vi.fn(() => ({
+            eq: vi.fn(() => ({
+              order: vi.fn().mockResolvedValue({ data: deploymentRows, error: null }),
+            })),
+          })),
+        };
+      }
+      return makeTableMock([]);
+    });
+    const { GET } = await import('./route');
+    const res = await GET(get('http://localhost/api/deployments'), { params: {} as any });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.deployments).toHaveLength(1);
+    expect(body.deployments[0].id).toBe('dep-1');
+    expect(body.deployments[0].templateId).toBe('tpl-1');
+  });
+
+  it('returns 500 when supabase query fails', async () => {
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'deployments') {
+        return {
+          select: vi.fn(() => ({
+            eq: vi.fn(() => ({
+              order: vi.fn().mockResolvedValue({ data: null, error: { message: 'db error' } }),
+            })),
+          })),
+        };
+      }
+      return makeTableMock([]);
+    });
+    const { GET } = await import('./route');
+    const res = await GET(get('http://localhost/api/deployments'), { params: {} as any });
+    expect(res.status).toBe(500);
+  });
+});
+
+describe('API versioning on /api/deployments', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetUser.mockResolvedValue({ data: { user: fakeUser }, error: null });
+  });
+
+  it('includes X-API-Version header in response', async () => {
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'deployments') {
+        return {
+          select: vi.fn(() => ({
+            eq: vi.fn(() => ({
+              order: vi.fn().mockResolvedValue({ data: [], error: null }),
+            })),
+          })),
+        };
+      }
+      return makeTableMock([]);
+    });
+    const { GET } = await import('./route');
+    const res = await GET(get('http://localhost/api/deployments'), { params: {} as any });
+    expect(res.headers.get('X-API-Version')).toBe('v1');
+  });
+
+  it('includes X-Latest-Version header in response', async () => {
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'deployments') {
+        return {
+          select: vi.fn(() => ({
+            eq: vi.fn(() => ({
+              order: vi.fn().mockResolvedValue({ data: [], error: null }),
+            })),
+          })),
+        };
+      }
+      return makeTableMock([]);
+    });
+    const { GET } = await import('./route');
+    const res = await GET(get('http://localhost/api/deployments'), { params: {} as any });
+    expect(res.headers.get('X-Latest-Version')).toBe('v1');
+  });
+
+  it('defaults to v1 when API-Version header is absent', async () => {
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'deployments') {
+        return {
+          select: vi.fn(() => ({
+            eq: vi.fn(() => ({
+              order: vi.fn().mockResolvedValue({ data: [], error: null }),
+            })),
+          })),
+        };
+      }
+      return makeTableMock([]);
+    });
+    const { GET } = await import('./route');
+    const res = await GET(get('http://localhost/api/deployments'), { params: {} as any });
+    expect(res.headers.get('X-API-Version')).toBe('v1');
+    expect(res.status).toBe(200);
+  });
+
+  it('accepts API-Version: v1 explicitly', async () => {
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'deployments') {
+        return {
+          select: vi.fn(() => ({
+            eq: vi.fn(() => ({
+              order: vi.fn().mockResolvedValue({ data: [], error: null }),
+            })),
+          })),
+        };
+      }
+      return makeTableMock([]);
+    });
+    const { GET } = await import('./route');
+    const res = await GET(get('http://localhost/api/deployments', { 'API-Version': 'v1' }), { params: {} as any });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('X-API-Version')).toBe('v1');
+  });
+
+  it('returns 400 with supportedVersions for unknown version', async () => {
+    const { GET } = await import('./route');
+    const res = await GET(get('http://localhost/api/deployments', { 'API-Version': 'v99' }), { params: {} as any });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toMatch(/Unsupported API version/);
+    expect(body.supportedVersions).toEqual(['v1']);
+  });
+
+  it('does not set Deprecation header for current version (v1)', async () => {
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'deployments') {
+        return {
+          select: vi.fn(() => ({
+            eq: vi.fn(() => ({
+              order: vi.fn().mockResolvedValue({ data: [], error: null }),
+            })),
+          })),
+        };
+      }
+      return makeTableMock([]);
+    });
+    const { GET } = await import('./route');
+    const res = await GET(get('http://localhost/api/deployments', { 'API-Version': 'v1' }), { params: {} as any });
+    expect(res.headers.get('Deprecation')).toBeNull();
+  });
+
+  it('returns 400 with supportedVersions for unknown POST version', async () => {
+    const { POST } = await import('./route');
+    const res = await POST(postWithVersion('http://localhost/api/deployments', { templateId: 'tpl-1' }, 'v99'), { params: {} as any });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.supportedVersions).toEqual(['v1']);
   });
 });
