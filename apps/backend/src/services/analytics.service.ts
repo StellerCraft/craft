@@ -158,6 +158,35 @@ export class AnalyticsService {
     }
 
     /**
+     * Delete deployment_analytics rows older than `retentionDays` days.
+     *
+     * Called by the daily purge-analytics cron job.
+     * If retentionDays is 0 the policy is considered disabled and nothing is deleted.
+     *
+     * @param retentionDays - Number of days to retain records (0 = disabled)
+     * @returns Number of rows deleted
+     */
+    async applyRetentionPolicy(retentionDays: number): Promise<number> {
+        if (retentionDays === 0) {
+            return 0;
+        }
+
+        const supabase = createClient();
+        const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
+
+        const { error, count } = await supabase
+            .from('deployment_analytics')
+            .delete()
+            .lt('recorded_at', cutoff);
+
+        if (error) {
+            throw new Error(`Failed to apply retention policy: ${error.message}`);
+        }
+
+        return count ?? 0;
+    }
+
+    /**
      * Export analytics data as CSV
      */
     async exportAnalytics(
