@@ -289,6 +289,35 @@ Error model:
 - `NETWORK_ERROR` for transport failures to GitHub
 - `API_ERROR` for non-auth GitHub API failures
 
+### Blue-Green Deployment Updates
+
+Live deployment updates now use a staged rollout instead of a hard cutover when the deployment already has a Vercel project binding.
+
+Behavior:
+- The update pipeline deploys the new revision to the standby environment first.
+- Canary rollout state is tracked on the `deployment_updates.canary_percent` field for observability.
+- Promotion reassigns the active Vercel aliases only after the rollout checks pass.
+- If candidate health degrades or an operator requests rollback during rollout, traffic stays on the previous active deployment.
+- If a Vercel alias reassignment fails mid-switch, the service automatically reassigns any moved aliases back to the previous deployment before surfacing the error.
+
+Sequence diagram:
+
+```text
+deployment update
+  -> standby deploy
+  -> canary traffic (5% -> 25% -> 50%)
+  -> monitor candidate health
+  -> promote active aliases
+  -> 100% traffic on candidate
+
+deployment update
+  -> standby deploy
+  -> canary traffic
+  -> monitor detects failure or manual rollback
+  -> keep active aliases on stable deployment
+  -> mark update rolled_back
+```
+
 ### Payment Endpoints
 
 ```

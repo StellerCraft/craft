@@ -176,6 +176,47 @@ export interface Database {
                     created_at?: string;
                 };
             };
+            deployment_updates: {
+                Row: {
+                    id: string;
+                    deployment_id: string;
+                    user_id: string;
+                    new_customization_config: Json;
+                    previous_state: Json | null;
+                    status: 'pending' | 'validating' | 'generating' | 'updating_repo' | 'redeploying' | 'completed' | 'rolled_back' | 'failed';
+                    canary_percent: number;
+                    error_message: string | null;
+                    created_at: string;
+                    updated_at: string;
+                    completed_at: string | null;
+                };
+                Insert: {
+                    id?: string;
+                    deployment_id: string;
+                    user_id: string;
+                    new_customization_config: Json;
+                    previous_state?: Json | null;
+                    status?: 'pending' | 'validating' | 'generating' | 'updating_repo' | 'redeploying' | 'completed' | 'rolled_back' | 'failed';
+                    canary_percent?: number;
+                    error_message?: string | null;
+                    created_at?: string;
+                    updated_at?: string;
+                    completed_at?: string | null;
+                };
+                Update: {
+                    id?: string;
+                    deployment_id?: string;
+                    user_id?: string;
+                    new_customization_config?: Json;
+                    previous_state?: Json | null;
+                    status?: 'pending' | 'validating' | 'generating' | 'updating_repo' | 'redeploying' | 'completed' | 'rolled_back' | 'failed';
+                    canary_percent?: number;
+                    error_message?: string | null;
+                    created_at?: string;
+                    updated_at?: string;
+                    completed_at?: string | null;
+                };
+            };
             customization_drafts: {
                 Row: {
                     id: string;

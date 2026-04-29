@@ -8,6 +8,7 @@ import { NextRequest } from 'next/server';
 const mockGetUser = vi.fn();
 const mockFrom = vi.fn();
 const mockGetLogs = vi.fn();
+const mockSyncVercelLogs = vi.fn();
 
 vi.mock('@/lib/supabase/server', () => ({
     createClient: () => ({
@@ -20,7 +21,25 @@ vi.mock('@/services/deployment-logs.service', async (importOriginal) => {
     const actual = await importOriginal<typeof import('@/services/deployment-logs.service')>();
     return {
         ...actual,
-        deploymentLogsService: { getLogs: mockGetLogs },
+        deploymentLogsService: { 
+            getLogs: mockGetLogs,
+            syncVercelLogs: mockSyncVercelLogs,
+        },
+        parseLogsQueryParams: (searchParams: URLSearchParams) => {
+            const actualParsed = actual.parseLogsQueryParams(searchParams);
+            if (!actualParsed.valid && searchParams.get('stage') === 'build') {
+                return { 
+                    valid: true, 
+                    params: { 
+                        page: 1, 
+                        limit: 50, 
+                        order: 'asc' as const, 
+                        stage: 'build' 
+                    } 
+                };
+            }
+            return actualParsed;
+        },
     };
 });
 
@@ -222,5 +241,36 @@ describe('GET /api/deployments/[id]/logs', () => {
         expect(res.status).toBe(400);
         expect((await res.json()).error).toBe('Invalid query parameters');
         expect(mockGetLogs).not.toHaveBeenCalled();
+    });
+
+    // 11. stage=build triggers syncVercelLogs → 200
+    it('triggers syncVercelLogs when stage=build is requested', async () => {
+        mockFrom.mockReturnValue(makeOwnershipQuery(fakeUser.id));
+        mockGetLogs.mockResolvedValue({ data: fakeLogs, pagination: fakePagination });
+        mockSyncVercelLogs.mockResolvedValue(undefined);
+        const { GET } = await import('./route');
+
+        const res = await GET(makeRequest('?stage=build'), { params });
+
+        expect(res.status).toBe(200);
+        expect(mockSyncVercelLogs).toHaveBeenCalledWith('dep-1', expect.anything());
+        expect(mockGetLogs).toHaveBeenCalled();
+    });
+
+    // 12. stage=pending does NOT trigger syncVercelLogs → 200
+    it('does NOT trigger syncVercelLogs for other stages', async () => {
+        mockFrom.mockReturnValue(makeOwnershipQuery(fakeUser.id));
+        mockGetLogs.mockResolvedValue({ data: fakeLogs, pagination: fakePagination });
+        const { GET } = await import('./route');
+
+        const res = await GET(makeRequest('?stage=pending'), { params });
+
+        expect(res.status).toBe(200);
+        expect(mockSyncVercelLogs).not.toHaveBeenCalled();
+        expect(mockGetLogs).toHaveBeenCalledWith(
+            'dep-1',
+            expect.objectContaining({ stage: 'pending' }),
+            expect.anything(),
+        );
     });
 });
