@@ -1,0 +1,33 @@
+name: Visual Regression Baseline Check
+
+on:
+  pull_request:
+    paths:
+      - 'apps/backend/tests/visual/**'
+      - '.github/workflows/visual-regression.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'apps/backend/tests/visual/**'
+      - '.github/workflows/visual-regression.yml'
+
+jobs:
+  compare-baselines:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Compare deployment preview visual baselines
+        run: npm run --workspace @craft/backend test -- tests/visual/preview.visual.test.ts
