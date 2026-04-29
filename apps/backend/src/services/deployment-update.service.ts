@@ -22,6 +22,8 @@ import {
     type GitHubPushService,
 } from './github-push.service';
 import { parseRepoIdentity } from './github-repository-update.service';
+import { RolloutEngine, BlueGreenSwitcher } from './rollout-strategy';
+import { VercelService } from './vercel.service';
 
 export interface DeploymentUpdate {
     id: string;
@@ -33,6 +35,7 @@ export interface DeploymentUpdate {
     errorMessage?: string;
     createdAt: Date;
     completedAt?: Date;
+    canaryPercent?: number;
 }
 
 export type DeploymentUpdateStatus = 
@@ -133,7 +136,7 @@ export class DeploymentUpdateService {
             //         - Generate new code
             //         - Update repository
             //         - Trigger Vercel redeployment
-            const pipeline = await this.executeUpdatePipeline(updateId, customizationConfig, githubPush, previousState);
+            const pipeline = await this.executeUpdatePipeline(updateId, deploymentId, customizationConfig, githubPush, previousState);
 
             if (!pipeline.success) {
                 throw new Error('Update pipeline failed');
@@ -215,6 +218,7 @@ export class DeploymentUpdateService {
             previous_state: previousState,
             status: 'pending',
             created_at: new Date().toISOString(),
+            canary_percent: 0,
         });
     }
 
@@ -244,6 +248,7 @@ export class DeploymentUpdateService {
      */
     private async executeUpdatePipeline(
         updateId: string,
+        deploymentId: string,
         config: CustomizationConfig,
         githubPush?: UpdateDeploymentRequest['githubPush'],
         previousState?: DeploymentState
@@ -291,6 +296,65 @@ export class DeploymentUpdateService {
         
         // Simulate Vercel redeployment
         await this.simulateWork();
+
+        // ── ROLLOUT LOGIC ──
+        const stableVersion = { 
+            id: previousState?.vercelDeploymentId || 'blue-id', 
+            errorRate: 0, 
+            p99LatencyMs: 100 
+        };
+        const candidateVersion = { 
+            id: `vercel-${crypto.randomUUID()}`, 
+            errorRate: (global as any).__CANARY_ERROR_RATE ?? 0, 
+            p99LatencyMs: (global as any).__CANARY_LATENCY ?? 100 
+        };
+
+        const engine = new RolloutEngine(stableVersion, candidateVersion);
+        const switcher = new BlueGreenSwitcher(stableVersion, candidateVersion, 'blue');
+
+        // Check for manual rollback flag
+        if ((global as any).__MANUAL_ROLLBACK === true) {
+            await this.updateCanaryPercent(updateId, 0);
+            throw new Error('Manual rollback triggered');
+        }
+
+        // Incremental traffic split: 5% -> 25% -> 50% -> 100%
+        const steps = [5, 25, 50, 100];
+        for (const pct of steps) {
+            engine.setTrafficPercent(pct);
+            await this.updateCanaryPercent(updateId, pct);
+            
+            // Check for manual rollback flag mid-flight
+            if ((global as any).__MANUAL_ROLLBACK === true) {
+                await this.updateCanaryPercent(updateId, 0);
+                throw new Error('Manual rollback triggered');
+            }
+
+            const didRollback = engine.evaluateAndMaybeRollback();
+            if (didRollback) {
+                await this.updateCanaryPercent(updateId, 0);
+                throw new Error('Auto-rollback triggered due to error rate or latency spike');
+            }
+        }
+
+        // Use BlueGreenSwitcher to switch aliases
+        const vercelService = new VercelService();
+        const stableAlias = `app-${deploymentId}.vercel.app`;
+
+        try {
+            // Assign alias to candidate (promotion)
+            await vercelService.assignAlias(candidateVersion.id, stableAlias);
+            switcher.switchToStandby();
+        } catch (error) {
+            // Edge case: Vercel alias update fails mid-switch — revert to previous alias automatically
+            console.error('Vercel alias update failed mid-switch, reverting to previous alias');
+            try {
+                await vercelService.assignAlias(stableVersion.id, stableAlias);
+            } catch (revertError) {
+                console.error('Revert to previous alias failed:', revertError);
+            }
+            throw new Error(`Vercel alias update failed mid-switch: ${(error as Error).message}`);
+        }
 
         // For property testing, we use a global flag to simulate failures
         // In production, this would be actual pipeline logic
@@ -400,6 +464,24 @@ export class DeploymentUpdateService {
             .update({
                 status: 'completed',
                 completed_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+            })
+            .eq('id', updateId);
+    }
+
+    /**
+     * Update the canary percentage of an update record
+     */
+    private async updateCanaryPercent(
+        updateId: string,
+        canaryPercent: number
+    ): Promise<void> {
+        const supabase = createClient();
+
+        await supabase
+            .from('deployment_updates')
+            .update({
+                canary_percent: canaryPercent,
                 updated_at: new Date().toISOString(),
             })
             .eq('id', updateId);
