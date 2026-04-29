@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { healthMonitorService } from '@/services/health-monitor.service';
+import { VercelService } from '@/services/vercel.service';
 
 /**
  * Cron endpoint to check health of all deployments
@@ -33,6 +34,7 @@ export async function GET(req: NextRequest) {
             totalChecked: results.length,
             unhealthyCount,
             results,
+            vercelCircuitState: new VercelService().breaker.currentState,
         });
     } catch (error: any) {
         console.error('Error running health check cron:', error);

@@ -76,9 +76,12 @@ export function DeploymentRow({ deployment, onViewLogs, onRedeploy }: Deployment
       {/* Left: name + commit */}
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap mb-1">
-          <span className="font-semibold text-on-surface text-sm truncate font-headline">
+          <a
+            href={`/app/deployments/${deployment.id}`}
+            className="font-semibold text-on-surface text-sm truncate font-headline hover:underline focus:outline-none focus:underline"
+          >
             {deployment.name}
-          </span>
+          </a>
           <span
             className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${env.className}`}
           >
@@ -129,6 +132,22 @@ export function DeploymentRow({ deployment, onViewLogs, onRedeploy }: Deployment
 
       {/* Right: actions */}
       <div className="flex items-center gap-2 flex-shrink-0 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+        <a
+          href={`/app/deployments/${deployment.id}`}
+          id={`deployment-detail-${deployment.id}`}
+          aria-label={`Open details for ${deployment.name}`}
+          className="
+            p-1.5 rounded-lg text-on-surface-variant
+            hover:bg-surface-container hover:text-on-surface
+            transition-colors focus:outline-none focus:ring-2 focus:ring-primary/40
+          "
+          title="View details"
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M11.25 6.75h6m-6 5.25h6m-6 5.25h6M4.5 6.75h.008v.008H4.5V6.75zm0 5.25h.008v.008H4.5V12zm0 5.25h.008v.008H4.5v-.008z" />
+          </svg>
+        </a>
+
         {deployment.url && (
           <a
             href={deployment.url}

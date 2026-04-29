@@ -89,6 +89,8 @@ export default function ProfileSettingsPage() {
                                 email: mockUser.email,
                                 bio: '',
                                 avatarUrl: mockUser.avatar ?? '',
+                                website: '',
+                                connectionStatus: 'online',
                             }}
                         />
                     </div>
