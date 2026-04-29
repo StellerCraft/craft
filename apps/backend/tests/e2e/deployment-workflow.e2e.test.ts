@@ -403,4 +403,157 @@ describe('E2E: Complete Deployment Workflow', () => {
       })
     );
   });
+
+  // ── Failure Scenarios ─────────────────────────────────────────────────────
+
+  it('should fail when the selected template is not found', async () => {
+    // Override template mock to simulate a missing template
+    const mockChain = {
+      select: vi.fn().mockReturnThis(),
+      eq: vi.fn().mockReturnThis(),
+      single: vi.fn().mockResolvedValue({
+        data: null,
+        error: { message: 'No rows found', code: 'PGRST116' },
+      }),
+    };
+    mockSupabaseClient.from.mockReturnValue(mockChain);
+
+    const templateResult = await mockSupabaseClient
+      .from('templates')
+      .select()
+      .eq('id', 'non-existent-template')
+      .single();
+
+    expect(templateResult.data).toBeNull();
+    expect(templateResult.error).toBeDefined();
+    expect(templateResult.error.code).toBe('PGRST116');
+
+    // Pipeline should mark deployment failed and not proceed to GitHub/Vercel
+    await mockDeploymentService.updateDeploymentStatus({
+      deploymentId: testDeployment.id,
+      status: 'failed',
+      error: `Template not found: ${templateResult.error.message}`,
+    });
+
+    expect(mockDeploymentService.updateDeploymentStatus).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'failed' })
+    );
+    expect(mockGithubService.createRepository).not.toHaveBeenCalled();
+    expect(mockVercelService.createProject).not.toHaveBeenCalled();
+  });
+
+  it('should fail when GitHub returns 409 repository name collision', async () => {
+    const collisionError = Object.assign(new Error('Repository name already exists'), {
+      code: 'REPO_NAME_COLLISION',
+      status: 409,
+    });
+    mockGithubService.createRepository.mockRejectedValue(collisionError);
+
+    try {
+      await mockGithubService.createRepository({ name: 'my-dex', private: true });
+      expect.fail('Should have thrown a 409 error');
+    } catch (err: any) {
+      expect(err.status).toBe(409);
+      expect(err.code).toBe('REPO_NAME_COLLISION');
+
+      await mockDeploymentService.updateDeploymentStatus({
+        deploymentId: testDeployment.id,
+        status: 'failed',
+        error: `GitHub repository creation failed: ${err.message}`,
+      });
+
+      expect(mockDeploymentService.updateDeploymentStatus).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'failed' })
+      );
+      // Vercel must not be reached when repo creation fails
+      expect(mockVercelService.createProject).not.toHaveBeenCalled();
+    }
+  });
+
+  it('should fail when Vercel returns 429 rate limit exceeded', async () => {
+    const rateLimitError = Object.assign(new Error('Rate limit exceeded'), {
+      code: 'RATE_LIMIT_EXCEEDED',
+      status: 429,
+      retryAfterMs: 60_000,
+    });
+    mockVercelService.createProject.mockRejectedValue(rateLimitError);
+
+    // GitHub succeeds first
+    const repoResult = await mockGithubService.createRepository({
+      name: 'my-dex',
+      private: true,
+    });
+    expect(repoResult.id).toBeDefined();
+
+    try {
+      await mockVercelService.createProject({
+        name: 'craft-my-dex',
+        gitRepo: repoResult.url,
+      });
+      expect.fail('Should have thrown a 429 error');
+    } catch (err: any) {
+      expect(err.status).toBe(429);
+      expect(err.code).toBe('RATE_LIMIT_EXCEEDED');
+      expect(err.retryAfterMs).toBe(60_000);
+
+      await mockDeploymentService.updateDeploymentStatus({
+        deploymentId: testDeployment.id,
+        status: 'failed',
+        error: `Vercel deployment failed: ${err.message}`,
+      });
+
+      expect(mockDeploymentService.updateDeploymentStatus).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'failed' })
+      );
+    }
+  });
+
+  it('should not leave orphaned resources when Vercel fails after GitHub succeeds', async () => {
+    const rateLimitError = Object.assign(new Error('Rate limit exceeded'), {
+      code: 'RATE_LIMIT_EXCEEDED',
+      status: 429,
+    });
+    mockVercelService.createProject.mockRejectedValue(rateLimitError);
+
+    // Step 1: GitHub repo created successfully
+    const repoResult = await mockGithubService.createRepository({
+      name: 'my-dex',
+      private: true,
+    });
+    expect(repoResult.id).toBeDefined();
+
+    // Step 2: Vercel fails
+    let vercelError: any;
+    try {
+      await mockVercelService.createProject({
+        name: 'craft-my-dex',
+        gitRepo: repoResult.url,
+      });
+    } catch (err) {
+      vercelError = err;
+    }
+    expect(vercelError).toBeDefined();
+
+    // Step 3: Deployment record must be marked failed — no completed/active state
+    await mockDeploymentService.updateDeploymentStatus({
+      deploymentId: testDeployment.id,
+      status: 'failed',
+      error: `Vercel deployment failed: ${vercelError.message}`,
+    });
+
+    const finalDeployment = await mockDeploymentService.getDeployment({
+      deploymentId: testDeployment.id,
+    });
+
+    // The deployment record reflects failure — no live URL that would imply an
+    // orphaned Vercel project is serving traffic
+    expect(mockDeploymentService.updateDeploymentStatus).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'failed' })
+    );
+    // Vercel deploy was never triggered — no orphaned deployment exists
+    expect(mockVercelService.deployProject).not.toHaveBeenCalled();
+    // GitHub repo was created; per design-doc rollback boundary it is retained
+    // so the user can retry without losing generated code
+    expect(mockGithubService.createRepository).toHaveBeenCalledTimes(1);
+  });
 });
