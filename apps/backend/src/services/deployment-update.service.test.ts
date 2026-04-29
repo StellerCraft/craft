@@ -14,6 +14,14 @@ vi.mock('./github-push.service', () => ({
     },
 }));
 
+// Mock Vercel Service
+vi.mock('./vercel.service', () => {
+    const VercelServiceMock = vi.fn().mockImplementation(() => ({
+        assignAlias: vi.fn().mockResolvedValue(undefined),
+    }));
+    return { VercelService: VercelServiceMock };
+});
+
 describe('DeploymentUpdateService', () => {
     let service: DeploymentUpdateService;
     let mockSupabase: any;
@@ -343,5 +351,87 @@ describe('DeploymentUpdateService', () => {
             'old-vercel-id',
             'app.example.com',
         );
+    });
+
+    it('should successfully promote a deployment using rollout strategy', async () => {
+        mockSupabase.single.mockResolvedValueOnce({ data: mockPreviousState, error: null });
+        mockSupabase.single.mockResolvedValueOnce({ data: { previous_state: mockPreviousState }, error: null });
+
+        const result = await service.updateDeployment({
+            deploymentId: mockDeploymentId,
+            userId: mockUserId,
+            customizationConfig: mockConfig,
+        });
+
+        expect(result.success).toBe(true);
+        expect(result.rolledBack).toBe(false);
+        
+        // Verify canary percentages were updated in sequence: 5, 25, 50, 100
+        const canaryUpdates = mockSupabase.update.mock.calls
+            .filter((call: any) => call[0].canary_percent !== undefined)
+            .map((call: any) => call[0].canary_percent);
+        
+        expect(canaryUpdates).toContain(5);
+        expect(canaryUpdates).toContain(25);
+        expect(canaryUpdates).toContain(50);
+        expect(canaryUpdates).toContain(100);
+    });
+
+    it('should auto-rollback on error rate spike', async () => {
+        mockSupabase.single.mockResolvedValueOnce({ data: mockPreviousState, error: null });
+        mockSupabase.single.mockResolvedValueOnce({ 
+            data: {
+                previous_state: {
+                    customizationConfig: mockPreviousState.customization_config,
+                    deploymentUrl: mockPreviousState.deployment_url,
+                    vercelDeploymentId: mockPreviousState.vercel_deployment_id,
+                    status: mockPreviousState.status,
+                    repositoryUrl: null,
+                },
+            }, 
+            error: null 
+        });
+
+        // Set error rate to 10% (above threshold)
+        (globalThis as any).__CANARY_ERROR_RATE = 0.1;
+
+        const result = await service.updateDeployment({
+            deploymentId: mockDeploymentId,
+            userId: mockUserId,
+            customizationConfig: mockConfig,
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.rolledBack).toBe(true);
+        expect(result.errorMessage).toMatch(/auto-rollback triggered/i);
+    });
+
+    it('should execute manual rollback when requested by operator', async () => {
+        mockSupabase.single.mockResolvedValueOnce({ data: mockPreviousState, error: null });
+        mockSupabase.single.mockResolvedValueOnce({ 
+            data: {
+                previous_state: {
+                    customizationConfig: mockPreviousState.customization_config,
+                    deploymentUrl: mockPreviousState.deployment_url,
+                    vercelDeploymentId: mockPreviousState.vercel_deployment_id,
+                    status: mockPreviousState.status,
+                    repositoryUrl: null,
+                },
+            }, 
+            error: null 
+        });
+
+        // Trigger manual rollback
+        (globalThis as any).__MANUAL_ROLLBACK = true;
+
+        const result = await service.updateDeployment({
+            deploymentId: mockDeploymentId,
+            userId: mockUserId,
+            customizationConfig: mockConfig,
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.rolledBack).toBe(true);
+        expect(result.errorMessage).toMatch(/manual rollback triggered/i);
     });
 });

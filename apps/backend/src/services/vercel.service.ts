@@ -23,6 +23,7 @@
  */
 
 import type { VercelEnvVar } from '@/lib/env/env-template-generator';
+import { CircuitBreaker } from '@/lib/api/circuit-breaker';
 
 export type { VercelEnvVar };
 
@@ -276,8 +277,13 @@ interface FetchLike {
     (input: string, init?: RequestInit): Promise<Response>;
 }
 
+const vercelCircuitBreaker = new CircuitBreaker({ name: 'vercel' });
+
 export class VercelService {
-    constructor(private readonly _fetch: FetchLike = fetch) {}
+    constructor(
+        private readonly _fetch: FetchLike = fetch,
+        public readonly breaker: CircuitBreaker = vercelCircuitBreaker
+    ) {}
 
     private get token(): string {
         return process.env.VERCEL_TOKEN ?? '';
@@ -313,29 +319,31 @@ export class VercelService {
         /** Optional status code that should be treated as a specific error before assertOk. */
         earlyThrow?: { status: number; code: VercelErrorCode; message: string },
     ): Promise<T> {
-        const headers = this.buildHeaders(); // throws AUTH_FAILED if token missing
+        return this.breaker.call(async () => {
+            const headers = this.buildHeaders(); // throws AUTH_FAILED if token missing
 
-        let res: Response;
-        try {
-            res = await this._fetch(this.url(path), {
-                ...init,
-                headers: { ...headers, ...(init.headers ?? {}) },
-            });
-        } catch (err: unknown) {
-            throw new VercelApiError(
-                err instanceof Error ? err.message : 'Network request failed',
-                'NETWORK_ERROR',
-            );
-        }
+            let res: Response;
+            try {
+                res = await this._fetch(this.url(path), {
+                    ...init,
+                    headers: { ...headers, ...(init.headers ?? {}) },
+                });
+            } catch (err: unknown) {
+                throw new VercelApiError(
+                    err instanceof Error ? err.message : 'Network request failed',
+                    'NETWORK_ERROR',
+                );
+            }
 
-        const data = await res.json().catch(() => ({})) as Record<string, unknown>;
+            const data = await res.json().catch(() => ({})) as Record<string, unknown>;
 
-        if (earlyThrow && res.status === earlyThrow.status) {
-            throw new VercelApiError(earlyThrow.message, earlyThrow.code);
-        }
+            if (earlyThrow && res.status === earlyThrow.status) {
+                throw new VercelApiError(earlyThrow.message, earlyThrow.code);
+            }
 
-        this.assertOk(res, data);
-        return data as T;
+            this.assertOk(res, data);
+            return data as T;
+        });
     }
 
     /**
@@ -862,7 +870,18 @@ export class VercelService {
         }
     }
 
+    /**
+     * Assign a custom alias to a Vercel deployment.
+     */
+    async assignAlias(deploymentId: string, alias: string): Promise<void> {
+        await this.request(`/v2/deployments/${deploymentId}/aliases`, {
+            method: 'POST',
+            body: JSON.stringify({ alias }),
+        });
+    }
+
     // ── Private helpers ───────────────────────────────────────────────────────
+
 
     // ── Deployment log retrieval (Issue #90) ─────────────────────────────────
 
@@ -935,6 +954,10 @@ export class VercelService {
             ?? data.message as string
             ?? `Vercel API error: ${res.status}`;
 
+        const code = (data.error as Record<string, unknown>)?.code as string
+            ?? data.code as string
+            ?? (res.status === 404 ? 'NOT_FOUND' : 'UNKNOWN');
+
         if (res.status === 401 || res.status === 403) {
             throw new VercelApiError(message, 'AUTH_FAILED');
         }
@@ -944,7 +967,7 @@ export class VercelService {
             throw new VercelApiError(message, 'RATE_LIMITED', retryAfterSec * 1000);
         }
 
-        throw new VercelApiError(message, 'UNKNOWN');
+        throw new VercelApiError(message, code as VercelErrorCode);
     }
 }
 

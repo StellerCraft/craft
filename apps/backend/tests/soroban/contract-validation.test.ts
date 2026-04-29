@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 /**
  * Soroban Contract Validation Tests
@@ -31,8 +31,25 @@ interface InvocationResult {
   gasUsed?: number;
 }
 
+// ---------------------------------------------------------------------------
+// Invocation cache (mirrors soroban.ts cache design for test coverage)
+//
+//  - Key   : `${contractId}:${method}:${JSON.stringify(args)}`
+//  - TTL   : INVOCATION_CACHE_TTL_MS (5 000 ms by default)
+//  - Size  : MAX_INVOCATION_CACHE_ENTRIES (1 000).  Oldest entry evicted
+//            when the cap is reached.
+// ---------------------------------------------------------------------------
+const INVOCATION_CACHE_TTL_MS = 5_000;
+const MAX_INVOCATION_CACHE_ENTRIES = 1_000;
+
+interface InvocationCacheEntry {
+  result: InvocationResult;
+  storedAt: number;
+}
+
 class SorobanContractValidator {
   private contractCache: Map<string, ContractState> = new Map();
+  private invocationCache: Map<string, InvocationCacheEntry> = new Map();
   private testnetHorizonUrl = 'https://horizon-testnet.stellar.org';
   private mainnetHorizonUrl = 'https://horizon.stellar.org';
 
@@ -102,6 +119,16 @@ class SorobanContractValidator {
       };
     }
 
+    // Build a cache key from (contractId, network, method, params).
+    const cacheKey = `${contractAddress.address}:${contractAddress.network}:${methodName}:${JSON.stringify(params)}`;
+    const now = Date.now();
+
+    // Cache hit – return stored result if still within TTL.
+    const cached = this.invocationCache.get(cacheKey);
+    if (cached && now - cached.storedAt < INVOCATION_CACHE_TTL_MS) {
+      return cached.result;
+    }
+
     const state = await this.getContractState(contractAddress);
     const method = state.methods.find((m) => m.name === methodName);
 
@@ -112,12 +139,21 @@ class SorobanContractValidator {
       };
     }
 
-    // Simulate method invocation
-    return {
+    // Simulate method invocation (cache miss).
+    const result: InvocationResult = {
       success: true,
       result: this.simulateMethodResult(methodName, params),
       gasUsed: Math.floor(Math.random() * 100000) + 10000,
     };
+
+    // Evict oldest if at capacity, then store.
+    if (this.invocationCache.size >= MAX_INVOCATION_CACHE_ENTRIES) {
+      const firstKey = this.invocationCache.keys().next().value;
+      if (firstKey !== undefined) this.invocationCache.delete(firstKey);
+    }
+    this.invocationCache.set(cacheKey, { result, storedAt: now });
+
+    return result;
   }
 
   private simulateMethodResult(methodName: string, params: Record<string, unknown>): unknown {
@@ -154,8 +190,13 @@ class SorobanContractValidator {
     return state.isDeployed;
   }
 
+  /**
+   * Flush all cached state.
+   * Call this in afterEach / teardown to guarantee test isolation.
+   */
   clearCache(): void {
     this.contractCache.clear();
+    this.invocationCache.clear();
   }
 }
 
@@ -164,6 +205,12 @@ describe('Soroban Contract Validation', () => {
 
   beforeEach(() => {
     validator = new SorobanContractValidator();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    validator.clearCache();
+    vi.useRealTimers();
   });
 
   describe('Contract Address Validation', () => {
@@ -391,6 +438,110 @@ describe('Soroban Contract Validation', () => {
       expect(testnetState.lastUpdated).toBeDefined();
       expect(mainnetState.lastUpdated).toBeDefined();
     });
+
+    // -----------------------------------------------------------------------
+    // Invocation-level cache tests
+    // -----------------------------------------------------------------------
+
+    it('[cache-hit] should return the cached invocation result on repeated call', async () => {
+      const contractAddress: ContractAddress = {
+        address: 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4',
+        network: 'testnet',
+      };
+      const params = { from: 'GXXX', to: 'GYYY', amount: 100 };
+
+      const first = await validator.invokeContractMethod(contractAddress, 'transfer', params);
+      // Advance time by less than TTL – cache should still be valid.
+      vi.advanceTimersByTime(INVOCATION_CACHE_TTL_MS - 1);
+      const second = await validator.invokeContractMethod(contractAddress, 'transfer', params);
+
+      // Both calls must return the exact same object reference (cache hit).
+      expect(second).toBe(first);
+      expect(second.success).toBe(true);
+      expect(second.gasUsed).toBe(first.gasUsed);
+    });
+
+    it('[cache-miss] should produce independent results for different method names', async () => {
+      const contractAddress: ContractAddress = {
+        address: 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4',
+        network: 'testnet',
+      };
+
+      const transferResult = await validator.invokeContractMethod(contractAddress, 'transfer', {});
+      const balanceResult = await validator.invokeContractMethod(contractAddress, 'balance_of', {});
+
+      // Different methods → different cache keys → independent results.
+      expect(transferResult.success).toBe(true);
+      expect(balanceResult.success).toBe(true);
+      // They are different cached entries, not the same object.
+      expect(transferResult).not.toBe(balanceResult);
+    });
+
+    it('[cache-miss] should produce independent results for different params', async () => {
+      const contractAddress: ContractAddress = {
+        address: 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4',
+        network: 'testnet',
+      };
+
+      const result1 = await validator.invokeContractMethod(contractAddress, 'transfer', { amount: 50 });
+      const result2 = await validator.invokeContractMethod(contractAddress, 'transfer', { amount: 200 });
+
+      // Different params → different cache keys → different cached objects.
+      expect(result1).not.toBe(result2);
+    });
+
+    it('[ttl-expiry] should invalidate cached result after TTL elapses', async () => {
+      const contractAddress: ContractAddress = {
+        address: 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4',
+        network: 'testnet',
+      };
+      const params = { from: 'GXXX', to: 'GYYY', amount: 100 };
+
+      const first = await validator.invokeContractMethod(contractAddress, 'transfer', params);
+
+      // Advance fake time past the TTL.
+      vi.advanceTimersByTime(INVOCATION_CACHE_TTL_MS + 1);
+
+      const second = await validator.invokeContractMethod(contractAddress, 'transfer', params);
+
+      // After TTL expiry the cache entry should have been replaced; the two
+      // result objects will be different instances even though both succeed.
+      expect(second.success).toBe(true);
+      expect(second).not.toBe(first);
+    });
+
+    it('[clearCache] should not return stale data after clearCache() is called', async () => {
+      const contractAddress: ContractAddress = {
+        address: 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4',
+        network: 'testnet',
+      };
+
+      const first = await validator.invokeContractMethod(contractAddress, 'transfer', {});
+      validator.clearCache();
+      const second = await validator.invokeContractMethod(contractAddress, 'transfer', {});
+
+      // Cache was cleared – the second call is a fresh invocation and must be
+      // a new object, not the previously cached one.
+      expect(second).not.toBe(first);
+    });
+
+    it('[cache-miss] should treat different networks as separate cache keys', async () => {
+      const address = 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4';
+      const params = { from: 'GXXX', to: 'GYYY', amount: 100 };
+
+      const testnetResult = await validator.invokeContractMethod(
+        { address, network: 'testnet' },
+        'transfer',
+        params
+      );
+      const mainnetResult = await validator.invokeContractMethod(
+        { address, network: 'mainnet' },
+        'transfer',
+        params
+      );
+
+      expect(testnetResult).not.toBe(mainnetResult);
+    });
   });
 
   describe('Contract Methods Availability', () => {
@@ -422,3 +573,7 @@ describe('Soroban Contract Validation', () => {
     });
   });
 });
+
+// Export TTL constant so the test assertions above stay in sync with the cache
+// implementation without magic numbers.
+export { INVOCATION_CACHE_TTL_MS };

@@ -28,8 +28,76 @@ export function createSorobanClient(): SorobanRpc.Server {
 
 export const sorobanClient = createSorobanClient();
 
+// ---------------------------------------------------------------------------
+// Contract State Simulation Cache
+// ---------------------------------------------------------------------------
+//
+// A short-lived in-memory cache for `simulateContractCall` results.
+//
+// Design notes:
+//  - Key  : `${contractId}:${method}:${JSON.stringify(args)}:${sourcePublicKey}`
+//  - TTL  : CACHE_TTL_MS (default 5 000 ms). Entries older than this are
+//           considered stale and bypassed on the next read.
+//  - Size : MAX_CACHE_ENTRIES (default 1 000). When the limit is reached the
+//           oldest entry (first inserted, because Map preserves insertion
+//           order) is evicted before a new entry is stored.
+//  - Eviction is lazy – stale entries are only removed when they are accessed
+//           or when a new entry would exceed MAX_CACHE_ENTRIES.
+//
+// Call `clearCache()` to flush all entries (e.g. in test teardown).
+// ---------------------------------------------------------------------------
+
+/** Maximum number of entries held at once. Older entries are evicted first. */
+const MAX_CACHE_ENTRIES = 1_000;
+
+/** Time-to-live for each cache entry in milliseconds. */
+const CACHE_TTL_MS = 5_000;
+
+interface SimulationCacheEntry {
+    response: SorobanRpc.Api.SimulateTransactionResponse;
+    /** Unix timestamp (ms) of when the entry was stored. */
+    storedAt: number;
+}
+
+const simulationCache = new Map<string, SimulationCacheEntry>();
+
+/** Build the cache key from the call parameters. */
+function buildCacheKey(
+    contractId: string,
+    method: string,
+    args: xdr.ScVal[],
+    sourcePublicKey: string
+): string {
+    // Serialise args to their base64 XDR representations for a stable key.
+    const argsKey = args.map((a) => a.toXDR('base64')).join(',');
+    return `${contractId}:${method}:${argsKey}:${sourcePublicKey}`;
+}
+
+/**
+ * Evict a single entry by key if it exists – used when making room for a new
+ * entry that would exceed the size cap.
+ */
+function evictOldest(): void {
+    const firstKey = simulationCache.keys().next().value;
+    if (firstKey !== undefined) {
+        simulationCache.delete(firstKey);
+    }
+}
+
+/**
+ * Clear all cached simulation results.
+ * Call this in test teardown to ensure isolation between test cases.
+ */
+export function clearCache(): void {
+    simulationCache.clear();
+}
+
 /**
  * Simulates a contract invocation without submitting to the network.
+ *
+ * Results are cached for CACHE_TTL_MS to avoid redundant RPC round-trips
+ * during the preview and deployment flows. The cache is keyed on
+ * (contractId, method, args, sourcePublicKey).
  *
  * @param contractId - The contract address (C...)
  * @param method - The contract method name
@@ -42,6 +110,16 @@ export async function simulateContractCall(
     args: xdr.ScVal[],
     sourcePublicKey: string
 ): Promise<SorobanRpc.Api.SimulateTransactionResponse> {
+    const cacheKey = buildCacheKey(contractId, method, args, sourcePublicKey);
+    const now = Date.now();
+
+    // Cache hit – return the stored response if still within TTL.
+    const cached = simulationCache.get(cacheKey);
+    if (cached && now - cached.storedAt < CACHE_TTL_MS) {
+        return cached.response;
+    }
+
+    // Cache miss (or stale) – fetch from RPC.
     const account = await sorobanClient.getAccount(sourcePublicKey);
     const contract = new Contract(contractId);
 
@@ -53,7 +131,15 @@ export async function simulateContractCall(
         .setTimeout(30)
         .build();
 
-    return sorobanClient.simulateTransaction(tx);
+    const response = await sorobanClient.simulateTransaction(tx);
+
+    // Evict the oldest entry first if we are at capacity.
+    if (simulationCache.size >= MAX_CACHE_ENTRIES) {
+        evictOldest();
+    }
+
+    simulationCache.set(cacheKey, { response, storedAt: now });
+    return response;
 }
 
 /**

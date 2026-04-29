@@ -54,6 +54,15 @@ import {
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
 
+const MOCK_TOKEN = 'test_token';
+const makeResponse = makeJsonResponse;
+
+function makeService() {
+    const mockFetch = vi.fn();
+    const svc = new VercelService(mockFetch);
+    return { svc, mockFetch };
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function makeJsonResponse(
@@ -637,7 +646,7 @@ describe('VercelService', () => {
             await expect(
                 service.getDeployment('dpl_456'),
             ).rejects.toMatchObject({
-                code: 'UNKNOWN',
+                code: 'NOT_FOUND',
             });
         });
 
@@ -675,7 +684,7 @@ describe('VercelService', () => {
             await expect(
                 service.getDeploymentStatus('dpl_456'),
             ).rejects.toMatchObject({
-                code: 'UNKNOWN',
+                code: 'NOT_FOUND',
             });
         });
     });

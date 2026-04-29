@@ -45,6 +45,7 @@ export interface DeploymentUpdate {
     errorMessage?: string;
     createdAt: Date;
     completedAt?: Date;
+    canaryPercent?: number;
 }
 
 export type DeploymentUpdateStatus =
@@ -279,6 +280,7 @@ export class DeploymentUpdateService {
             status: 'pending',
             canary_percent: 0,
             created_at: new Date().toISOString(),
+            canary_percent: 0,
         });
     }
 
