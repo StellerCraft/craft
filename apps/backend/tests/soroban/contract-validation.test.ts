@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { RetryableError } from '../../src/services/deployment-pipeline.service';
+import { invokeContractMethod } from '../../../../packages/stellar/src/soroban';
 
 /**
  * Soroban Contract Validation Tests
@@ -381,6 +382,60 @@ describe('property-based: random strings always produce a structured result', ()
     const inputs: unknown[] = [null, undefined, 42, {}, [], true, '', ' ', VALID_ADDRESS];
     for (const input of inputs) {
       expect(() => validator.validateFormat(input)).not.toThrow();
+    }
+  });
+});
+
+// ── invokeContractMethod ──────────────────────────────────────────────────────
+
+describe('invokeContractMethod', () => {
+  const VALID_CONTRACT = 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4';
+  const TEST_PUBKEY = 'GCEZWKCA5VLDNRLN3RPRJMRZOX3Z6G5CHCGSNFHEYVXM3XOJMDS674JZ';
+
+  it('returns ok: true on successful simulation', async () => {
+    const mockResponse = { result: { retval: 'success' } } as any;
+    const mockSimulate = vi.fn().mockResolvedValue(mockResponse);
+
+    const result = await invokeContractMethod(VALID_CONTRACT, 'transfer', [], TEST_PUBKEY, mockSimulate);
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.result).toEqual(mockResponse);
+    expect(mockSimulate).toHaveBeenCalledWith(VALID_CONTRACT, 'transfer', [], TEST_PUBKEY);
+  });
+
+  it('returns ok: false with AppError on simulation failure', async () => {
+    const mockSimulate = vi.fn().mockRejectedValue(new Error('Simulation failed: insufficient fee'));
+
+    const result = await invokeContractMethod(VALID_CONTRACT, 'transfer', [], TEST_PUBKEY, mockSimulate);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toBeTruthy();
+      expect(result.error.code).toBeTruthy();
+    }
+  });
+
+  it('maps contract not found error to AppError with code ACCOUNT_NOT_FOUND', async () => {
+    const mockSimulate = vi.fn().mockRejectedValue(new Error('Account not found'));
+
+    const result = await invokeContractMethod(VALID_CONTRACT, 'transfer', [], TEST_PUBKEY, mockSimulate);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe('ACCOUNT_NOT_FOUND');
+      expect(result.error.status).toBe(400);
+    }
+  });
+
+  it('maps network timeout to retryable AppError with no status', async () => {
+    const mockSimulate = vi.fn().mockRejectedValue(new Error('ETIMEDOUT'));
+
+    const result = await invokeContractMethod(VALID_CONTRACT, 'transfer', [], TEST_PUBKEY, mockSimulate);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe('CONNECTION_TIMEOUT');
+      expect(result.error.status).toBeUndefined();
     }
   });
 });
