@@ -19,6 +19,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { GitHubToVercelDeploymentService } from './github-to-vercel-deployment.service';
 import type { TriggerDeploymentRequest } from './github-to-vercel-deployment.service';
+import { VercelApiError } from './vercel.service';
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
@@ -237,14 +238,52 @@ describe('GitHubToVercelDeploymentService', () => {
             expect(mockVercelService.getDeploymentStatus).toHaveBeenCalledWith('dpl_abc123');
         });
 
-        it('returns null when deployment not found', async () => {
+        it('returns null when deployment not found (general error)', async () => {
             mockVercelService.getDeploymentStatus.mockRejectedValue(
-                new Error('Deployment not found')
+                new Error('Some error')
             );
 
             const result = await service.syncDeploymentStatus('dpl_invalid');
 
             expect(result).toBeNull();
+        });
+
+        it('marks deployment as failed when Vercel returns NOT_FOUND', async () => {
+            const notFoundError = new VercelApiError('Deployment not found', 'NOT_FOUND');
+            
+            mockVercelService.getDeploymentStatus.mockRejectedValue(notFoundError);
+
+            const singleMock = vi.fn().mockResolvedValue({
+                data: {
+                    id: 'meta-123',
+                    status: 'failed',
+                    repo_full_name: 'owner/repo',
+                    repo_name: 'repo',
+                    branch: 'main',
+                    commit_sha: 'abc123',
+                    vercel_deployment_id: 'dpl_abc123',
+                },
+                error: null,
+            });
+
+            const selectMock = vi.fn().mockReturnValue({ single: singleMock });
+            const eqMock = vi.fn().mockReturnValue({ select: selectMock });
+            const updateMock = vi.fn().mockReturnValue({ eq: eqMock });
+            
+            mockSupabase.from.mockImplementation((table: string) => {
+                if (table === 'github_vercel_deployments') {
+                    return { update: updateMock };
+                }
+                return {};
+            });
+
+            const result = await service.syncDeploymentStatus('dpl_abc123');
+
+            expect(result).not.toBeNull();
+            expect(result?.status).toBe('failed');
+            expect(updateMock).toHaveBeenCalledWith(expect.objectContaining({
+                status: 'failed'
+            }));
         });
 
         it('returns null when database update fails', async () => {

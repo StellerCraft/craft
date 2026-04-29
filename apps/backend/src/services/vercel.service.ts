@@ -36,6 +36,7 @@ export type VercelErrorCode =
     | 'NETWORK_ERROR'
     | 'PROJECT_EXISTS'
     | 'DOMAIN_EXISTS'
+    | 'NOT_FOUND'
     | 'UNKNOWN';
 
 // ── Domain / certificate types ────────────────────────────────────────────────
@@ -447,7 +448,7 @@ export class VercelService {
         } catch (err: unknown) {
             const vercelErr = err as VercelApiError;
             // 404 means Vercel hasn't issued a cert yet — treat as pending
-            if (vercelErr.code === 'UNKNOWN' && vercelErr.message.includes('404')) {
+            if (vercelErr.code === 'NOT_FOUND') {
                 return { domain, state: 'pending' };
             }
             throw err;
@@ -714,7 +715,7 @@ export class VercelService {
                 method: 'DELETE',
             });
         } catch (error: unknown) {
-            if (error instanceof VercelApiError && error.code === 'DOMAIN_NOT_FOUND') {
+            if (error instanceof VercelApiError && (error.code === 'DOMAIN_NOT_FOUND' || error.code === 'NOT_FOUND')) {
                 // Domain doesn't exist, which is fine for cleanup
                 return;
             }
@@ -744,7 +745,7 @@ export class VercelService {
                 deploymentId: data.deploymentId as string | undefined,
             };
         } catch (error: unknown) {
-            if (error instanceof VercelApiError && error.code === 'DOMAIN_NOT_FOUND') {
+            if (error instanceof VercelApiError && (error.code === 'DOMAIN_NOT_FOUND' || error.code === 'NOT_FOUND')) {
                 return null;
             }
             throw error;
@@ -883,6 +884,10 @@ export class VercelService {
             ?? data.message as string
             ?? `Vercel API error: ${res.status}`;
 
+        const code = (data.error as Record<string, unknown>)?.code as string
+            ?? data.code as string
+            ?? (res.status === 404 ? 'NOT_FOUND' : 'UNKNOWN');
+
         if (res.status === 401 || res.status === 403) {
             throw new VercelApiError(message, 'AUTH_FAILED');
         }
@@ -892,7 +897,7 @@ export class VercelService {
             throw new VercelApiError(message, 'RATE_LIMITED', retryAfterSec * 1000);
         }
 
-        throw new VercelApiError(message, 'UNKNOWN');
+        throw new VercelApiError(message, code as VercelErrorCode);
     }
 }
 
