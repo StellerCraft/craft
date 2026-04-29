@@ -14,6 +14,7 @@ import type {
     CustomizationConfig,
     DeepPartial,
     MockTransaction,
+    PreviewAsset,
     StellarMockData,
     Template,
     TemplateCategory,
@@ -55,10 +56,12 @@ export const VIEWPORT_DIMENSIONS: Record<ViewportClass, { width: number; height:
 };
 
 export interface PreviewData {
+    html: string;
+    css: string;
+    assets: PreviewAsset[];
     branding: CustomizationConfig['branding'];
     features: CustomizationConfig['features'];
     mockData: StellarMockData;
-    css: string;
     viewport: { width: number; height: number; class: ViewportClass };
 }
 
@@ -66,17 +69,21 @@ export function deriveLayoutMetadata(viewport: ViewportClass): { width: number; 
     return VIEWPORT_DIMENSIONS[viewport];
 }
 
+/**
+ * Generate preview CSS with branding tokens applied.
+ * This is a simplified client-side version - full version is on backend.
+ */
 export function generatePreviewCss(config: CustomizationConfig, viewport: ViewportClass): string {
     const { branding } = config;
     const dimensions = VIEWPORT_DIMENSIONS[viewport];
     
     return `
         :root {
-            --color-primary: ${branding.primaryColor};
-            --color-secondary: ${branding.secondaryColor};
-            --font-family: ${branding.fontFamily};
-            --viewport-width: ${dimensions.width}px;
-            --viewport-height: ${dimensions.height}px;
+            --craft-primary: ${branding.primaryColor};
+            --craft-secondary: ${branding.secondaryColor};
+            --craft-font-family: ${branding.fontFamily};
+            --craft-viewport-width: ${dimensions.width}px;
+            --craft-viewport-height: ${dimensions.height}px;
         }
         
         body {
@@ -86,6 +93,48 @@ export function generatePreviewCss(config: CustomizationConfig, viewport: Viewpo
             height: ${dimensions.height}px;
         }
     `.trim();
+}
+
+/**
+ * Generate preview HTML document (simplified client-side version)
+ */
+export function generatePreviewHtml(
+    config: CustomizationConfig,
+    mockData: StellarMockData,
+    viewport: ViewportClass
+): string {
+    const css = generatePreviewCss(config, viewport);
+    const dimensions = VIEWPORT_DIMENSIONS[viewport];
+    
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=${dimensions.width}, initial-scale=1.0">
+    <title>${config.branding.appName} - Preview</title>
+    <style>${css}</style>
+</head>
+<body>
+    <div style="padding: 20px;">
+        <h1>${config.branding.appName}</h1>
+        <p>Balance: ${mockData.accountBalance} XLM</p>
+        <p>Features: ${Object.entries(config.features).filter(([,v]) => v).map(([k]) => k).join(', ')}</p>
+    </div>
+</body>
+</html>`;
+}
+
+/**
+ * Generate preview assets
+ */
+export function generatePreviewAssets(config: CustomizationConfig): PreviewAsset[] {
+    const assets: PreviewAsset[] = [];
+    
+    if (config.branding.logoUrl) {
+        assets.push({ url: config.branding.logoUrl, type: 'image' });
+    }
+    
+    return assets;
 }
 
 const DEFAULT_CONFIG: CustomizationConfig = {
@@ -235,11 +284,14 @@ export class PreviewService {
 
         // If called with viewport parameter, return PreviewData
         if (isViewportParam || (isConfigInput && savedConfig === null && secondParam !== undefined)) {
+            const mockData = this.generateMockData(merged);
             return {
+                html: generatePreviewHtml(merged, mockData, viewport),
+                css: generatePreviewCss(merged, viewport),
+                assets: generatePreviewAssets(merged),
                 branding: merged.branding,
                 features: merged.features,
-                mockData: this.generateMockData(merged),
-                css: generatePreviewCss(merged, viewport),
+                mockData,
                 viewport: { ...VIEWPORT_DIMENSIONS[viewport], class: viewport },
             };
         }

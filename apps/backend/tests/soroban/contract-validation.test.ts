@@ -189,6 +189,12 @@ describe('SorobanContractValidator.validateFormat', () => {
 
   beforeEach(() => {
     validator = new SorobanContractValidator();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    validator.clearCache();
+    vi.useRealTimers();
   });
 
   it('returns valid: true for a well-formed address', () => {
@@ -342,3 +348,7 @@ describe('property-based: random strings always produce a structured result', ()
     }
   });
 });
+
+// Export TTL constant so the test assertions above stay in sync with the cache
+// implementation without magic numbers.
+export { INVOCATION_CACHE_TTL_MS };

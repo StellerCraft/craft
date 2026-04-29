@@ -71,8 +71,8 @@ export interface DeploymentMetadata {
 export class GitHubToVercelDeploymentService {
     private readonly _vercelService: VercelService;
 
-    constructor() {
-        this._vercelService = new VercelService();
+    constructor(vercelService?: VercelService) {
+        this._vercelService = vercelService || new VercelService();
     }
 
     /**
@@ -211,6 +211,26 @@ export class GitHubToVercelDeploymentService {
 
             return this.mapToDeploymentMetadata(data);
         } catch (error: any) {
+            // Handle edge case: Vercel project or deployment deleted externally
+            if (error?.code === 'NOT_FOUND') {
+                log.warn('Deployment not found on Vercel, marking as failed', { vercelDeploymentId });
+                
+                const supabase = createClient();
+                const { data, error: updateError } = await supabase
+                    .from('github_vercel_deployments')
+                    .update({
+                        status: 'failed',
+                        updated_at: new Date().toISOString(),
+                    })
+                    .eq('vercel_deployment_id', vercelDeploymentId)
+                    .select()
+                    .single();
+
+                if (!updateError && data) {
+                    return this.mapToDeploymentMetadata(data);
+                }
+            }
+
             log.error('Failed to sync deployment status', error);
             return null;
         }

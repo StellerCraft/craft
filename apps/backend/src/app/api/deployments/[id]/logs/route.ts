@@ -53,6 +53,11 @@ export const GET = withAuth(async (req: NextRequest, { params, user, supabase })
     }
 
     try {
+        // If build logs are requested, sync with Vercel first
+        if (parsed.params.stage === 'build') {
+            await deploymentLogsService.syncVercelLogs(deploymentId, supabase);
+        }
+
         const result = await deploymentLogsService.getLogs(deploymentId, parsed.params, supabase);
         return NextResponse.json(result);
     } catch (err: unknown) {
