@@ -181,11 +181,7 @@ export async function validateAssetIssuanceDeployment(
 ): Promise<TrustlineValidationResult> {
   const trustlineResult = await validateTrustlines(accountId, assets, accountData);
 
-  if (!trustlineResult.valid) {
-    return trustlineResult;
-  }
-
-  // Check if account can establish additional trustlines if needed
+  // Check capacity even when trustlines are missing — a full account can't add any
   if (accountData) {
     const missingCount = trustlineResult.missingTrustlines?.length || 0;
     if (missingCount > 0 && !canEstablishTrustlines(accountData, missingCount)) {
@@ -197,7 +193,93 @@ export async function validateAssetIssuanceDeployment(
     }
   }
 
+  if (!trustlineResult.valid) {
+    return trustlineResult;
+  }
+
   return { valid: true };
+}
+
+export interface AccountSigner {
+  key: string;
+  weight: number;
+}
+
+export interface SignerCombination {
+  signers: string[];
+  totalWeight: number;
+}
+
+export interface MultiSigAuthorizationResult {
+  multisigRequired: boolean;
+  threshold: number;
+  signerCombinations: SignerCombination[];
+  canMeetThreshold: boolean;
+}
+
+/**
+ * Returns all minimal combinations of signers whose combined weight meets the threshold.
+ *
+ * @param signers - List of signers with their weights
+ * @param threshold - Required signing threshold for SET_TRUST_LINE_FLAGS
+ * @returns MultiSigAuthorizationResult
+ */
+export function getRequiredSigners(
+  signers: AccountSigner[],
+  threshold: number
+): MultiSigAuthorizationResult {
+  if (threshold <= 1) {
+    return {
+      multisigRequired: false,
+      threshold,
+      signerCombinations: [],
+      canMeetThreshold: signers.some((s) => s.weight >= threshold),
+    };
+  }
+
+  const combinations: SignerCombination[] = [];
+
+  // Enumerate subsets and collect those that meet the threshold
+  const n = signers.length;
+  for (let mask = 1; mask < 1 << n; mask++) {
+    const subset: AccountSigner[] = [];
+    for (let i = 0; i < n; i++) {
+      if (mask & (1 << i)) subset.push(signers[i]);
+    }
+    const total = subset.reduce((sum, s) => sum + s.weight, 0);
+    if (total >= threshold) {
+      // Only include minimal combinations (no proper subset also qualifies)
+      const isMinimal = subset.every((_, idx) => {
+        const reduced = subset.filter((__, j) => j !== idx);
+        return reduced.reduce((sum, s) => sum + s.weight, 0) < threshold;
+      });
+      if (isMinimal) {
+        combinations.push({ signers: subset.map((s) => s.key), totalWeight: total });
+      }
+    }
+  }
+
+  return {
+    multisigRequired: true,
+    threshold,
+    signerCombinations: combinations,
+    canMeetThreshold: combinations.length > 0,
+  };
+}
+
+/**
+ * Detects whether the issuer account requires multi-sig authorization for SET_TRUST_LINE_FLAGS
+ * and returns the required signer combinations.
+ *
+ * @param issuerSigners - Signers on the issuer account
+ * @param medThreshold - The medium threshold of the issuer account (governs SET_TRUST_LINE_FLAGS)
+ * @returns MultiSigAuthorizationResult
+ */
+export function detectMultiSigTrustlineRequirement(
+  issuerSigners: AccountSigner[],
+  medThreshold: number
+): MultiSigAuthorizationResult {
+  return getRequiredSigners(issuerSigners, medThreshold);
 }
 
 /**

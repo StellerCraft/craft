@@ -12,6 +12,8 @@ import {
   validateAssetIssuanceDeployment,
   formatTrustlineError,
   MAX_TRUSTLINES_PER_ACCOUNT,
+  getRequiredSigners,
+  detectMultiSigTrustlineRequirement,
 } from './trustline-validation';
 import type { Horizon } from 'stellar-sdk';
 
@@ -401,6 +403,60 @@ describe('Trustline Validation', () => {
       expect(formatted).toContain('Establish trustlines');
       expect(formatted).toContain('authorized by the issuer');
       expect(formatted).toContain('limits are not maxed out');
+    });
+  });
+
+  describe('getRequiredSigners / detectMultiSigTrustlineRequirement', () => {
+    const signerA = Keypair.random().publicKey();
+    const signerB = Keypair.random().publicKey();
+    const signerC = Keypair.random().publicKey();
+
+    it('should return multisigRequired: false for threshold <= 1', () => {
+      const result = getRequiredSigners(
+        [{ key: signerA, weight: 1 }],
+        1
+      );
+      expect(result.multisigRequired).toBe(false);
+      expect(result.canMeetThreshold).toBe(true);
+    });
+
+    it('should return single-signer combination when one signer meets threshold', () => {
+      const result = getRequiredSigners(
+        [{ key: signerA, weight: 5 }, { key: signerB, weight: 1 }],
+        3
+      );
+      expect(result.multisigRequired).toBe(true);
+      expect(result.signerCombinations.some((c) => c.signers.length === 1 && c.signers[0] === signerA)).toBe(true);
+    });
+
+    it('should return multi-signer combinations when no single signer meets threshold', () => {
+      const result = getRequiredSigners(
+        [{ key: signerA, weight: 2 }, { key: signerB, weight: 2 }, { key: signerC, weight: 2 }],
+        4
+      );
+      expect(result.multisigRequired).toBe(true);
+      expect(result.canMeetThreshold).toBe(true);
+      // Any pair of two 2-weight signers totals 4, so we expect combinations of size 2
+      expect(result.signerCombinations.every((c) => c.signers.length === 2)).toBe(true);
+    });
+
+    it('should set canMeetThreshold: false when no combination reaches threshold', () => {
+      const result = getRequiredSigners(
+        [{ key: signerA, weight: 1 }, { key: signerB, weight: 1 }],
+        5
+      );
+      expect(result.multisigRequired).toBe(true);
+      expect(result.canMeetThreshold).toBe(false);
+      expect(result.signerCombinations).toHaveLength(0);
+    });
+
+    it('detectMultiSigTrustlineRequirement delegates correctly', () => {
+      const result = detectMultiSigTrustlineRequirement(
+        [{ key: signerA, weight: 3 }, { key: signerB, weight: 3 }],
+        3
+      );
+      expect(result.multisigRequired).toBe(true);
+      expect(result.canMeetThreshold).toBe(true);
     });
   });
 });
