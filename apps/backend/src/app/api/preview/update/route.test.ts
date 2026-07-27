@@ -1,7 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { POST } from './route';
 
-vi.mock('@/lib/supabase/server', () => ({
+vi.mock('next/headers', () => ({
+    cookies: () => ({
+        get: vi.fn().mockReturnValue(null),
+        set: vi.fn(),
+        delete: vi.fn(),
+    }),
+}));
+
+vi.mock('../../../../lib/supabase/server', () => ({
     createClient: () => ({
         auth: {
             getUser: vi.fn().mockResolvedValue({

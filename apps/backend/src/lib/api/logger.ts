@@ -246,8 +246,10 @@ export function withLogging<TParams = {}>(handler: RouteHandler<TParams>) {
         const log = createLogger({ correlationId });
         const start = Date.now();
 
-        const method = req.method;
-        const url = req.nextUrl.pathname;
+        const method = (req as any).method || 'GET';
+        const url = (req as any).nextUrl?.pathname ?? (typeof (req as any).url === 'string'
+            ? new URL((req as any).url, 'http://localhost').pathname
+            : '/');
 
         // Capture request details for logging
         const logRequest = async () => {

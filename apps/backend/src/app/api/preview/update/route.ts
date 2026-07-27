@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { withAuth } from '@/lib/api/with-auth';
-import { validateCustomizationConfig } from '@/lib/customization/validate';
-import { previewService } from '@/services/preview.service';
+import { withAuth } from '../../../../lib/api/with-auth';
+import { validateCustomizationConfig } from '../../../../lib/customization/validate';
+import { previewService } from '../../../../services/preview.service';
+import { costEstimationService } from '../../../../services/billing/cost-estimation.service';
 import type { CustomizationConfig, DeepPartial } from '@craft/types';
 
 /**
@@ -11,7 +12,7 @@ import type { CustomizationConfig, DeepPartial } from '@craft/types';
  * Returns minimal update payload with changedFields and optional mockData.
  */
 export const POST = withAuth(async (req: NextRequest) => {
-    let body: { current?: unknown; changes?: unknown };
+    let body: { current?: unknown; changes?: unknown; tier?: unknown; vercelComputeHours?: unknown };
     try {
         body = await req.json();
     } catch {
@@ -39,7 +40,17 @@ export const POST = withAuth(async (req: NextRequest) => {
 
     try {
         const payload = previewService.updatePreview(current, changes);
-        return NextResponse.json(payload, { status: 200 });
+        const tier = body.tier === 'basic' || body.tier === 'standard' || body.tier === 'premium'
+            ? body.tier
+            : 'standard';
+        const vercelComputeHours = typeof body.vercelComputeHours === 'number' ? body.vercelComputeHours : 0;
+        const costEstimate = costEstimationService.estimateDeploymentCost({
+            customizationConfig: payload.customization,
+            tier,
+            vercelComputeHours,
+        });
+
+        return NextResponse.json({ ...payload, costEstimate }, { status: 200 });
     } catch (error: any) {
         return NextResponse.json(
             { error: error.message || 'Failed to update preview' },

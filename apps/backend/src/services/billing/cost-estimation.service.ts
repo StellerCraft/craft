@@ -1,3 +1,5 @@
+import type { CustomizationConfig } from '@craft/types';
+
 /**
  * Deployment Cost Estimation Service
  * 
@@ -27,6 +29,30 @@ export interface ProjectedCost {
     daily: number;
     monthly: number;
     yearly: number;
+}
+
+export interface DeploymentCostEstimateRequest {
+    customizationConfig: CustomizationConfig;
+    tier?: PricingTier;
+    vercelComputeHours?: number;
+}
+
+export interface DeploymentCostEstimate {
+    complexityScore: number;
+    estimatedMonthlyCost: number;
+    estimatedYearlyCost: number;
+    breakdown: {
+        baseCost: number;
+        sorobanInvocationCost: number;
+        featureCost: number;
+        vercelComputeCost: number;
+    };
+    factors: {
+        sorobanInvocations: number;
+        enabledFeatureCount: number;
+        vercelComputeHours: number;
+        tier: PricingTier;
+    };
 }
 
 export interface TierConfig {
@@ -73,6 +99,12 @@ const OVERAGE_RATES = {
     bandwidthPerGB: 0.05,  // $0.05 per additional GB
 };
 
+const COMPLEXITY_COSTS = {
+    sorobanInvocation: 7.5,
+    featureToggle: 3,
+    vercelComputePerHour: 0.02,
+};
+
 export class CostEstimationService {
     /**
      * Calculate cost for a specific usage and tier
@@ -110,6 +142,53 @@ export class CostEstimationService {
             baseTierCost: Number(baseTierCost.toFixed(2)),
             totalCost: Number(totalCost.toFixed(2)),
         };
+    }
+
+    /**
+     * Estimate a deployment's monthly billing cost based on template complexity.
+     * This uses the customization configuration, enabled feature count, Soroban
+     * contract invocations, and estimated Vercel compute usage.
+     */
+    estimateDeploymentCost(request: DeploymentCostEstimateRequest): DeploymentCostEstimate {
+        const tier = request.tier ?? 'standard';
+        const baseCost = TIER_CONFIGS[tier].baseMonthlyCost;
+        const sorobanInvocations = this.countSorobanInvocations(request.customizationConfig);
+        const enabledFeatureCount = this.countEnabledFeatures(request.customizationConfig);
+        const vercelComputeHours = request.vercelComputeHours ?? 0;
+
+        const sorobanInvocationCost = Number((sorobanInvocations * COMPLEXITY_COSTS.sorobanInvocation).toFixed(2));
+        const featureCost = Number((enabledFeatureCount * COMPLEXITY_COSTS.featureToggle).toFixed(2));
+        const vercelComputeCost = Number((vercelComputeHours * COMPLEXITY_COSTS.vercelComputePerHour).toFixed(2));
+
+        const complexityScore = Number((baseCost + sorobanInvocationCost + featureCost + vercelComputeCost).toFixed(2));
+
+        return {
+            complexityScore,
+            estimatedMonthlyCost: complexityScore,
+            estimatedYearlyCost: Number((complexityScore * 12).toFixed(2)),
+            breakdown: {
+                baseCost: Number(baseCost.toFixed(2)),
+                sorobanInvocationCost,
+                featureCost,
+                vercelComputeCost,
+            },
+            factors: {
+                sorobanInvocations,
+                enabledFeatureCount,
+                vercelComputeHours,
+                tier,
+            },
+        };
+    }
+
+    private countSorobanInvocations(config: CustomizationConfig): number {
+        const contractAddresses = config.stellar.contractAddresses ?? {};
+        const contractCount = Object.keys(contractAddresses).length;
+        return contractCount > 0 ? contractCount : (config.stellar.sorobanRpcUrl ? 1 : 0);
+    }
+
+    private countEnabledFeatures(config: CustomizationConfig): number {
+        return Object.values(config.features).filter(Boolean).length;
     }
 
     /**

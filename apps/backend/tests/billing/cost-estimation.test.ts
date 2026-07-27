@@ -145,6 +145,46 @@ describe('CostEstimationService', () => {
         });
     });
 
+    describe('Template Complexity Estimation', () => {
+        it('should score deployment complexity using soroban invocations, enabled features, and Vercel compute usage', () => {
+            const result = costEstimationService.estimateDeploymentCost({
+                customizationConfig: {
+                    branding: {
+                        appName: 'Complex DEX',
+                        primaryColor: '#4f9eff',
+                        secondaryColor: '#1a1f36',
+                        fontFamily: 'Inter',
+                    },
+                    features: {
+                        enableCharts: true,
+                        enableTransactionHistory: true,
+                        enableAnalytics: true,
+                        enableNotifications: true,
+                    },
+                    stellar: {
+                        network: 'mainnet',
+                        horizonUrl: 'https://horizon.stellar.org',
+                        sorobanRpcUrl: 'https://rpc.soroban-testnet.stellar.org',
+                        contractAddresses: {
+                            vault: 'CC123',
+                            swap: 'CC456',
+                        },
+                    },
+                },
+                tier: 'standard',
+                vercelComputeHours: 96,
+            });
+
+            expect(result.breakdown.baseCost).toBe(20);
+            expect(result.breakdown.sorobanInvocationCost).toBe(15);
+            expect(result.breakdown.featureCost).toBe(12);
+            expect(result.breakdown.vercelComputeCost).toBe(2);
+            expect(result.complexityScore).toBe(49);
+            expect(result.estimatedMonthlyCost).toBe(49);
+            expect(result.estimatedYearlyCost).toBe(588);
+        });
+    });
+
     describe('Cost Alert Thresholds', () => {
         it('should trigger alert when cost exceeds threshold', () => {
             const result = costEstimationService.checkAlert(120, 100);
