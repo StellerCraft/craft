@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+<<<<<<< HEAD
 import { withAuth } from '@/lib/api/with-auth';
 import { costEstimationService, PricingTier } from '@/services/billing/cost-estimation.service';
 
@@ -58,3 +59,45 @@ export const GET = withAuth(async (req: NextRequest, { params, user, supabase, l
         formula: 'base_cost + N * soroban_invocation_cost + M * feature_cost'
     });
 });
+=======
+import { withDeploymentAuth } from '@/lib/api/with-auth';
+import { costEstimationService } from '@/services/billing/cost-estimation.service';
+
+export const GET = withDeploymentAuth(async (req: NextRequest, { params, supabase }) => {
+    const deploymentId = params.id;
+
+    const { data: deployment, error } = await supabase
+        .from('deployments')
+        .select('customization_config, template_id')
+        .eq('id', deploymentId)
+        .single();
+
+    if (error || !deployment) {
+        return NextResponse.json({ error: 'Deployment not found' }, { status: 404 });
+    }
+
+    const estimate = costEstimationService.estimateDeploymentCost({
+        customizationConfig: deployment.customization_config ?? undefined,
+        sorobanInvocationCount: getSorobanInvocationCount(deployment.customization_config),
+        vercelComputeUnits: getComputeUnits(deployment.customization_config),
+    });
+
+    return NextResponse.json({
+        deploymentId,
+        estimate,
+        costEstimate: estimate,
+    });
+});
+
+function getSorobanInvocationCount(customizationConfig: Record<string, any> | null | undefined): number {
+    const stellar = customizationConfig?.stellar ?? {};
+    const contractAddresses = stellar.contractAddresses ?? {};
+    return Object.keys(contractAddresses).length;
+}
+
+function getComputeUnits(customizationConfig: Record<string, any> | null | undefined): number {
+    const features = customizationConfig?.features ?? {};
+    const enabledFeatureCount = Object.values(features).filter(Boolean).length;
+    return 0.5 + enabledFeatureCount * 0.25;
+}
+>>>>>>> d855263 (feat(cost-estimation): implement deployment cost estimation and complexity scoring)
