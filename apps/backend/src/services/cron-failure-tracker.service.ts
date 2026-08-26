@@ -134,7 +134,6 @@ export class CronFailureTrackerService {
 
         // Email alert at threshold 6 or above (if not already sent)
         if (count >= EMAIL_ALERT_THRESHOLD && !row?.email_alert_sent) {
-            await this._sendSlackAlert(jobName, count, error);
             this._sendEmailAlert(jobName, count, error);
             await supabase.rpc('mark_cron_alert_sent', {
                 p_job_name: jobName,
