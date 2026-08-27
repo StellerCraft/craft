@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { HorizonClient, CircuitBreaker, computeBackoffMs } from './horizon-client';
+import { HorizonClient, CircuitBreaker, computeBackoffMs, MAX_BACKOFF_DELAY_MS } from './horizon-client';
 
 const BASE_URL = 'https://horizon-testnet.stellar.org';
 
@@ -61,6 +61,31 @@ describe('computeBackoffMs', () => {
     const { delayMs: d2 } = computeBackoffMs({}, 2);
     expect(d1).toBe(d0 * 2);
     expect(d2).toBe(d0 * 4);
+  });
+
+  it('caps a far-future X-RateLimit-Reset delay instead of returning it unbounded (#1115)', () => {
+    // Reset one hour in the future (clock skew / Horizon anomaly / bad proxy).
+    const farFutureReset = Math.floor(Date.now() / 1000) + 3600;
+    const { delayMs, reason } = computeBackoffMs(
+      { 'x-ratelimit-remaining': '1', 'x-ratelimit-reset': String(farFutureReset) },
+      0,
+    );
+
+    // Without the cap this would be ~3_600_000 ms.
+    expect(delayMs).toBe(MAX_BACKOFF_DELAY_MS);
+    expect(delayMs).toBeLessThanOrEqual(MAX_BACKOFF_DELAY_MS);
+    expect(reason).toContain('rate_limit_low_remaining');
+    expect(reason).toContain('capped');
+  });
+
+  it('does not mark a within-cap reset delay as capped (#1115)', () => {
+    const resetSec = Math.floor(Date.now() / 1000) + 2;
+    const { delayMs, reason } = computeBackoffMs(
+      { 'x-ratelimit-remaining': '1', 'x-ratelimit-reset': String(resetSec) },
+      0,
+    );
+    expect(delayMs).toBeLessThanOrEqual(MAX_BACKOFF_DELAY_MS);
+    expect(reason).not.toContain('capped');
   });
 });
 

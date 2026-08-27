@@ -227,6 +227,59 @@ describe('session timeout expiry', () => {
         expect(result.error).toMatch(/expired/);
     });
 
+    it('addCoSignerSignature and expireTimedOutSessions agree at exactly expiresAt (#1118)', () => {
+        const baseTxXdr = buildBaseTxXdr();
+        const signedByA = signTxXdr(baseTxXdr, SIGNER_A);
+
+        const session = createIssuanceSession(
+            { required: 2, total: 3, timeoutMs: 60_000 },
+            baseTxXdr,
+        );
+        const exactlyExpiresAt = session.expiresAt;
+
+        // `now > expiresAt` is false at the boundary → NOT expired.
+        const count = expireTimedOutSessions(exactlyExpiresAt);
+        expect(count).toBe(0);
+        expect(getIssuanceSession(session.id)!.state).toBe('pending');
+
+        // addCoSignerSignature, evaluated at the identical instant, must not treat it as expired.
+        const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(exactlyExpiresAt);
+        try {
+            const result = addCoSignerSignature(session.id, SIGNER_A.publicKey(), signedByA, NETWORK);
+            expect(result.ok).toBe(true);
+        } finally {
+            nowSpy.mockRestore();
+        }
+        expect(getIssuanceSession(session.id)!.state).not.toBe('expired');
+    });
+
+    it('addCoSignerSignature and expireTimedOutSessions agree one ms past expiresAt (#1118)', () => {
+        const baseTxXdr = buildBaseTxXdr();
+        const signedByA = signTxXdr(baseTxXdr, SIGNER_A);
+
+        const sessionForExpire = createIssuanceSession(
+            { required: 2, total: 3, timeoutMs: 60_000 },
+            baseTxXdr,
+        );
+        const count = expireTimedOutSessions(sessionForExpire.expiresAt + 1);
+        expect(count).toBe(1);
+        expect(getIssuanceSession(sessionForExpire.id)!.state).toBe('expired');
+
+        const session2 = createIssuanceSession(
+            { required: 2, total: 3, timeoutMs: 60_000 },
+            baseTxXdr,
+        );
+        const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(session2.expiresAt + 1);
+        try {
+            const result = addCoSignerSignature(session2.id, SIGNER_A.publicKey(), signedByA, NETWORK);
+            expect(result.ok).toBe(false);
+            if (!result.ok) expect(result.error).toMatch(/expired/);
+        } finally {
+            nowSpy.mockRestore();
+        }
+        expect(getIssuanceSession(session2.id)!.state).toBe('expired');
+    });
+
     it('does not expire approved or issued sessions', () => {
         const baseTxXdr = buildBaseTxXdr();
         const session = createIssuanceSession(

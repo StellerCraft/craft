@@ -344,22 +344,42 @@ export interface OrderBookFetcher {
  * Subscribe to ledger-close events and call `onUpdate` with a freshly
  * computed `EnrichedDexPriceResult` on every new ledger.
  *
+ * A single failing `fetcher.fetch()` never tears the subscription down — the
+ * stream stays alive and keeps trying on the next ledger. That resilience,
+ * however, previously made a *persistent* failure (expired credentials, a
+ * renamed Horizon endpoint, a network partition) indistinguishable from a quiet
+ * market: the subscription stops producing updates while remaining technically
+ * active, with nothing logged. Pass `onError` to observe and alert on sustained
+ * failures; it is invoked once per failed ledger event with the thrown error and
+ * the triggering `LedgerEvent`, and its own exceptions are ignored so a broken
+ * handler cannot break the feed.
+ *
  * @param emitter  - Source of `'ledger'` events (e.g. Horizon SSE stream)
  * @param fetcher  - Fetches the current order book snapshot on demand
  * @param onUpdate - Called with the enriched price result after each ledger
+ * @param onError  - Optional; called with `(error, ledger)` each time a per-ledger
+ *                   fetch fails. Does not change the resilience behaviour — the
+ *                   subscription stays alive regardless.
  * @returns Unsubscribe function – call it to stop receiving updates
  */
 export function subscribeLedgerPriceFeed(
     emitter: LedgerEventEmitter,
     fetcher: OrderBookFetcher,
     onUpdate: PriceFeedUpdateHandler,
+    onError?: (error: unknown, ledger: LedgerEvent) => void,
 ): () => void {
-    const handler = async (_ledger: LedgerEvent) => {
+    const handler = async (ledger: LedgerEvent) => {
         try {
             const book = await fetcher.fetch();
             onUpdate(computeEnrichedDexPrice(book));
-        } catch {
-            // Swallow individual fetch errors; the stream stays alive
+        } catch (error) {
+            // Swallow individual fetch errors; the stream stays alive.
+            // Surface them through onError so callers can alert on sustained failures.
+            try {
+                onError?.(error, ledger);
+            } catch {
+                // A misbehaving error handler must not break the feed.
+            }
         }
     };
 

@@ -232,9 +232,15 @@ export function deserializeScValAs<T extends SorobanValue>(
 ): T {
     const value = deserializeScVal(scVal);
     if (guard && !guard(value)) {
+        const scvType = scVal.switch().name;
         throw new SorobanDeserializationError(
-            `Deserialized value did not match expected type (got ${typeof value})`,
-            scVal.switch().name,
+            // Report the ScVal discriminant (e.g. scvMap, scvI128), not just the
+            // JS runtime type — `typeof value` is `object` for both maps and vecs
+            // and `bigint` for every 64/128/256-bit integer variant, so it can't
+            // tell you which shape actually came back.
+            `Deserialized value did not match expected type ` +
+                `(got ScVal ${scvType}, JS typeof ${typeof value})`,
+            scvType,
         );
     }
     return value as T;
