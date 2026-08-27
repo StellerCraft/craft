@@ -1,3 +1,13 @@
+/**
+ * Canary & Blue-Green Deployment Rollout Strategies
+ *
+ * Implements `RolloutEngine` (percentage-based canary rollout with
+ * auto-rollback) and `BlueGreenSwitcher` (blue/green traffic switching).
+ *
+ * Not to be confused with `./feature-flag-engine.ts`, which implements the
+ * standalone feature-flag targeting/evaluation engine (`FlagEngine`).
+ */
+
 export type DeploymentColor = 'blue' | 'green';
 export type RolloutStatus = 'pending' | 'in_progress' | 'promoted' | 'rolled_back';
 

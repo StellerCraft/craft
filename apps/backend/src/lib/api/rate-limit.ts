@@ -21,6 +21,9 @@
  * ─────────────────
  * Set RATE_LIMIT_DISABLED=true in .env.local to bypass all checks.
  * Thresholds are intentionally generous in dev to avoid friction.
+ *
+ * See "Rate Limiting, Idempotency, and Tier Enforcement" in CONTRIBUTING.md
+ * for the full env-var reference.
  */
 
 export interface RateLimitConfig {

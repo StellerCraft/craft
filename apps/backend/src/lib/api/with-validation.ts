@@ -41,6 +41,20 @@ function formatErrors(err: ZodError): Record<string, string[]> {
  * Validates the JSON request body against the given Zod schema.
  * Returns 400 with field-level errors if validation fails.
  * Attaches `req.validatedBody` for the inner handler.
+ *
+ * @example
+ * ```typescript
+ * const createDeploymentSchema = z.object({
+ *   projectId: z.string().uuid(),
+ *   branch: z.string().min(1),
+ * });
+ *
+ * export const POST = withValidation(createDeploymentSchema)(async (req) => {
+ *   const { projectId, branch } = req.validatedBody; // typed, already valid
+ *   const deployment = await createDeployment(projectId, branch);
+ *   return NextResponse.json(deployment, { status: 201 });
+ * });
+ * ```
  */
 export function withValidation<TBody, TParams = {}>(schema: ZodSchema<TBody>) {
     return (handler: RouteHandler<TBody, TParams>) =>
@@ -69,6 +83,20 @@ export function withValidation<TBody, TParams = {}>(schema: ZodSchema<TBody>) {
  * Validates URL search params against the given Zod schema.
  * Returns 400 with field-level errors if validation fails.
  * Attaches `req.validatedQuery` for the inner handler.
+ *
+ * @example
+ * ```typescript
+ * const listDeploymentsQuerySchema = z.object({
+ *   status: z.enum(['pending', 'live', 'failed']).optional(),
+ *   limit: z.coerce.number().int().positive().max(100).default(20),
+ * });
+ *
+ * export const GET = withQueryValidation(listDeploymentsQuerySchema)(async (req) => {
+ *   const { status, limit } = req.validatedQuery; // typed, already valid
+ *   const deployments = await listDeployments({ status, limit });
+ *   return NextResponse.json(deployments);
+ * });
+ * ```
  */
 export function withQueryValidation<TQuery, TParams = {}>(schema: ZodSchema<TQuery>) {
     return (handler: QueryHandler<TQuery, TParams>) =>
@@ -90,6 +118,17 @@ export function withQueryValidation<TQuery, TParams = {}>(schema: ZodSchema<TQue
 /**
  * Validates route params against the given Zod schema.
  * Returns 400 with field-level errors if validation fails.
+ *
+ * @example
+ * ```typescript
+ * const paramsSchema = z.object({ deploymentId: z.string().uuid() });
+ *
+ * export const DELETE = withParamsValidation(paramsSchema)(async (req, ctx) => {
+ *   const { deploymentId } = ctx.params; // typed, already valid
+ *   await deleteDeployment(deploymentId);
+ *   return NextResponse.json({ deleted: true });
+ * });
+ * ```
  */
 export function withParamsValidation<TParams extends Record<string, unknown>>(
     schema: ZodSchema<TParams>,

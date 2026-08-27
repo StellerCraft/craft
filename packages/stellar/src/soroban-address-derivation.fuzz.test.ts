@@ -18,6 +18,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { Networks } from 'stellar-sdk';
 import { deriveContractAddress } from './soroban';
 
 // ── Deterministic test fixtures ───────────────────────────────────────────────
@@ -74,7 +75,7 @@ describe('F1 — invalid WASM hash lengths always throw', () => {
         for (let byteLen = 0; byteLen < 32; byteLen++) {
             const shortHash = '00'.repeat(byteLen);
             expect(
-                () => deriveContractAddress(DEPLOYER_A, SALT_32, shortHash),
+                () => deriveContractAddress(DEPLOYER_A, SALT_32, shortHash, Networks.TESTNET),
                 `expected throw for wasmHash length ${byteLen}`,
             ).toThrow('wasmHash must be 32 bytes');
         }
@@ -84,7 +85,7 @@ describe('F1 — invalid WASM hash lengths always throw', () => {
         for (let byteLen = 33; byteLen <= 64; byteLen++) {
             const longHash = '00'.repeat(byteLen);
             expect(
-                () => deriveContractAddress(DEPLOYER_A, SALT_32, longHash),
+                () => deriveContractAddress(DEPLOYER_A, SALT_32, longHash, Networks.TESTNET),
                 `expected throw for wasmHash length ${byteLen}`,
             ).toThrow('wasmHash must be 32 bytes');
         }
@@ -96,7 +97,7 @@ describe('F1 — invalid WASM hash lengths always throw', () => {
             if (byteLen === 32) continue; // skip valid lengths
             const hash = '00'.repeat(byteLen);
             expect(
-                () => deriveContractAddress(DEPLOYER_A, SALT_32, hash),
+                () => deriveContractAddress(DEPLOYER_A, SALT_32, hash, Networks.TESTNET),
             ).toThrow('wasmHash must be 32 bytes');
         }
     });
@@ -106,26 +107,26 @@ describe('F1 — invalid WASM hash lengths always throw', () => {
 
 describe('F2 — salt boundary values', () => {
     it('empty salt (0 bytes) throws', () => {
-        expect(() => deriveContractAddress(DEPLOYER_A, '', WASM_32)).toThrow(
+        expect(() => deriveContractAddress(DEPLOYER_A, '', WASM_32, Networks.TESTNET)).toThrow(
             'salt must be 32 bytes',
         );
     });
 
     it('salt exactly 32 bytes succeeds and returns a C… StrKey', () => {
-        const addr = deriveContractAddress(DEPLOYER_A, SALT_32, WASM_32);
+        const addr = deriveContractAddress(DEPLOYER_A, SALT_32, WASM_32, Networks.TESTNET);
         expect(addr).toMatch(/^C[A-Z2-7]{55}$/);
     });
 
     it('salt of 31 bytes throws', () => {
         const short = '00'.repeat(31);
-        expect(() => deriveContractAddress(DEPLOYER_A, short, WASM_32)).toThrow(
+        expect(() => deriveContractAddress(DEPLOYER_A, short, WASM_32, Networks.TESTNET)).toThrow(
             'salt must be 32 bytes',
         );
     });
 
     it('salt of 33 bytes throws', () => {
         const long = '00'.repeat(33);
-        expect(() => deriveContractAddress(DEPLOYER_A, long, WASM_32)).toThrow(
+        expect(() => deriveContractAddress(DEPLOYER_A, long, WASM_32, Networks.TESTNET)).toThrow(
             'salt must be 32 bytes',
         );
     });
@@ -133,7 +134,7 @@ describe('F2 — salt boundary values', () => {
     it('salt over 32 bytes always throws', () => {
         for (let byteLen = 33; byteLen <= 64; byteLen++) {
             expect(
-                () => deriveContractAddress(DEPLOYER_A, '00'.repeat(byteLen), WASM_32),
+                () => deriveContractAddress(DEPLOYER_A, '00'.repeat(byteLen), WASM_32, Networks.TESTNET),
                 `expected throw for salt length ${byteLen}`,
             ).toThrow('salt must be 32 bytes');
         }
@@ -141,13 +142,13 @@ describe('F2 — salt boundary values', () => {
 
     it('Buffer salt of exactly 32 bytes succeeds', () => {
         const saltBuf = Buffer.alloc(32, 0x01);
-        const addr = deriveContractAddress(DEPLOYER_A, saltBuf, WASM_32);
+        const addr = deriveContractAddress(DEPLOYER_A, saltBuf, WASM_32, Networks.TESTNET);
         expect(addr).toMatch(/^C[A-Z2-7]{55}$/);
     });
 
     it('Buffer salt of 31 bytes throws', () => {
         expect(
-            () => deriveContractAddress(DEPLOYER_A, Buffer.alloc(31), WASM_32),
+            () => deriveContractAddress(DEPLOYER_A, Buffer.alloc(31), WASM_32, Networks.TESTNET),
         ).toThrow('salt must be 32 bytes');
     });
 });
@@ -164,7 +165,7 @@ describe('F3 — collision resistance across 200 distinct inputs', () => {
             const salt = gen32ByteHex(rand);
             const wasm = gen32ByteHex(rand);
 
-            const addr = deriveContractAddress(deployer, salt, wasm);
+            const addr = deriveContractAddress(deployer, salt, wasm, Networks.TESTNET);
 
             // Invariant: this address must not have appeared before
             expect(seen.has(addr)).toBe(false);
@@ -179,8 +180,8 @@ describe('F3 — collision resistance across 200 distinct inputs', () => {
             const salt2 = gen32ByteHex(rand);
             if (salt1 === salt2) continue;
 
-            const a1 = deriveContractAddress(DEPLOYER_A, salt1, WASM_32);
-            const a2 = deriveContractAddress(DEPLOYER_A, salt2, WASM_32);
+            const a1 = deriveContractAddress(DEPLOYER_A, salt1, WASM_32, Networks.TESTNET);
+            const a2 = deriveContractAddress(DEPLOYER_A, salt2, WASM_32, Networks.TESTNET);
             expect(a1).not.toBe(a2);
         }
     });
@@ -192,15 +193,15 @@ describe('F3 — collision resistance across 200 distinct inputs', () => {
             const w2 = gen32ByteHex(rand);
             if (w1 === w2) continue;
 
-            const a1 = deriveContractAddress(DEPLOYER_A, SALT_32, w1);
-            const a2 = deriveContractAddress(DEPLOYER_A, SALT_32, w2);
+            const a1 = deriveContractAddress(DEPLOYER_A, SALT_32, w1, Networks.TESTNET);
+            const a2 = deriveContractAddress(DEPLOYER_A, SALT_32, w2, Networks.TESTNET);
             expect(a1).not.toBe(a2);
         }
     });
 
     it('changing only the deployer produces a different address', () => {
-        const a1 = deriveContractAddress(DEPLOYER_A, SALT_32, WASM_32);
-        const a2 = deriveContractAddress(DEPLOYER_B, SALT_32, WASM_32);
+        const a1 = deriveContractAddress(DEPLOYER_A, SALT_32, WASM_32, Networks.TESTNET);
+        const a2 = deriveContractAddress(DEPLOYER_B, SALT_32, WASM_32, Networks.TESTNET);
         expect(a1).not.toBe(a2);
     });
 });
@@ -216,7 +217,7 @@ describe('F4 — output is always a valid C… StrKey', () => {
             const deployer = pickDeployer(i);
             const salt = gen32ByteHex(rand);
             const wasm = gen32ByteHex(rand);
-            const addr = deriveContractAddress(deployer, salt, wasm);
+            const addr = deriveContractAddress(deployer, salt, wasm, Networks.TESTNET);
             expect(addr).toMatch(C_STRKEY_RE);
         }
     });
@@ -233,7 +234,7 @@ describe('F5 — no collision with well-known contract IDs', () => {
             const deployer = pickDeployer(i);
             const salt = gen32ByteHex(rand);
             const wasm = gen32ByteHex(rand);
-            const addr = deriveContractAddress(deployer, salt, wasm);
+            const addr = deriveContractAddress(deployer, salt, wasm, Networks.TESTNET);
             expect(wellKnownSet.has(addr)).toBe(false);
         }
     });

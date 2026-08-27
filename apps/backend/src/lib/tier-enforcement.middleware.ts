@@ -10,6 +10,9 @@
  *
  * Returns 402 Payment Required with an upgrade URL when the user's tier
  * is below the required minimum.
+ *
+ * See "Rate Limiting, Idempotency, and Tier Enforcement" in CONTRIBUTING.md
+ * for the full reference of FEATURE_GATES and TIER_ORDER.
  */
 
 import { NextRequest, NextResponse } from 'next/server';

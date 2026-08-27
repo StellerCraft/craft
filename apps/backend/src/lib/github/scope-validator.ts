@@ -30,6 +30,9 @@
  *
  * Feature: github-oauth-scope-validation
  * Issue: #658, #938
+ *
+ * See "Rate Limiting, Idempotency, and Tier Enforcement" in CONTRIBUTING.md
+ * for the full env-var reference.
  */
 
 import { createHash } from 'node:crypto';
