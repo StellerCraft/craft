@@ -40,12 +40,22 @@ const SCOPE_VALIDATION_CACHE_TTL_MS = parseInt(
     10,
 ); // 5 minutes default
 
+/** Maximum number of validation results held in memory. */
+export const MAX_SCOPE_VALIDATION_CACHE_ENTRIES = 1_000;
+
 interface CacheEntry {
     result: ScopeValidationResult;
     expiresAt: number;
 }
 
 const scopeValidationCache = new Map<string, CacheEntry>();
+
+function evictOldestScopeValidationEntry(): void {
+    const oldestKey = scopeValidationCache.keys().next().value;
+    if (oldestKey !== undefined) {
+        scopeValidationCache.delete(oldestKey);
+    }
+}
 
 function hashToken(token: string): string {
     return createHash('sha256').update(token).digest('hex');
@@ -180,6 +190,9 @@ export async function fetchAndValidateScopes(
     const result = validateScopes(grantedScopes);
 
     // Cache successful validations
+    if (scopeValidationCache.size >= MAX_SCOPE_VALIDATION_CACHE_ENTRIES) {
+        evictOldestScopeValidationEntry();
+    }
     scopeValidationCache.set(tokenHash, {
         result,
         expiresAt: Date.now() + SCOPE_VALIDATION_CACHE_TTL_MS,

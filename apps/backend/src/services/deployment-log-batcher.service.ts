@@ -10,8 +10,8 @@
  *
  * Guarantees:
  *   - Entries within a batch are ordered by timestamp before insert.
- *   - When the pending queue exceeds 10 batches, `append` awaits the flush
- *     to apply backpressure.
+ *   - When 10 batches are in flight, `append` waits for one to finish before
+ *     accepting another entry.
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -39,6 +39,7 @@ export class DeploymentLogBatcher {
     private queue: QueuedEntry[] = [];
     private timer: ReturnType<typeof setTimeout> | null = null;
     private pendingFlushes = 0;
+    private readonly inFlightFlushes = new Set<Promise<void>>();
 
     constructor(
         private readonly supabase: SupabaseClient,
@@ -48,12 +49,12 @@ export class DeploymentLogBatcher {
 
     /**
      * Enqueue a log entry for batched writing.
-     * Blocks (awaits current flush) when backpressure limit is reached.
+        * Blocks until in-flight flush pressure drops below the limit.
      */
     async append(entry: LogEntry): Promise<void> {
         // Backpressure: too many in-flight batches
-        if (this.pendingFlushes >= MAX_PENDING_BATCHES) {
-            await this._flush();
+        while (this.pendingFlushes >= MAX_PENDING_BATCHES) {
+            await Promise.race(this.inFlightFlushes);
         }
 
         this.queue.push({ ...entry, timestamp: entry.timestamp ?? new Date().toISOString() });
@@ -91,13 +92,21 @@ export class DeploymentLogBatcher {
         }));
 
         this.pendingFlushes++;
-        try {
-            const { error } = await this.supabase.from('deployment_logs').insert(rows);
-            if (error) {
-                console.error('[log-batcher] Failed to flush batch', { count: rows.length, error: error.message });
+        const flushPromise = (async () => {
+            try {
+                const { error } = await this.supabase.from('deployment_logs').insert(rows);
+                if (error) {
+                    console.error('[log-batcher] Failed to flush batch', { count: rows.length, error: error.message });
+                }
+            } finally {
+                this.pendingFlushes--;
             }
+        })();
+        this.inFlightFlushes.add(flushPromise);
+        try {
+            await flushPromise;
         } finally {
-            this.pendingFlushes--;
+            this.inFlightFlushes.delete(flushPromise);
         }
     }
 

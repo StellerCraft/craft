@@ -87,11 +87,11 @@ const ORPHAN_BATCH_LIMIT = 100;
 /**
  * Derive the deployment id an artifact belongs to from its object path.
  * Supports both `<deploymentId>/bundle.zip` (folder) and `<deploymentId>.zip`
- * (flat) layouts: take the first path segment, then strip any file extension.
+ * (flat) layouts: take the first path segment, then strip the extension suffix.
  */
 export function deploymentIdFromArtifactPath(path: string): string {
     const firstSegment = path.split('/')[0] ?? path;
-    return firstSegment.replace(/\.[^.]+$/, '');
+    return firstSegment.split('.')[0] ?? firstSegment;
 }
 
 // ── Service ───────────────────────────────────────────────────────────────────

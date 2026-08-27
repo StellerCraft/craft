@@ -101,8 +101,8 @@ export interface RemoveDomainResult {
     success: boolean;
     /** The domain that was acted on. */
     domain: string;
-    /** Number of deployment aliases that were removed during cleanup. */
-    aliasesRemoved: number;
+    /** Number of deployment aliases matching the removed domain. */
+    aliasesMatched: number;
     /**
      * True when the domain was removed but alias cleanup encountered an error.
      * The caller should log and optionally schedule a retry of the cleanup step.
@@ -330,24 +330,24 @@ export class VercelDomainLifecycleService {
             return {
                 success: false,
                 domain,
-                aliasesRemoved: 0,
+                aliasesMatched: 0,
                 partialFailureReason: err instanceof Error ? err.message : 'Failed to remove domain from Vercel',
             };
         }
 
         // Step b: Clean up deployment aliases pointing at this domain.
         if (deploymentIds.length === 0) {
-            return { success: true, domain, aliasesRemoved: 0 };
+            return { success: true, domain, aliasesMatched: 0 };
         }
 
-        let aliasesRemoved = 0;
+        let aliasesMatched = 0;
         const cleanupErrors: string[] = [];
 
         for (const deploymentId of deploymentIds) {
             try {
                 const aliases = await this._vercel.listDeploymentAliases(deploymentId);
                 const matching = aliases.filter((a) => a.alias === domain || a.alias.endsWith(`.${domain}`));
-                aliasesRemoved += matching.length;
+                aliasesMatched += matching.length;
                 // Note: Vercel alias deletion is handled at the project-domain level
                 // (removing the project domain effectively deactivates the alias).
                 // We count matches here for observability.
@@ -361,13 +361,13 @@ export class VercelDomainLifecycleService {
             return {
                 success: true,
                 domain,
-                aliasesRemoved,
+                aliasesMatched,
                 partialFailure: true,
                 partialFailureReason: `Alias cleanup encountered errors: ${cleanupErrors.join('; ')}`,
             };
         }
 
-        return { success: true, domain, aliasesRemoved };
+        return { success: true, domain, aliasesMatched };
     }
 
     // ── Convenience: get DNS records for a domain without touching Vercel ─────
