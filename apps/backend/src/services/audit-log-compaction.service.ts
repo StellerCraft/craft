@@ -37,6 +37,7 @@ export interface CompactionResult {
 }
 
 const PII_FIELDS = ['email', 'ip_address'] as const;
+const FAILED_REDACTIONS_PATH = 'compaction-state/failed-redactions.json';
 
 export class AuditLogCompactionService {
     private readonly retentionDays: number;
@@ -85,6 +86,20 @@ export class AuditLogCompactionService {
 
         if (!rows || rows.length === 0) return result;
 
+        const ids = rows.map((r: Record<string, unknown>) => r['id'] as string);
+
+        const failedBatch = await this._getFailedRedactions();
+        if (failedBatch && this._isSameBatch(ids, failedBatch.ids)) {
+            const ageMs = Date.now() - failedBatch.timestamp;
+            if (ageMs < 24 * 60 * 60 * 1000) {
+                console.warn(
+                    `[audit-compaction] Skipping re-archive of ${ids.length} rows that failed redaction ${Math.round(ageMs / 1000)}s ago`
+                );
+                result.errors += rows.length;
+                return result;
+            }
+        }
+
         // Step 1 – Archive to cold storage
         const archiveError = await this._archive(rows, cutoffIso);
         if (archiveError) {
@@ -94,7 +109,6 @@ export class AuditLogCompactionService {
         result.archived += rows.length;
 
         // Step 2 – Redact PII in-database
-        const ids = rows.map((r: Record<string, unknown>) => r['id'] as string);
         const redactUpdate: Record<string, unknown> = { pii_redacted: true };
         for (const field of PII_FIELDS) {
             redactUpdate[field] = null;
@@ -108,8 +122,10 @@ export class AuditLogCompactionService {
         if (updateError) {
             console.error('[audit-compaction] Failed to redact PII', updateError.message);
             result.errors += rows.length;
+            await this._setFailedRedactions(ids);
         } else {
             result.redacted += rows.length;
+            await this._clearFailedRedactions(ids);
         }
 
         return result;
@@ -149,6 +165,68 @@ export class AuditLogCompactionService {
     }
 
     // ── Private ───────────────────────────────────────────────────────────────
+
+    private async _getFailedRedactions(): Promise<{ ids: string[]; timestamp: number } | null> {
+        try {
+            const { data, error } = await this.supabase
+                .storage
+                .from(this.archiveBucket)
+                .download(FAILED_REDACTIONS_PATH);
+
+            if (error || !data) return null;
+
+            const text = await data.text();
+            if (!text.trim()) return null;
+
+            const parsed = JSON.parse(text);
+            if (!Array.isArray(parsed.ids)) return null;
+
+            return {
+                ids: parsed.ids as string[],
+                timestamp: typeof parsed.timestamp === 'number' ? parsed.timestamp : Date.now(),
+            };
+        } catch {
+            return null;
+        }
+    }
+
+    private async _setFailedRedactions(ids: string[]): Promise<void> {
+        try {
+            const payload = JSON.stringify({ ids, timestamp: Date.now() });
+            await this.supabase.storage
+                .from(this.archiveBucket)
+                .upload(FAILED_REDACTIONS_PATH, payload, { contentType: 'application/json', upsert: true });
+        } catch (err) {
+            console.error('[audit-compaction] Failed to persist failed-redaction state', err);
+        }
+    }
+
+    private async _clearFailedRedactions(ids: string[]): Promise<void> {
+        try {
+            const existing = await this._getFailedRedactions();
+            if (!existing) return;
+
+            const remaining = existing.ids.filter((id) => !ids.includes(id));
+            if (remaining.length === 0) {
+                await this.supabase.storage
+                    .from(this.archiveBucket)
+                    .remove([FAILED_REDACTIONS_PATH]);
+            } else {
+                const payload = JSON.stringify({ ids: remaining, timestamp: Date.now() });
+                await this.supabase.storage
+                    .from(this.archiveBucket)
+                    .upload(FAILED_REDACTIONS_PATH, payload, { contentType: 'application/json', upsert: true });
+            }
+        } catch (err) {
+            console.error('[audit-compaction] Failed to clear failed-redaction state', err);
+        }
+    }
+
+    private _isSameBatch(ids: string[], other: string[]): boolean {
+        if (ids.length !== other.length) return false;
+        const set = new Set(ids);
+        return other.every((id) => set.has(id));
+    }
 
     private async _archive(rows: Record<string, unknown>[], cutoffIso: string): Promise<Error | null> {
         const dateKey = cutoffIso.slice(0, 10); // YYYY-MM-DD
