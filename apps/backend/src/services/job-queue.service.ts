@@ -399,28 +399,7 @@ export class JobQueueService {
         const exhausted = newAttempts >= job.max_attempts;
 
         if (exhausted) {
-            // Move to DLQ
-            await supabase.from('job_dlq').insert({
-                original_job_id: job.id,
-                job_type: job.job_type,
-                priority: job.priority,
-                payload: job.payload,
-                failure_reason: reason,
-                attempts: newAttempts,
-                reprocess_status: 'pending',
-            });
-
-            await supabase
-                .from('job_queue')
-                .update({
-                    status: 'dead',
-                    attempts: newAttempts,
-                    error_message: reason,
-                    dead_at: new Date().toISOString(),
-                    updated_at: new Date().toISOString(),
-                })
-                .eq('id', job.id)
-                .eq('attempts', job.attempts);
+            await this._moveToDLQ(job, reason, newAttempts);
         } else {
             await supabase
                 .from('job_queue')
@@ -434,6 +413,32 @@ export class JobQueueService {
                 .eq('id', job.id)
                 .eq('attempts', job.attempts);
         }
+    }
+
+    private async _moveToDLQ(job: JobRecord, reason: string, attempts: number): Promise<void> {
+        const supabase = createClient();
+
+        await supabase.from('job_dlq').insert({
+            original_job_id: job.id,
+            job_type: job.job_type,
+            priority: job.priority,
+            payload: job.payload,
+            failure_reason: reason,
+            attempts,
+            reprocess_status: 'pending',
+        });
+
+        await supabase
+            .from('job_queue')
+            .update({
+                status: 'dead',
+                attempts,
+                error_message: reason,
+                dead_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+            })
+            .eq('id', job.id)
+            .eq('attempts', job.attempts);
     }
 
     /**
@@ -452,8 +457,8 @@ export class JobQueueService {
     // ── Stalled job recovery ───────────────────────────────────────────────────
 
     /**
-     * Requeue jobs that have been `running` beyond STALLED_JOB_TIMEOUT_MS.
-     * Call periodically from a cron handler to recover from crashed workers.
+    * Recover jobs that have been `running` beyond STALLED_JOB_TIMEOUT_MS.
+    * A recovery consumes an attempt just like a handler failure.
      */
     async recoverStalledJobs(): Promise<number> {
         const supabase = createClient();
@@ -461,17 +466,18 @@ export class JobQueueService {
 
         const { data, error } = await supabase
             .from('job_queue')
-            .update({
-                status: 'pending',
-                worker_id: null,
-                updated_at: new Date().toISOString(),
-            })
+            .select('*')
             .eq('status', 'running')
-            .lt('started_at', cutoff)
-            .select('id');
+            .lt('started_at', cutoff);
 
         if (error) throw new Error(`recoverStalledJobs failed: ${error.message}`);
-        return (data ?? []).length;
+
+        let recovered = 0;
+        for (const job of (data ?? []) as JobRecord[]) {
+            await this._failJob(job, `Job stalled beyond ${STALLED_JOB_TIMEOUT_MS}ms`);
+            recovered++;
+        }
+        return recovered;
     }
 }
 

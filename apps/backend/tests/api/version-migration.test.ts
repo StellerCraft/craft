@@ -19,6 +19,7 @@ import {
     parseAcceptVersion,
     withVersionMigration,
 } from '@/lib/api/version-migration.middleware';
+import { DEFAULT_API_VERSION } from '@/lib/api/version-negotiation';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -124,7 +125,7 @@ describe('withVersionMigration', () => {
         const res = await wrapped(makeRequest({ repository: { name: 'r' } }));
 
         expect(res.status).toBe(200);
-        expect(res.headers.get('x-api-version')).toBe('2');
+        expect(res.headers.get('x-api-version')).toBe(String(DEFAULT_API_VERSION));
         expect(res.headers.get('x-api-deprecation-warning')).toMatch(/Accept-Version/);
     });
 
