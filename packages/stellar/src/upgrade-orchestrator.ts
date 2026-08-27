@@ -181,6 +181,10 @@ export function diffAbiSchemas(
 
   const breakingChanges = changes.filter((c) => {
     if (c.type === 'removed' && c.oldEntry?.required) return true;
+    // A newly-added key that is required is a breaking change: existing on-chain
+    // contract instances will not have this key populated, so code that relies on
+    // its presence (per required: true) can fail post-upgrade.
+    if (c.type === 'added' && c.newEntry?.required) return true;
     if (c.type === 'type_changed') return true;
     if (c.type === 'function_removed') return true;
     if (c.type === 'function_signature_changed') return true;
@@ -216,6 +220,10 @@ export function diffAbiSchemas(
     for (const bc of breakingChanges) {
       if (bc.type === 'removed') {
         summaryLines.push(`    - Key "${bc.key}" (${bc.oldEntry?.type}) was REMOVED`);
+      } else if (bc.type === 'added') {
+        summaryLines.push(
+          `    - Key "${bc.key}" (${bc.newEntry?.type}) added as REQUIRED — existing on-chain instances lack this key`,
+        );
       } else if (bc.type === 'type_changed') {
         summaryLines.push(
           `    - Key "${bc.key}" storage type changed: ${bc.oldEntry?.type} → ${bc.newEntry?.type}`,
