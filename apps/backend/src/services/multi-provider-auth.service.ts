@@ -108,22 +108,7 @@ export class MultiProviderAuthService {
             p_value: { publicKey, connectedAt: new Date().toISOString() },
         });
 
-            const existing = (data?.provider_connections as Record<string, unknown>) ?? {};
-            const updated = {
-                ...existing,
-                stellar: { publicKey, connectedAt },
-            };
-
-            const { error } = await supabase
-                .from('profiles')
-                .update({
-                    provider_connections: updated,
-                    updated_at: new Date().toISOString(),
-                })
-                .eq('id', userId);
-
-            if (error) throw new Error(`Failed to connect Stellar wallet: ${error.message}`);
-        }
+        if (error) throw new Error(`Failed to connect Stellar wallet: ${error.message}`);
 
         return { userId, provider: 'stellar', connected: true };
     }
@@ -160,16 +145,7 @@ export class MultiProviderAuthService {
                 p_provider: 'stellar',
             });
 
-                const { error } = await supabase
-                    .from('profiles')
-                    .update({
-                        provider_connections: rest,
-                        updated_at: new Date().toISOString(),
-                    })
-                    .eq('id', userId);
-
-                if (error) throw new Error(`Failed to disconnect Stellar: ${error.message}`);
-            }
+            if (error) throw new Error(`Failed to disconnect Stellar: ${error.message}`);
         }
 
         return { userId, provider, connected: false };
