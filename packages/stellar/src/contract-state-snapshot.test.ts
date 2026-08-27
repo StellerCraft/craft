@@ -442,3 +442,65 @@ describe('ContractStateSnapshotService.snapshot() with additionalKeys', () => {
         expect(rpc.getLedgerEntries).toHaveBeenCalledOnce();
     });
 });
+
+// ── #1110 – corrupted blob regression tests ────────────────────────────────────
+
+describe('ContractStateSnapshotService.restore() – corrupted blob (#1110)', () => {
+    const STORAGE_PATH = `${CONTRACT_ID}/${LEDGER_SEQ}.json.zlib`;
+
+    it('throws SnapshotStorageError (not a bare SyntaxError) when the blob is invalid JSON after decompression', async () => {
+        // Build a valid zlib-compressed blob whose decompressed content is NOT valid JSON.
+        const truncatedJson = '{ "contractId": "C...", "ledgerSequence": 123, "entries": ['; // unclosed
+        const corruptedCompressed = await promisify(zlib.deflate)(Buffer.from(truncatedJson, 'utf8'));
+
+        const storage = makeStorage({
+            download: vi.fn().mockResolvedValue({ data: new Blob([corruptedCompressed]), error: null }),
+        });
+        const svc = new ContractStateSnapshotService(makeRpc(), storage, makeDb());
+
+        const error = await svc.restore(SNAPSHOT_ID).catch((e) => e);
+
+        // Must be a typed SnapshotStorageError, not a raw SyntaxError.
+        expect(error).toBeInstanceOf(SnapshotStorageError);
+        expect(error.name).toBe('SnapshotStorageError');
+    });
+
+    it('error message identifies the snapshotId', async () => {
+        const badJson = 'NOT_JSON_AT_ALL';
+        const corruptedCompressed = await promisify(zlib.deflate)(Buffer.from(badJson, 'utf8'));
+
+        const storage = makeStorage({
+            download: vi.fn().mockResolvedValue({ data: new Blob([corruptedCompressed]), error: null }),
+        });
+        const svc = new ContractStateSnapshotService(makeRpc(), storage, makeDb());
+
+        const error = await svc.restore(SNAPSHOT_ID).catch((e) => e);
+
+        expect(error.message).toContain(SNAPSHOT_ID);
+    });
+
+    it('error message identifies the storage_path', async () => {
+        const badJson = '{}bad';
+        const corruptedCompressed = await promisify(zlib.deflate)(Buffer.from(badJson, 'utf8'));
+
+        const storage = makeStorage({
+            download: vi.fn().mockResolvedValue({ data: new Blob([corruptedCompressed]), error: null }),
+        });
+        const svc = new ContractStateSnapshotService(makeRpc(), storage, makeDb());
+
+        const error = await svc.restore(SNAPSHOT_ID).catch((e) => e);
+
+        expect(error.message).toContain(STORAGE_PATH);
+    });
+
+    it('does not throw for a valid (non-corrupted) blob', async () => {
+        const blob = await buildCompressedBlob(FAKE_ENTRIES);
+        const storage = makeStorage({
+            download: vi.fn().mockResolvedValue({ data: blob, error: null }),
+        });
+        const svc = new ContractStateSnapshotService(makeRpc(), storage, makeDb());
+
+        const restored = await svc.restore(SNAPSHOT_ID);
+        expect(restored.entries).toHaveLength(FAKE_ENTRIES.length);
+    });
+});

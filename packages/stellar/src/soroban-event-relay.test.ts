@@ -11,6 +11,7 @@ import {
     MAX_SUBSCRIPTIONS_PER_CLIENT,
     ACK_TIMEOUT_MS,
     MAX_DELIVERY_ATTEMPTS,
+    DEFAULT_MAX_DEAD_LETTER_BUFFER_SIZE,
     type SorobanEvent,
     type SorobanEventRelayOptions,
 } from './soroban-event-relay';
@@ -423,5 +424,115 @@ describe('SorobanEventRelay – cleanup on disconnect', () => {
 
         // Dead-letter buffer should be empty (events were cleared, not DLBed).
         expect(relay.deadLetterBuffer).toHaveLength(0);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// #1107 – dead-letter buffer size cap regression tests
+// ---------------------------------------------------------------------------
+
+describe('SorobanEventRelay – dead-letter buffer size cap (#1107)', () => {
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    it('exposes DEFAULT_MAX_DEAD_LETTER_BUFFER_SIZE constant', () => {
+        expect(DEFAULT_MAX_DEAD_LETTER_BUFFER_SIZE).toBeGreaterThan(0);
+    });
+
+    it('caps the dead-letter buffer at the configured maxDeadLetterBufferSize', async () => {
+        vi.useFakeTimers();
+
+        const cap = 3;
+        const ws = makeMockWs();
+
+        // Build N+2 events so we can drive more failures than the cap allows
+        const totalEvents = cap + 2;
+        const events = Array.from({ length: totalEvents }, (_, i) =>
+            makeMockEvent(CONTRACT_A, 'transfer', 100 + i),
+        );
+        const client = makeMockClient(events, 100 + totalEvents - 1);
+
+        const relay = new SorobanEventRelay(ws, client, {
+            ackTimeoutMs: 1_000,
+            maxDeliveryAttempts: 1, // one attempt → immediately DLB on first timeout
+            maxDeadLetterBufferSize: cap,
+        });
+
+        relay.subscribe({ contractId: CONTRACT_A });
+
+        // Flush all promises from the initial poll
+        for (let i = 0; i < 5; i++) await Promise.resolve();
+
+        // All events have been delivered once (attempts=1); advance past the
+        // ACK timeout so every event moves to the dead-letter buffer.
+        vi.advanceTimersByTime(1_001);
+
+        // The buffer must not exceed the configured cap.
+        expect(relay.deadLetterBuffer.length).toBeLessThanOrEqual(cap);
+    });
+
+    it('evicts the oldest entry when the cap is reached (FIFO ring-buffer)', async () => {
+        vi.useFakeTimers();
+
+        const cap = 2;
+        const ws = makeMockWs();
+
+        // Three events — enough to overflow a cap of 2.
+        const events = [
+            makeMockEvent(CONTRACT_A, 'transfer', 101),
+            makeMockEvent(CONTRACT_A, 'transfer', 102),
+            makeMockEvent(CONTRACT_A, 'transfer', 103),
+        ];
+        const client = makeMockClient(events, 103);
+
+        const relay = new SorobanEventRelay(ws, client, {
+            ackTimeoutMs: 1_000,
+            maxDeliveryAttempts: 1,
+            maxDeadLetterBufferSize: cap,
+        });
+
+        relay.subscribe({ contractId: CONTRACT_A });
+        // Flush all promises from the initial poll (getLatestLedger + getEvents + delivery chain)
+        for (let i = 0; i < 10; i++) await Promise.resolve();
+
+        vi.advanceTimersByTime(1_001);
+        // Flush microtasks from the DLB push callbacks
+        for (let i = 0; i < 5; i++) await Promise.resolve();
+
+        // Buffer must not exceed cap.
+        expect(relay.deadLetterBuffer.length).toBeLessThanOrEqual(cap);
+        // The oldest event (ledger 101) should have been evicted; the two
+        // most-recent events (ledger 102 and 103) should remain.
+        const ledgers = relay.deadLetterBuffer.map((e) => e.ledger);
+        expect(ledgers).not.toContain(101);
+        expect(ledgers).toContain(103);
+    });
+
+    it('does not evict entries when the buffer is below the cap', async () => {
+        vi.useFakeTimers();
+
+        const cap = 10;
+        const ws = makeMockWs();
+
+        const events = [makeMockEvent(CONTRACT_A, 'transfer', 101)];
+        const client = makeMockClient(events, 101);
+
+        const relay = new SorobanEventRelay(ws, client, {
+            ackTimeoutMs: 1_000,
+            maxDeliveryAttempts: 1,
+            maxDeadLetterBufferSize: cap,
+        });
+
+        relay.subscribe({ contractId: CONTRACT_A });
+        // Flush all promises from the initial poll
+        for (let i = 0; i < 10; i++) await Promise.resolve();
+
+        vi.advanceTimersByTime(1_001);
+        // Flush microtasks from the DLB push callbacks
+        for (let i = 0; i < 5; i++) await Promise.resolve();
+
+        // Exactly one entry, well within the cap.
+        expect(relay.deadLetterBuffer).toHaveLength(1);
     });
 });
