@@ -21,22 +21,28 @@ export class CircularDependencyError extends Error {
 
 export class DependencyGraph {
   private nodes = new Map<string, Set<string>>();
+  private dependents = new Map<string, Set<string>>();
 
   /** Add a node (idempotent). */
   addNode(id: string): void {
     if (!this.nodes.has(id)) this.nodes.set(id, new Set());
+    if (!this.dependents.has(id)) this.dependents.set(id, new Set());
   }
 
   /** Add a directed edge: `from` depends on `to`. */
   addEdge(from: string, to: string): void {
     this.addNode(from);
     this.addNode(to);
-    this.nodes.get(from)!.add(to);
+    if (this.nodes.get(from)!.add(to)) {
+      this.dependents.get(to)!.add(from);
+    }
   }
 
   /** Remove a directed edge. */
   removeEdge(from: string, to: string): void {
-    this.nodes.get(from)?.delete(to);
+    if (this.nodes.get(from)?.delete(to)) {
+      this.dependents.get(to)?.delete(from);
+    }
   }
 
   /** Direct dependencies of a node. */
@@ -90,15 +96,13 @@ export class DependencyGraph {
     while (queue.length) {
       const node = queue.shift()!;
       order.push(node);
-      // Reduce in-degree of every node that listed `node` as a dependency
-      for (const [id, deps] of this.nodes) {
-        if (deps.has(node)) {
-          const newDeg = (inDegree.get(id) ?? 0) - 1;
-          inDegree.set(id, newDeg);
-          if (newDeg === 0) {
-            queue.push(id);
-            queue.sort();
-          }
+      // Reduce in-degree only for nodes that list `node` as a dependency.
+      for (const id of this.dependents.get(node) ?? []) {
+        const newDeg = (inDegree.get(id) ?? 0) - 1;
+        inDegree.set(id, newDeg);
+        if (newDeg === 0) {
+          queue.push(id);
+          queue.sort();
         }
       }
     }
@@ -149,8 +153,8 @@ export class DependencyGraph {
 
       for (const node of ready) {
         processed.add(node);
-        for (const [id, deps] of this.nodes) {
-          if (!processed.has(id) && deps.has(node)) {
+        for (const id of this.dependents.get(node) ?? []) {
+          if (!processed.has(id)) {
             inDegree.set(id, (inDegree.get(id) ?? 0) - 1);
           }
         }

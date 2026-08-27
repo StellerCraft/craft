@@ -26,6 +26,21 @@ describe('DLQAutoRecovery', () => {
         expect(reprocess).toHaveBeenCalledWith(entry.id);
     });
 
+    it('re-arms pending entries when a new recovery instance initializes', async () => {
+        const entry = captureEntry();
+        const reprocess = vi.spyOn(webhookDLQ, 'reprocess')
+            .mockResolvedValueOnce({ success: false, error: 'restart' })
+            .mockResolvedValueOnce({ success: true });
+
+        const firstRecovery = new DLQAutoRecovery({ now: () => 0, sleep: () => Promise.resolve() });
+        await firstRecovery.processDue();
+
+        const restartedRecovery = new DLQAutoRecovery({ now: () => 0, sleep: () => Promise.resolve() });
+        await restartedRecovery.initialize();
+
+        expect(reprocess).toHaveBeenNthCalledWith(2, entry.id);
+    });
+
     it('skips an entry that is not yet due', async () => {
         captureEntry();
         // Always fail so retry state is set after first call
