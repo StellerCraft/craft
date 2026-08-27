@@ -308,3 +308,43 @@ describe('TTL constants', () => {
         expect(DEFAULT_EXTEND_TO_LEDGERS).toBeGreaterThan(DEFAULT_WARNING_LEDGERS);
     });
 });
+
+// ── Regression: #1099 – Networks import ──────────────────────────────────────
+
+describe('regression #1099 – buildTtlExtensionTransaction does not throw ReferenceError', () => {
+    it('resolves without ReferenceError when using a mocked client (mainnet config)', async () => {
+        const client = makeTxClient();
+        const key = makeKey();
+
+        // If Networks was not imported, getNetworkPassphrase() would throw
+        // "ReferenceError: Networks is not defined" at transaction-build time.
+        await expect(
+            buildTtlExtensionTransaction([key], SOURCE_KEY, {}, client),
+        ).resolves.not.toThrow();
+    });
+
+    it('returns a string XDR result (not a ReferenceError rejection)', async () => {
+        const client = makeTxClient();
+        const key = makeKey();
+
+        const result = await buildTtlExtensionTransaction([key], SOURCE_KEY, {}, client);
+
+        expect(typeof result).toBe('string');
+        expect(result.length).toBeGreaterThan(0);
+    });
+
+    it('checkContractTtl does not surface a ReferenceError when TTL is near expiry', async () => {
+        const currentLedger = 1000;
+        const liveUntil = 1000 + DEFAULT_WARNING_LEDGERS - 1;
+        const ttlClient = makeTtlClient(liveUntil, currentLedger);
+        const txClient = makeTxClient();
+
+        // If Networks is missing, the ok:false branch would contain "Networks is not defined"
+        const result = await checkContractTtl(CONTRACT_ID, SOURCE_KEY, {}, ttlClient, txClient);
+
+        expect(result.ok).toBe(true);
+        if (!result.ok) {
+            expect(result.error).not.toMatch(/Networks is not defined/);
+        }
+    });
+});

@@ -32,6 +32,7 @@ import {
     Operation,
     BASE_FEE,
     SorobanDataBuilder,
+    Networks,
 } from 'stellar-sdk';
 import { config, getSorobanRpcUrl, getNetworkPassphrase } from './config';
 import { parseStellarError } from './errors';

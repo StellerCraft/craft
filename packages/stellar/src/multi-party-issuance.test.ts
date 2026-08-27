@@ -319,3 +319,96 @@ describe('error handling', () => {
         expect(result.error).toMatch(/Signature does not match claimed co-signer/);
     });
 });
+
+// ── Regression: #1101 – co-signer must sign the session's base transaction ───
+
+describe('regression #1101 – reject co-signer signatures against a different transaction', () => {
+    it('rejects a validly-signed but different transaction from a legitimate co-signer', () => {
+        const baseTxXdr = buildBaseTxXdr();
+        const session = createIssuanceSession({ required: 2, total: 3 }, baseTxXdr);
+
+        // Build a *different* transaction (different sequence number / operations)
+        const differentTxXdr = buildBaseTxXdr(); // fresh call gives new seq "1000" but same builder—
+        // To guarantee it differs, sign a different payload:
+        const differentAccount = {
+            accountId: () => SOURCE_KP.publicKey(),
+            sequenceNumber: () => '9999',
+            incrementSequenceNumber: () => {},
+        } as any;
+        const { TransactionBuilder: TB, BASE_FEE: BF, Operation: Op, Asset: As, Networks: Ns } =
+            require('stellar-sdk');
+        const altTxXdr = new TB(differentAccount, { fee: BF, networkPassphrase: Ns.TESTNET })
+            .addOperation(Op.payment({
+                destination: SIGNER_C.publicKey(),
+                asset: As.native(),
+                amount: '99',
+            }))
+            .setTimeout(60)
+            .build()
+            .toXDR();
+
+        const signedAltTx = signTxXdr(altTxXdr, SIGNER_A);
+
+        const result = addCoSignerSignature(
+            session.id,
+            SIGNER_A.publicKey(),
+            signedAltTx,
+            NETWORK,
+        );
+
+        expect(result.ok).toBe(false);
+        if (result.ok) return;
+        expect(result.error).toMatch(/does not match the session base transaction/);
+    });
+
+    it('the mismatch error is distinct from an invalid-signature error', () => {
+        const baseTxXdr = buildBaseTxXdr();
+        const session = createIssuanceSession({ required: 2, total: 3 }, baseTxXdr);
+
+        const differentAccount = {
+            accountId: () => SOURCE_KP.publicKey(),
+            sequenceNumber: () => '8888',
+            incrementSequenceNumber: () => {},
+        } as any;
+        const { TransactionBuilder: TB, BASE_FEE: BF, Operation: Op, Asset: As, Networks: Ns } =
+            require('stellar-sdk');
+        const altTxXdr = new TB(differentAccount, { fee: BF, networkPassphrase: Ns.TESTNET })
+            .addOperation(Op.payment({
+                destination: SIGNER_B.publicKey(),
+                asset: As.native(),
+                amount: '1',
+            }))
+            .setTimeout(60)
+            .build()
+            .toXDR();
+
+        const signedAltTx = signTxXdr(altTxXdr, SIGNER_A);
+
+        const mismatchResult = addCoSignerSignature(
+            session.id,
+            SIGNER_A.publicKey(),
+            signedAltTx,
+            NETWORK,
+        );
+
+        expect(mismatchResult.ok).toBe(false);
+        if (mismatchResult.ok) return;
+        // Must say "transaction" not "signature"
+        expect(mismatchResult.error).not.toMatch(/Signature does not match/);
+        expect(mismatchResult.error).toMatch(/transaction/i);
+    });
+
+    it('still accepts a correctly-signed base transaction after the fix', () => {
+        const baseTxXdr = buildBaseTxXdr();
+        const session = createIssuanceSession({ required: 2, total: 3 }, baseTxXdr);
+
+        const result = addCoSignerSignature(
+            session.id,
+            SIGNER_A.publicKey(),
+            signTxXdr(baseTxXdr, SIGNER_A),
+            NETWORK,
+        );
+
+        expect(result.ok).toBe(true);
+    });
+});

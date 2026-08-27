@@ -339,3 +339,58 @@ describe('managed-account registry', () => {
         expect(isManagedAccount(SOURCE_KP.publicKey())).toBe(true);
     });
 });
+
+// ── Regression: #1100 – balance check in open-trustline filter ───────────────
+
+describe('regression #1100 – zero-balance trustline must not block merge', () => {
+    it('allows merge when trustline has nonzero limit but zero balance', () => {
+        const merge: MergeOperation = {
+            sourceAccount: SOURCE_KP.publicKey(),
+            destination: DEST_KP.publicKey(),
+        };
+        // limit > 0, balance === '0' — not an "open" trustline per the docs
+        const state = makeAccountState({
+            trustlines: [
+                { assetCode: 'USDC', assetIssuer: 'GABC...', balance: '0', limit: '1000' },
+            ],
+        });
+
+        const decision = checkMergeAllowed(merge, state);
+
+        expect(decision.allowed).toBe(true);
+    });
+
+    it('allows merge when trustline has nonzero limit and zero decimal-string balance', () => {
+        const merge: MergeOperation = {
+            sourceAccount: SOURCE_KP.publicKey(),
+            destination: DEST_KP.publicKey(),
+        };
+        const state = makeAccountState({
+            trustlines: [
+                { assetCode: 'BTC', assetIssuer: 'GBBB...', balance: '0.0000000', limit: '500' },
+            ],
+        });
+
+        const decision = checkMergeAllowed(merge, state);
+
+        expect(decision.allowed).toBe(true);
+    });
+
+    it('still blocks merge when trustline has both nonzero limit and nonzero balance', () => {
+        const merge: MergeOperation = {
+            sourceAccount: SOURCE_KP.publicKey(),
+            destination: DEST_KP.publicKey(),
+        };
+        const state = makeAccountState({
+            trustlines: [
+                { assetCode: 'USDC', assetIssuer: 'GABC...', balance: '1', limit: '1000' },
+            ],
+        });
+
+        const decision = checkMergeAllowed(merge, state);
+
+        expect(decision.allowed).toBe(false);
+        if (decision.allowed) return;
+        expect(decision.reason).toMatch(/trustline/);
+    });
+});
