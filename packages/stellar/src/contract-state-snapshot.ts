@@ -237,6 +237,8 @@ export class ContractStateSnapshotService {
      *
      * @throws SnapshotNotFoundError  when the snapshot ID does not exist in DB
      * @throws SnapshotStorageError   when the download from Supabase Storage fails
+     * @throws SnapshotStorageError   when the downloaded blob contains corrupted
+     *   or truncated JSON (identifies the snapshotId and storage_path)
      */
     async restore(snapshotId: string): Promise<RestoredSnapshot> {
         const { data: meta, error: metaError } = await this.db.findById(snapshotId);
@@ -251,7 +253,17 @@ export class ContractStateSnapshotService {
 
         const buffer = Buffer.from(await blob.arrayBuffer());
         const decompressed = await inflate(buffer);
-        const payload = JSON.parse(decompressed.toString('utf8')) as SnapshotPayload;
+
+        let payload: SnapshotPayload;
+        try {
+            payload = JSON.parse(decompressed.toString('utf8')) as SnapshotPayload;
+        } catch (err) {
+            throw new SnapshotStorageError(
+                'download',
+                `Corrupted snapshot payload for snapshotId="${snapshotId}" ` +
+                `at storage_path="${meta.storage_path}": ${(err as Error).message}`,
+            );
+        }
 
         return {
             contractId: payload.contractId,

@@ -26,6 +26,9 @@ export const ACK_TIMEOUT_MS = 30_000;
 /** Maximum delivery attempts before an event is moved to the dead-letter buffer. */
 export const MAX_DELIVERY_ATTEMPTS = 5;
 
+/** Default maximum number of entries the dead-letter buffer may hold. */
+export const DEFAULT_MAX_DEAD_LETTER_BUFFER_SIZE = 1_000;
+
 export interface SorobanEventRelayOptions {
     /** Polling interval in milliseconds. Default: 5000 */
     pollIntervalMs?: number;
@@ -35,6 +38,13 @@ export interface SorobanEventRelayOptions {
     ackTimeoutMs?: number;
     /** Maximum delivery attempts before moving to dead-letter. Default: 5 */
     maxDeliveryAttempts?: number;
+    /**
+     * Maximum number of entries allowed in the dead-letter buffer.
+     * Once this limit is reached the oldest entry is evicted before the new
+     * one is pushed (ring-buffer behaviour).
+     * Default: 1000
+     */
+    maxDeadLetterBufferSize?: number;
 }
 
 export interface SubscriptionFilter {
@@ -100,6 +110,7 @@ export class SorobanEventRelay {
     private readonly maxSubscriptionsPerClient: number;
     private readonly ackTimeoutMs: number;
     private readonly maxDeliveryAttempts: number;
+    private readonly maxDeadLetterBufferSize: number;
 
     constructor(
         private readonly ws: WebSocketLike,
@@ -110,6 +121,7 @@ export class SorobanEventRelay {
         this.maxSubscriptionsPerClient = options?.maxSubscriptionsPerClient ?? MAX_SUBSCRIPTIONS_PER_CLIENT;
         this.ackTimeoutMs = options?.ackTimeoutMs ?? ACK_TIMEOUT_MS;
         this.maxDeliveryAttempts = options?.maxDeliveryAttempts ?? MAX_DELIVERY_ATTEMPTS;
+        this.maxDeadLetterBufferSize = options?.maxDeadLetterBufferSize ?? DEFAULT_MAX_DEAD_LETTER_BUFFER_SIZE;
         ws.on('close', () => this.cleanup());
     }
 
@@ -259,9 +271,12 @@ export class SorobanEventRelay {
 
         const timer = setTimeout(() => {
             this.stagingBuffer.delete(eventId);
-            if (attempts < MAX_DELIVERY_ATTEMPTS) {
+            if (attempts < this.maxDeliveryAttempts) {
                 this.deliverWithAck(eventId, event, attempts + 1, subKey);
             } else {
+                if (this._deadLetterBuffer.length >= this.maxDeadLetterBufferSize) {
+                    this._deadLetterBuffer.shift();
+                }
                 this._deadLetterBuffer.push(event);
             }
         }, this.ackTimeoutMs);

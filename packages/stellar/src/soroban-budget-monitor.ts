@@ -202,9 +202,12 @@ export function getBudgetMetrics(): readonly BudgetMetric[] {
  * alert handlers if CPU or memory usage meets or exceeds the configured
  * thresholds.
  *
- * Always performs a fresh simulation (bypasses the cache) to ensure accurate
- * budget tracking for every invocation, preventing duplicate metrics from
- * stale cached results.
+ * When a fresh, already-computed `SimulateTransactionResponse` is available
+ * (e.g. from a recent `simulateContractCall` call within the same request
+ * lifecycle), pass it as `precomputedSimulation` to avoid a duplicate RPC
+ * round-trip.  When `precomputedSimulation` is **not** supplied the function
+ * falls back to forcing a fresh simulation (bypasses the cache) so that
+ * budget tracking always records accurate per-invocation numbers.
  *
  * @param contractId - The contract address (C...)
  * @param method - Contract method name
@@ -212,12 +215,21 @@ export function getBudgetMetrics(): readonly BudgetMetric[] {
  * @param sourcePublicKey - Source account public key
  * @param thresholds - Optional alert thresholds (default: 80 % of hard limit)
  * @param _simulate - Override `simulateContractCall` for unit testing
+ * @param precomputedSimulation - Optional already-fresh simulation result to
+ *   reuse instead of issuing a new RPC call.  Callers are responsible for
+ *   ensuring the response is fresh enough for their use-case.
  * @returns `BudgetUsage` when cost data is present in the simulation, `null`
  *   when the simulation response does not include cost information
  *
  * @example
  * ```typescript
+ * // Without a pre-computed result (one RPC call):
  * const usage = await trackContractBudget(contractId, 'transfer', args, pubKey);
+ *
+ * // With a pre-computed result (zero additional RPC calls):
+ * const sim = await simulateContractCall(contractId, 'transfer', args, pubKey);
+ * const usage = await trackContractBudget(contractId, 'transfer', args, pubKey, {}, simulateContractCall, sim);
+ *
  * if (usage?.cpuAlert) {
  *   console.warn(`CPU at ${(usage.cpuLimitFraction * 100).toFixed(1)}% of limit`);
  * }
@@ -230,9 +242,12 @@ export async function trackContractBudget(
     sourcePublicKey: string,
     thresholds: BudgetThresholds = {},
     _simulate: typeof simulateContractCall = simulateContractCall,
+    precomputedSimulation?: SorobanRpc.Api.SimulateTransactionResponse,
 ): Promise<BudgetUsage | null> {
     const resolved = resolveThresholds(thresholds);
-    const simulation = await _simulate(contractId, method, args, sourcePublicKey, { skipCache: true });
+    const simulation = precomputedSimulation
+        ? precomputedSimulation
+        : await _simulate(contractId, method, args, sourcePublicKey, { skipCache: true });
     const usage = extractBudgetUsage(simulation, resolved);
     if (!usage) return null;
 

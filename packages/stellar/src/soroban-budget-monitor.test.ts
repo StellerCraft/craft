@@ -377,3 +377,64 @@ describe('emitBudgetMetrics – analytics sink', () => {
         expect(sink2.emit).toHaveBeenCalledWith('budget_metric', expect.any(Object));
     });
 });
+
+// ── #1108 – precomputedSimulation regression tests ────────────────────────────
+
+describe('trackContractBudget – precomputedSimulation (#1108)', () => {
+    it('does not call _simulate when a precomputedSimulation is supplied', async () => {
+        const mockSimulate = vi.fn();
+        const precomputedSim = makeSimulation('5000000', '2000000');
+
+        const usage = await trackContractBudget(
+            CONTRACT_ID, 'transfer', [], SOURCE_KEY,
+            {},
+            mockSimulate,
+            precomputedSim,
+        );
+
+        // _simulate must NOT have been called — we reused the supplied result.
+        expect(mockSimulate).not.toHaveBeenCalled();
+        expect(usage).not.toBeNull();
+        expect(usage!.cpuInsns).toBe(5_000_000n);
+    });
+
+    it('issues a fresh RPC call (skipCache:true) when no precomputedSimulation is supplied', async () => {
+        const mockSimulate = vi.fn().mockResolvedValue(makeSimulation('1000000', '512000'));
+
+        await trackContractBudget(CONTRACT_ID, 'transfer', [], SOURCE_KEY, {}, mockSimulate);
+
+        expect(mockSimulate).toHaveBeenCalledOnce();
+        expect(mockSimulate).toHaveBeenCalledWith(
+            CONTRACT_ID, 'transfer', [], SOURCE_KEY, { skipCache: true },
+        );
+    });
+
+    it('calling simulateContractCall then trackContractBudget with the result issues only one RPC call', async () => {
+        const mockSimulate = vi.fn().mockResolvedValue(makeSimulation('3000000', '1500000'));
+
+        // Simulate the pattern: "I already simulated, now track budget"
+        const sim = await mockSimulate(CONTRACT_ID, 'transfer', [], SOURCE_KEY, { skipCache: false });
+        const usage = await trackContractBudget(
+            CONTRACT_ID, 'transfer', [], SOURCE_KEY,
+            {},
+            mockSimulate, // pass mockSimulate but it should NOT be called again
+            sim,
+        );
+
+        // mockSimulate was called once (for the explicit simulate), not a second time for tracking.
+        expect(mockSimulate).toHaveBeenCalledOnce();
+        expect(usage).not.toBeNull();
+    });
+
+    it('still records metric when precomputedSimulation is supplied', async () => {
+        const mockSimulate = vi.fn();
+        const precomputedSim = makeSimulation('8000000', '4000000');
+
+        await trackContractBudget(CONTRACT_ID, 'myMethod', [], SOURCE_KEY, {}, mockSimulate, precomputedSim);
+
+        const metrics = getBudgetMetrics();
+        expect(metrics).toHaveLength(1);
+        expect(metrics[0].contractId).toBe(CONTRACT_ID);
+        expect(metrics[0].method).toBe('myMethod');
+    });
+});

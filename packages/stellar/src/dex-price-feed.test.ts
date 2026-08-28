@@ -217,3 +217,42 @@ describe('subscribeLedgerPriceFeed', () => {
         expect(onUpdate).not.toHaveBeenCalled();
     });
 });
+
+// ── #1109 – self-masking outlier regression test ─────────────────────────────
+
+describe('detectOutliers – self-masking regression (#1109)', () => {
+    it('detects a single extreme outlier that would have masked itself under naive mean/stdDev', () => {
+        // Classic self-masking scenario: one extreme value inflates the classical
+        // stdDev enough that the outlier's own |price - mean| < 3 * stdDev,
+        // causing the naive test to miss it.  The MAD-based test must flag it.
+        //
+        // Cluster: 6 prices tightly around 1.00 (± 0.05), plus one spike at 50.0
+        const clusterPrices = ['1.00', '1.02', '0.98', '1.01', '0.99', '1.03'];
+        const levels = clusterPrices.map((p) => level(p)).concat([level('50.0')]);
+
+        const outliers = detectOutliers(levels);
+
+        // The MAD-based test must identify 50.0 as an outlier.
+        expect(outliers).toContain(50.0);
+    });
+
+    it('does not flag tightly-clustered prices as outliers', () => {
+        // All prices within ±5 % of each other — nothing should be flagged.
+        const levels = ['1.00', '1.01', '0.99', '1.02', '0.98', '1.005'].map((p) => level(p));
+
+        const outliers = detectOutliers(levels);
+
+        expect(outliers).toHaveLength(0);
+    });
+
+    it('computeEnrichedDexPrice sets hasOutlier=true for self-masking outlier scenario', () => {
+        const clusterLevels = ['1.00', '1.02', '0.98', '1.01', '0.99', '1.03'].map((p) => level(p));
+        const spikedLevels = clusterLevels.concat([level('50.0')]);
+
+        const snapshot: OrderBookSnapshot = { bids: spikedLevels, asks: [] };
+        const result = computeEnrichedDexPrice(snapshot);
+
+        expect(result.bidAnalysis.hasOutlier).toBe(true);
+        expect(result.bidAnalysis.outliers).toContain(50.0);
+    });
+});
