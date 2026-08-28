@@ -65,6 +65,8 @@ describe('CleanupService.purgeOrphanedArtifacts', () => {
     it('derives the deployment id from both folder and flat artifact paths', () => {
         expect(deploymentIdFromArtifactPath('dep-1/bundle.zip')).toBe('dep-1');
         expect(deploymentIdFromArtifactPath('dep-2.zip')).toBe('dep-2');
+        expect(deploymentIdFromArtifactPath('dep-2.tar.gz')).toBe('dep-2');
+        expect(deploymentIdFromArtifactPath('dep-2.json.zlib')).toBe('dep-2');
         expect(deploymentIdFromArtifactPath('dep-3')).toBe('dep-3');
     });
 

@@ -178,13 +178,13 @@ Remove domain ──┬─→ FAIL → Return { success: false, partialFailureRe
                 │
                 └─→ SUCCESS → Clean up aliases
                                │
-                               ├─→ ALL SUCCESS → Return { success: true, aliasesRemoved: N }
+                               ├─→ ALL SUCCESS → Return { success: true, aliasesMatched: N }
                                │
                                └─→ SOME FAIL   → Return { 
                                                     success: true,
                                                     partialFailure: true,
                                                     partialFailureReason: "...",
-                                                    aliasesRemoved: N
+                                                    aliasesMatched: N
                                                   }
 ```
 
@@ -193,7 +193,7 @@ Remove domain ──┬─→ FAIL → Return { success: false, partialFailureRe
 interface RemoveDomainResult {
   success: boolean;
   domain: string;
-  aliasesRemoved: number;
+  aliasesMatched: number;
   partialFailure?: boolean;
   partialFailureReason?: string;
 }
@@ -208,7 +208,7 @@ const result = await vercelDomainLifecycle.removeDomainWithCleanup(
 );
 
 if (result.success) {
-  console.log(`✅ Domain removed, ${result.aliasesRemoved} aliases cleaned up`);
+  console.log(`Domain removed, ${result.aliasesMatched} matching aliases found`);
   
   if (result.partialFailure) {
     console.warn(`⚠️ Partial failure: ${result.partialFailureReason}`);
@@ -441,7 +441,7 @@ npm test vercel-custom-domain-configuration.property.test.ts
 {
   "success": true,
   "domain": "app.example.com",
-  "aliasesRemoved": 2
+  "aliasesMatched": 2
 }
 ```
 

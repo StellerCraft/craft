@@ -5,6 +5,7 @@ import {
   fetchAndValidateScopes,
   clearScopeValidationCache,
   REQUIRED_SCOPES,
+  MAX_SCOPE_VALIDATION_CACHE_ENTRIES,
 } from './scope-validator';
 
 vi.stubGlobal('fetch', vi.fn());
@@ -283,6 +284,23 @@ describe('scope-validator', () => {
       expect(mockFetch).toHaveBeenCalledOnce();
 
       vi.useRealTimers();
+    });
+
+    it('evicts the oldest entry when the cache reaches its maximum size', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        headers: new Map([['X-OAuth-Scopes', 'repo, read:user']]),
+      });
+
+      for (let index = 0; index < MAX_SCOPE_VALIDATION_CACHE_ENTRIES; index++) {
+        await fetchAndValidateScopes(`token-${index}`);
+      }
+
+      mockFetch.mockClear();
+      await fetchAndValidateScopes(`token-${MAX_SCOPE_VALIDATION_CACHE_ENTRIES}`);
+      await fetchAndValidateScopes('token-0');
+
+      expect(mockFetch).toHaveBeenCalledTimes(2);
     });
   });
 
