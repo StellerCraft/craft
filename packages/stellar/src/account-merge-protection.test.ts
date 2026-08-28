@@ -273,6 +273,31 @@ describe('protectAgainstMerge', () => {
         expect(log[0].decision.allowed).toBe(false);
     });
 
+    it('allows unmanaged account merges without calling getAccountState (#1127)', async () => {
+        const unregisteredKp = Keypair.random();
+        const txXdr = buildMergeTxXdr(unregisteredKp, DEST_KP.publicKey());
+        const getState = vi.fn();
+
+        const decisions = await protectAgainstMerge(txXdr, NETWORK, getState);
+
+        // Unmanaged accounts should bypass state checking entirely
+        expect(decisions.get(unregisteredKp.publicKey())?.allowed).toBe(true);
+        expect(getState).not.toHaveBeenCalled();
+    });
+
+    it('records audit entry for unmanaged account merge (#1127)', async () => {
+        const unregisteredKp = Keypair.random();
+        const txXdr = buildMergeTxXdr(unregisteredKp, DEST_KP.publicKey());
+        const getState = vi.fn().mockResolvedValue(makeAccountState());
+
+        await protectAgainstMerge(txXdr, NETWORK, getState);
+
+        const log = getMergeAuditLog();
+        expect(log).toHaveLength(1);
+        expect(log[0].sourceAccount).toBe(unregisteredKp.publicKey());
+        expect(log[0].decision.allowed).toBe(true);
+    });
+
     it('allows unmanaged account merges even with open trustlines (#956)', async () => {
         const unregisteredKp = Keypair.random();
         const txXdr = buildMergeTxXdr(unregisteredKp, DEST_KP.publicKey());
