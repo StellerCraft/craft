@@ -625,6 +625,36 @@ describe('generateBinding', () => {
     expect(source).toContain('InsufficientBalance = 3');
     expect(source).toContain('Unauthorized = 7');
   });
+
+  it('does not emit doc comment block for UDT without documentation (#1128)', () => {
+    // Verify struct UDT with empty doc string doesn't produce stray /** */ block
+    const entries = [
+      buildStructUdt('TransactionData', [
+        { name: 'id', type: xdr.ScSpecTypeDef.scSpecTypeString() },
+        { name: 'amount', type: xdr.ScSpecTypeDef.scSpecTypeI128() },
+      ]),
+      ...buildSpecEntries({
+        functions: [
+          {
+            name: 'process',
+            inputs: [
+              { name: 'tx', type: xdr.ScSpecTypeDef.scSpecTypeUdt(new xdr.ScSpecTypeUdt({ name: 'TransactionData' })) },
+            ],
+            outputs: [xdr.ScSpecTypeDef.scSpecTypeBool()],
+          },
+        ],
+      }),
+    ];
+
+    const source = generateBinding(entries);
+    const lines = source.split('\n');
+    const structLineIdx = lines.findIndex(line => line.includes('export interface TransactionData'));
+    expect(structLineIdx).toBeGreaterThan(0);
+    const prevLine = lines[structLineIdx - 1];
+    // Ensure no empty JSDoc comment before the interface
+    expect(prevLine?.trim()).not.toBe('/**');
+    expect(prevLine?.trim()).not.toBe('*/');
+  });
 });
 
 // ---------------------------------------------------------------------------
