@@ -16,3 +16,4 @@ export * from './multi-party-issuance';
 export * from './fee-bump-orchestrator';
 export * from './account-merge-protection';
 export * from './asset-compliance';
+export * from './circuit-breaker';

@@ -8,6 +8,8 @@
  * - Logging: each retry is logged to the analytics service
  */
 
+import { CircuitBreaker as SharedCircuitBreaker } from './circuit-breaker';
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface HorizonResponse<T = unknown> {
@@ -52,8 +54,12 @@ export type BodyInit = string | Uint8Array | ReadableStream<Uint8Array> | FormDa
 
 type CircuitState = 'closed' | 'open' | 'half-open';
 
-// ── Circuit breaker state machine ─────────────────────────────────────────────
+// ── Circuit breaker state machine (adapter for backward compatibility) ──────
 
+/**
+ * Adapter for backward compatibility with the existing horizon-client API.
+ * Wraps the shared CircuitBreaker to provide the simpler, stateful interface.
+ */
 export class CircuitBreaker {
   private state: CircuitState = 'closed';
   private failureTimes: number[] = [];
