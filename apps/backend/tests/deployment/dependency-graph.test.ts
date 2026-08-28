@@ -111,6 +111,27 @@ describe('Dependency graph — topological ordering', () => {
     ]);
     expect(g.topologicalOrder()).toEqual(['a', 'm', 'z']);
   });
+
+  it('preserves ordering for a large fan-out and fan-in graph', () => {
+    const nodes: DeploymentNode[] = [{ id: 'root', dependsOn: [] }];
+    for (let index = 0; index < 100; index++) {
+      nodes.push({ id: `branch-${index}`, dependsOn: ['root'] });
+    }
+    nodes.push({
+      id: 'release',
+      dependsOn: nodes.filter((node) => node.id.startsWith('branch-')).map((node) => node.id),
+    });
+
+    const graph = buildGraph(nodes);
+    const order = graph.topologicalOrder();
+    const levels = graph.executionLevels();
+
+    expect(order).toHaveLength(102);
+    expect(levels).toHaveLength(3);
+    expect(levels[0]).toEqual(['root']);
+    expect(levels[1]).toHaveLength(100);
+    expect(levels[2]).toEqual(['release']);
+  });
 });
 
 describe('Dependency graph — circular dependency detection', () => {

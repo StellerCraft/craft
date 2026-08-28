@@ -8,6 +8,8 @@
 import { stripe } from '@/lib/stripe/client';
 import { createClient } from '@/lib/supabase/server';
 
+const MAX_CONSECUTIVE_REPORT_FAILURES = 3;
+
 export interface UsageRecord {
   id: string;
   user_id: string;
@@ -335,6 +337,7 @@ export class MeteringService {
     // Report each usage record
     let reported = 0;
     let failed = 0;
+    let consecutiveFailures = 0;
     const errors: string[] = [];
 
     for (const record of pendingRecords || []) {
@@ -347,9 +350,19 @@ export class MeteringService {
 
       if (result.success) {
         reported++;
+        consecutiveFailures = 0;
       } else {
         failed++;
+        consecutiveFailures++;
         errors.push(`${record.operation_type}: ${result.error}`);
+        if (consecutiveFailures >= MAX_CONSECUTIVE_REPORT_FAILURES) {
+          console.warn('Stopping Stripe usage reporting after consecutive failures', {
+            userId,
+            consecutiveFailures,
+            remainingRecords: (pendingRecords?.length ?? 0) - reported - failed,
+          });
+          break;
+        }
       }
     }
 

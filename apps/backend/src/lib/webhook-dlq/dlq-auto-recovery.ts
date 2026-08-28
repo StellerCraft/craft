@@ -2,7 +2,9 @@
  * DLQ Auto-Recovery Orchestrator (#748)
  *
  * Polls the DLQ at a configurable interval and automatically retries
- * pending entries using exponential backoff with ±10% jitter.
+ * pending entries using exponential backoff with ±10% jitter. The poller's
+ * retryState is the source of truth; startup reconciliation re-arms entries
+ * whose in-memory schedule was lost during a process restart.
  *
  * Retry schedule (base delays): 1m, 2m, 4m, 8m, 16m, 32m → permanent failure
  *
@@ -69,7 +71,13 @@ export class DLQAutoRecovery {
     start(): void {
         if (this.running) return;
         this.running = true;
+        void this.initialize();
         this._scheduleNext();
+    }
+
+    /** Re-arm pending entries after a process restart. */
+    async initialize(): Promise<void> {
+        await this.processDue();
     }
 
     /** Stop the background polling loop. */
