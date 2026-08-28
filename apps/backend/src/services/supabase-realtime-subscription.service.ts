@@ -81,28 +81,42 @@ export class SupabaseRealtimeSubscriptionService {
         this.connectionState = 'reconnecting';
         this.reconnectAttempts = 0;
 
-        const result = await retryWithBackoff(
-            async () => {
-                this.reconnectAttempts++;
-                if (this.reconnectAttempts >= this.reconnectAttemptsMax) {
-                    // Switch to polling
-                    this.connectionState = 'polling';
-                    this.startPolling(userId, onUpdate);
-                } else {
-                    // Retry with exponential backoff
-                    this.connectionState = 'reconnecting';
-                    const delayMs = this.reconnectDelayMs * Math.pow(2, this.reconnectAttempts - 1);
-                    this.reconnectTimeout = setTimeout(attemptConnect, delayMs);
-                }
-            }
-        };
-
-        if (result.success) {
+        try {
+            this.reconnectAttempts++;
+            await this.realtime.subscribe('deployments', userId);
             this.connectionState = 'connected';
             this.reconnectAttempts = 0;
-        } else {
-            this.connectionState = 'polling';
-            this.startPolling(userId, onUpdate);
+        } catch {
+            if (this.reconnectAttempts >= this.reconnectAttemptsMax) {
+                this.connectionState = 'polling';
+                this.startPolling(userId, onUpdate);
+            } else {
+                void retryWithBackoff(
+                    async () => {
+                        this.reconnectAttempts++;
+                        this.connectionState = 'reconnecting';
+                        try {
+                            await this.realtime.subscribe('deployments', userId);
+                        } catch (error) {
+                            throw new Error(
+                                `Realtime subscription failed: ${error instanceof Error ? error.message : String(error)}`,
+                            );
+                        }
+                    },
+                    {
+                        maxAttempts: this.reconnectAttemptsMax - 1,
+                        initialDelayMs: this.reconnectDelayMs,
+                    },
+                ).then((result) => {
+                    if (result.success) {
+                        this.connectionState = 'connected';
+                        this.reconnectAttempts = 0;
+                    } else {
+                        this.connectionState = 'polling';
+                        this.startPolling(userId, onUpdate);
+                    }
+                });
+            }
         }
 
         // Return unsubscribe function

@@ -117,6 +117,15 @@ describe('MultiProviderAuthService', () => {
         });
     });
 
+    it('throws when connecting Stellar fails through RPC', async () => {
+        const supabase = makeSupabase();
+        supabase.rpc.mockResolvedValueOnce({ error: { message: 'database unavailable' } });
+        const { multiProviderAuthService } = await import('./multi-provider-auth.service');
+
+        await expect(multiProviderAuthService.connectStellar(supabase, 'user-1', 'GXYZ'))
+            .rejects.toThrow('Failed to connect Stellar wallet: database unavailable');
+    });
+
     // ── disconnectProvider ────────────────────────────────────────────────────
 
     it('clears GitHub fields on disconnect', async () => {
@@ -149,6 +158,15 @@ describe('MultiProviderAuthService', () => {
             p_user_id: 'user-1',
             p_provider: 'stellar',
         });
+    });
+
+    it('throws when disconnecting Stellar fails through RPC', async () => {
+        const supabase = makeSupabase();
+        supabase.rpc.mockResolvedValueOnce({ error: { message: 'database unavailable' } });
+        const { multiProviderAuthService } = await import('./multi-provider-auth.service');
+
+        await expect(multiProviderAuthService.disconnectProvider(supabase, 'user-1', 'stellar'))
+            .rejects.toThrow('Failed to disconnect Stellar: database unavailable');
     });
 
     // ── getConnectionStatus ───────────────────────────────────────────────────
