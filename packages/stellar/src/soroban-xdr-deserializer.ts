@@ -350,13 +350,13 @@ function serializeBigInt(value: bigint, hint?: ScValTypeHint): xdr.ScVal {
         } else if (value >= -0x8000000000000000n && value <= 0x7FFFFFFFFFFFFFFFn) {
             return xdr.ScVal.scvI64(bigintToInt64(value));
         } else if (value >= 0n && value <= 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFn) {
-            return xdr.ScVal.scvU128(bigintToUint128(value));
+            return xdr.ScVal.scvU128(new xdr.UInt128Parts(bigintToUint128(value)));
         } else if (value >= -0x80000000000000000000000000000000n && value <= 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFn) {
-            return xdr.ScVal.scvI128(bigintToInt128(value));
+            return xdr.ScVal.scvI128(new xdr.Int128Parts(bigintToInt128(value)));
         } else if (value >= 0n && value <= 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFn) {
-            return xdr.ScVal.scvU256(bigintToUint256(value));
+            return xdr.ScVal.scvU256(new xdr.UInt256Parts(bigintToUint256(value)));
         } else if (value >= -0x8000000000000000000000000000000000000000000000000000000000000000n && value <= 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFn) {
-            return xdr.ScVal.scvI256(bigintToInt256(value));
+            return xdr.ScVal.scvI256(new xdr.Int256Parts(bigintToInt256(value)));
         }
         throw new SorobanSerializationError(
             `BigInt ${value} is out of range for all integer types`,
@@ -371,13 +371,13 @@ function serializeBigInt(value: bigint, hint?: ScValTypeHint): xdr.ScVal {
         case 'i64':
             return xdr.ScVal.scvI64(bigintToInt64(value));
         case 'u128':
-            return xdr.ScVal.scvU128(bigintToUint128(value));
+            return xdr.ScVal.scvU128(new xdr.UInt128Parts(bigintToUint128(value)));
         case 'i128':
-            return xdr.ScVal.scvI128(bigintToInt128(value));
+            return xdr.ScVal.scvI128(new xdr.Int128Parts(bigintToInt128(value)));
         case 'u256':
-            return xdr.ScVal.scvU256(bigintToUint256(value));
+            return xdr.ScVal.scvU256(new xdr.UInt256Parts(bigintToUint256(value)));
         case 'i256':
-            return xdr.ScVal.scvI256(bigintToInt256(value));
+            return xdr.ScVal.scvI256(new xdr.Int256Parts(bigintToInt256(value)));
         default:
             throw new SorobanSerializationError(
                 `Invalid hint for bigint: ${hint}`,
