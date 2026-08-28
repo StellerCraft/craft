@@ -6,8 +6,9 @@ import {
     detectOutliers,
     computeEnrichedDexPrice,
     subscribeLedgerPriceFeed,
+    verifyOrderBookConsistency,
 } from './dex-price-feed';
-import type { OrderBookSnapshot, OrderBookLevel, LedgerEventEmitter, OrderBookFetcher } from './dex-price-feed';
+import type { OrderBookSnapshot, OrderBookLevel, LedgerEventEmitter, OrderBookFetcher, SnapshotWithMeta } from './dex-price-feed';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -106,6 +107,69 @@ describe('computeEnrichedDexPrice', () => {
         expect(result.empty).toBe(true);
         expect(result.bidAnalysis.vwap).toBeUndefined();
         expect(result.askAnalysis.vwap).toBeUndefined();
+    });
+});
+
+// ── verifyOrderBookConsistency ─────────────────────────────────────────────────
+
+describe('verifyOrderBookConsistency', () => {
+    function snapshot(bids: OrderBookLevel[], asks: OrderBookLevel[], ledgerSeq: number): SnapshotWithMeta {
+        return {
+            snapshot: { bids, asks },
+            ledgerSequence: ledgerSeq,
+        };
+    }
+
+    it('defaults to primary snapshot when primary has no mid-price (empty book) (#1129)', () => {
+        const primarySnapshot = snapshot([], [], 1000);
+        const secondarySnapshot = snapshot(
+            [level('1.0', '100')],
+            [level('1.1', '100')],
+            1001,
+        );
+
+        const result = verifyOrderBookConsistency(primarySnapshot, secondarySnapshot);
+
+        expect(result.consistent).toBe(true);
+        expect(result.divergencePercent).toBeUndefined();
+        expect(result.selectedSnapshot).toBe(primarySnapshot.snapshot);
+        expect(result.reason).toContain('Cannot compute mid-price');
+    });
+
+    it('defaults to primary snapshot when secondary has no mid-price (empty book) (#1129)', () => {
+        const primarySnapshot = snapshot(
+            [level('1.0', '100')],
+            [level('1.1', '100')],
+            1000,
+        );
+        const secondarySnapshot = snapshot([], [], 1001);
+
+        const result = verifyOrderBookConsistency(primarySnapshot, secondarySnapshot);
+
+        expect(result.consistent).toBe(true);
+        expect(result.divergencePercent).toBeUndefined();
+        expect(result.selectedSnapshot).toBe(primarySnapshot.snapshot);
+        expect(result.reason).toContain('Cannot compute mid-price');
+    });
+
+    it('reports zero divergence when both endpoints are within tolerance', () => {
+        const primarySnapshot = snapshot(
+            [level('1.0', '100')],
+            [level('1.1', '100')],
+            1000,
+        );
+        const secondarySnapshot = snapshot(
+            [level('1.001', '100')],
+            [level('1.099', '100')],
+            1001,
+        );
+
+        const result = verifyOrderBookConsistency(primarySnapshot, secondarySnapshot);
+
+        expect(result.consistent).toBe(true);
+        expect(result.divergencePercent).toBeDefined();
+        expect(result.divergencePercent!).toBeLessThan(1);
+        expect(result.selectedSnapshot).toBe(primarySnapshot.snapshot);
     });
 });
 
