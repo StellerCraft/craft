@@ -194,4 +194,81 @@ describe('webhookDLQ.capture()', () => {
         const entry = webhookDLQ.capture('github', 'push', '{}', 'err', 1, 'https://ep.example.com');
         expect(webhookDLQ.get(entry.id)?.endpointUrl).toBe('https://ep.example.com');
     });
+
+    it('generates unique collision-resistant IDs across a large batch of rapidly-generated entries', () => {
+        const count = 1000;
+        const ids = new Set<string>();
+        for (let i = 0; i < count; i++) {
+            const entry = webhookDLQ.capture('stripe', `event.${i}`, `{"payload":${i}}`, 'err', 0);
+            expect(entry.id).toMatch(/^dlq_\d+_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+            ids.add(entry.id);
+        }
+        expect(ids.size).toBe(count);
+    });
+});
+
+describe('webhookDLQ dedup index pruning', () => {
+    it('prunes dedupIndex entry when reprocess() succeeds', async () => {
+        webhookDLQ.registerProcessor('stripe', vi.fn().mockResolvedValue(undefined));
+
+        const entry = webhookDLQ.capture('stripe', 'payment_intent.succeeded', '{"id":"pi_1"}', 'err', 1);
+        expect(webhookDLQ._dedupIndexSize()).toBe(1);
+
+        const result = await webhookDLQ.reprocess(entry.id);
+        expect(result.success).toBe(true);
+        expect(webhookDLQ._dedupIndexSize()).toBe(0);
+    });
+
+    it('prunes dedupIndex entry when scheduleRetry() succeeds', async () => {
+        webhookDLQ.registerProcessor('github', vi.fn().mockResolvedValue(undefined));
+
+        const entry = webhookDLQ.capture('github', 'push', '{"ref":"main"}', 'timeout', 1);
+        expect(webhookDLQ._dedupIndexSize()).toBe(1);
+
+        await webhookDLQ.scheduleRetry(entry.id);
+        expect(webhookDLQ.get(entry.id)?.reprocessStatus).toBe('succeeded');
+        expect(webhookDLQ._dedupIndexSize()).toBe(0);
+    });
+
+    it('retains dedupIndex entry when reprocessing fails so duplicates still merge', async () => {
+        webhookDLQ.registerProcessor('stripe', vi.fn().mockRejectedValue(new Error('fail')));
+
+        const entry1 = webhookDLQ.capture('stripe', 'charge.failed', '{"id":"ch_1"}', 'initial err', 1);
+        expect(webhookDLQ._dedupIndexSize()).toBe(1);
+
+        const result = await webhookDLQ.reprocess(entry1.id);
+        expect(result.success).toBe(false);
+        // dedupIndex should still contain the entry
+        expect(webhookDLQ._dedupIndexSize()).toBe(1);
+
+        // A duplicate capture merges into the existing entry
+        const entry2 = webhookDLQ.capture('stripe', 'charge.failed', '{"id":"ch_1"}', 'second err', 2);
+        expect(entry2.id).toBe(entry1.id);
+        expect(entry2.attempts).toBe(2);
+        expect(entry2.failureReason).toBe('second err');
+        expect(webhookDLQ._dedupIndexSize()).toBe(1);
+    });
+
+    it('does not grow dedupIndex unboundedly across many capture -> succeed cycles', async () => {
+        webhookDLQ.registerProcessor('stripe', vi.fn().mockResolvedValue(undefined));
+
+        const totalCycles = 100;
+        for (let i = 0; i < totalCycles; i++) {
+            const entry = webhookDLQ.capture('stripe', `event.${i}`, `{"payload":${i}}`, 'err', 1);
+            expect(webhookDLQ._dedupIndexSize()).toBe(1);
+            await webhookDLQ.reprocess(entry.id);
+            expect(webhookDLQ._dedupIndexSize()).toBe(0);
+        }
+
+        expect(webhookDLQ._dedupIndexSize()).toBe(0);
+    });
+
+    it('_reset() clears dedupIndex completely', () => {
+        webhookDLQ.capture('stripe', 'e1', '{"a":1}', 'err', 1);
+        webhookDLQ.capture('stripe', 'e2', '{"a":2}', 'err', 1);
+        expect(webhookDLQ._dedupIndexSize()).toBe(2);
+
+        webhookDLQ._reset();
+        expect(webhookDLQ._dedupIndexSize()).toBe(0);
+    });
 });
