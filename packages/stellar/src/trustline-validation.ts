@@ -7,6 +7,95 @@
 
 import { Asset, Horizon } from 'stellar-sdk';
 
+// ── Issuer existence verification (#789) ─────────────────────────────────────
+
+/** Cache TTL: 5 minutes in milliseconds. */
+const ISSUER_CACHE_TTL_MS = 5 * 60 * 1000;
+
+/** Maximum number of entries held at once. Older entries are evicted first. */
+const MAX_ISSUER_CACHE_ENTRIES = 1_000;
+
+interface CacheEntry {
+  result: IssuerVerificationResult;
+  expiresAt: number;
+}
+
+const issuerCache = new Map<string, CacheEntry>();
+
+/** Evict the oldest entry from the issuer cache. Used when at capacity. */
+function evictOldestIssuerEntry(): void {
+  const firstKey = issuerCache.keys().next().value;
+  if (firstKey !== undefined) {
+    issuerCache.delete(firstKey);
+  }
+}
+
+export type IssuerFailureReason = 'issuer_not_found' | 'auth_required' | 'account_merged';
+
+export interface IssuerVerificationResult {
+  valid: boolean;
+  reason?: IssuerFailureReason;
+}
+
+/**
+ * Verifies that an issuer account exists on the Stellar network and checks
+ * whether AUTH_REQUIRED_FLAG is set. Results are cached for 5 minutes.
+ *
+ * @param issuer - The issuer account public key
+ * @param horizonUrl - Horizon base URL for the target network
+ * @param requiresKyc - When true, fail if AUTH_REQUIRED_FLAG is not set
+ */
+export async function verifyIssuerExists(
+  issuer: string,
+  horizonUrl: string,
+  requiresKyc = false,
+): Promise<IssuerVerificationResult> {
+  const cacheKey = `${horizonUrl}:${issuer}:${requiresKyc}`;
+  const cached = issuerCache.get(cacheKey);
+  if (cached && Date.now() < cached.expiresAt) {
+    return cached.result;
+  }
+
+  const server = new Horizon.Server(horizonUrl);
+  let result: IssuerVerificationResult;
+
+  try {
+    const account = await server.loadAccount(issuer);
+
+    // AUTH_REQUIRED_FLAG = 1 on the Horizon flags object
+    const authRequired = (account.flags as { auth_required?: boolean }).auth_required === true;
+    if (requiresKyc && !authRequired) {
+      result = { valid: false, reason: 'auth_required' };
+    } else {
+      result = { valid: true };
+    }
+  } catch (err: unknown) {
+    const status = (err as { response?: { status?: number }; name?: string })?.response?.status;
+    if (status === 404) {
+      result = { valid: false, reason: 'issuer_not_found' };
+    } else if (status === 410) {
+      // Horizon returns 410 Gone for merged accounts
+      result = { valid: false, reason: 'account_merged' };
+    } else {
+      // Re-throw unexpected errors (network timeouts, etc.)
+      throw err;
+    }
+  }
+
+  // Evict the oldest entry first if we are at capacity.
+  if (issuerCache.size >= MAX_ISSUER_CACHE_ENTRIES) {
+    evictOldestIssuerEntry();
+  }
+
+  issuerCache.set(cacheKey, { result, expiresAt: Date.now() + ISSUER_CACHE_TTL_MS });
+  return result;
+}
+
+/** Clears the issuer existence cache. Useful in tests. */
+export function clearIssuerCache(): void {
+  issuerCache.clear();
+}
+
 export interface TrustlineValidationResult {
   valid: boolean;
   error?: string;
@@ -39,6 +128,7 @@ export const MAX_TRUSTLINES_PER_ACCOUNT = 1000;
  * @param accountId - The Stellar account address
  * @param requiredAssets - Array of assets that require trustlines
  * @param accountData - Account data from Horizon (optional, will fetch if not provided)
+ * @param horizonUrl - Horizon base URL (required only if accountData is omitted; used to fetch account details)
  * @returns Validation result with details about missing trustlines
  *
  * @example
@@ -55,7 +145,8 @@ export const MAX_TRUSTLINES_PER_ACCOUNT = 1000;
 export async function validateTrustlines(
   accountId: string,
   requiredAssets: Array<{ code: string; issuer: string }>,
-  accountData?: Horizon.ServerApi.AccountRecord
+  accountData?: Horizon.ServerApi.AccountRecord,
+  horizonUrl?: string,
 ): Promise<TrustlineValidationResult> {
   // Validate account address format
   if (!accountId || accountId.length !== 56 || !accountId.startsWith('G')) {
@@ -74,8 +165,26 @@ export async function validateTrustlines(
     return { valid: true };
   }
 
+  // Fetch account data if not provided
+  let resolvedAccountData = accountData;
+  if (!resolvedAccountData && horizonUrl) {
+    try {
+      const server = new Horizon.Server(horizonUrl);
+      resolvedAccountData = await server.loadAccount(accountId);
+    } catch (err: unknown) {
+      const status = (err as { response?: { status?: number } })?.response?.status;
+      if (status === 404) {
+        return {
+          valid: false,
+          error: 'Account not found on Horizon',
+        };
+      }
+      throw err;
+    }
+  }
+
   // Get account trustlines
-  const trustlines = accountData?.balances || [];
+  const trustlines = resolvedAccountData?.balances || [];
   const missingTrustlines: Array<{
     asset: string;
     issuer: string;
@@ -160,7 +269,8 @@ export function canEstablishTrustlines(
  *
  * @param accountId - The account that will issue the asset
  * @param assets - Assets to be issued
- * @param accountData - Account data from Horizon (optional)
+ * @param accountData - Account data from Horizon (optional, will fetch if not provided)
+ * @param horizonUrl - Horizon base URL (required only if accountData is omitted)
  * @returns Validation result with actionable error messages
  *
  * @example
@@ -177,27 +287,52 @@ export function canEstablishTrustlines(
 export async function validateAssetIssuanceDeployment(
   accountId: string,
   assets: Array<{ code: string; issuer: string }>,
-  accountData?: Horizon.ServerApi.AccountRecord
+  accountData?: Horizon.ServerApi.AccountRecord,
+  horizonUrl?: string,
 ): Promise<TrustlineValidationResult> {
-  const trustlineResult = await validateTrustlines(accountId, assets, accountData);
-
-  if (!trustlineResult.valid) {
-    return trustlineResult;
+  // Fetch account data if not provided
+  let resolvedAccountData = accountData;
+  if (!resolvedAccountData && horizonUrl) {
+    try {
+      const server = new Horizon.Server(horizonUrl);
+      resolvedAccountData = await server.loadAccount(accountId);
+    } catch (err: unknown) {
+      const status = (err as { response?: { status?: number } })?.response?.status;
+      if (status === 404) {
+        return {
+          valid: false,
+          error: 'Account not found on Horizon',
+        };
+      }
+      throw err;
+    }
   }
 
-  // Check if account can establish additional trustlines if needed
-  if (accountData) {
-    const missingCount = trustlineResult.missingTrustlines?.length || 0;
-    if (missingCount > 0 && !canEstablishTrustlines(accountData, missingCount)) {
+  // Check capacity before validating existing trustlines so the capacity
+  // error takes precedence when the account is at max and missing trustlines.
+  if (resolvedAccountData) {
+    const nonNative = assets.filter((a) => a.code !== 'XLM' && a.code !== 'native');
+    const missingAssets = nonNative.filter(
+      (asset) =>
+        !(resolvedAccountData.balances as Array<{ asset_type: string; asset_code?: string; asset_issuer?: string }>).some(
+          (b) => b.asset_type !== 'native' && b.asset_code === asset.code && b.asset_issuer === asset.issuer,
+        ),
+    );
+    if (missingAssets.length > 0 && !canEstablishTrustlines(resolvedAccountData, missingAssets.length)) {
       return {
         valid: false,
         error: `Account has reached maximum trustline limit (${MAX_TRUSTLINES_PER_ACCOUNT})`,
-        missingTrustlines: trustlineResult.missingTrustlines,
+        missingTrustlines: missingAssets.map((a) => ({
+          asset: a.code,
+          issuer: a.issuer,
+          reason: 'Trustline does not exist',
+        })),
       };
     }
   }
 
-  return { valid: true };
+  const trustlineResult = await validateTrustlines(accountId, assets, resolvedAccountData, horizonUrl);
+  return trustlineResult;
 }
 
 /**

@@ -8,6 +8,8 @@
 import { stripe } from '@/lib/stripe/client';
 import { createClient } from '@/lib/supabase/server';
 
+const MAX_CONSECUTIVE_REPORT_FAILURES = 3;
+
 export interface UsageRecord {
   id: string;
   user_id: string;
@@ -69,10 +71,13 @@ export class MeteringService {
   }
 
   /**
-   * Record API usage
-   * 
-   * Idempotent: Multiple calls with same operation_type/user_id within
-   * same second will be deduplicated via idempotency key.
+   * Record API usage atomically under concurrent requests
+   *
+   * Idempotent: Uses atomic upsert on idempotency_key to handle
+   * concurrent calls within the same second safely. Multiple concurrent
+   * recordUsage() calls with the same (userId, operationType) within
+   * the same second will result in exactly one usage record with
+   * summed quantity, never duplicates or unhandled errors.
    */
   async recordUsage(
     userId: string,
@@ -90,68 +95,59 @@ export class MeteringService {
     const dedupKey =
       idempotencyKey ?? this.generateIdempotencyKey(userId, operationType);
 
-    // Insert or get existing record for this operation in this billing period
-    const { data: existingRecords, error: fetchError } = await supabase
-      .from('usage_records')
-      .select('*')
-      .eq('user_id', userId)
-      .eq('operation_type', operationType)
-      .eq('billing_period_start', billingPeriod.start.toISOString())
-      .eq('idempotency_key', dedupKey)
-      .single();
-
-    // If record exists for this idempotency key...
-    if (!fetchError && existingRecords) {
-      // A caller-supplied logical key (e.g. the payment idempotency key for a
-      // checkout) identifies a single billable event. A replay of that event
-      // (a retry/duplicate webhook) must not be counted again, so we return the
-      // existing record without incrementing — true exactly-once metering.
-      if (idempotencyKey) {
-        return existingRecords as UsageRecord;
-      }
-
-      // Legacy path: no logical key was provided, so the one-second-granularity
-      // key collides only for genuinely concurrent calls within the same second.
-      // Those are distinct events and should accumulate.
-      const newQuantity = (existingRecords.quantity || 0) + quantity;
-
-      const { data: updated } = await supabase
+    try {
+      const { data: record, error: upsertError } = await supabase
         .from('usage_records')
-        .update({
-          quantity: newQuantity,
-          metadata: {
-            ...existingRecords.metadata,
-            ...metadata,
+        .upsert(
+          {
+            user_id: userId,
+            operation_type: operationType,
+            quantity,
+            metadata,
+            billing_period_start: billingPeriod.start.toISOString(),
+            billing_period_end: billingPeriod.end.toISOString(),
+            idempotency_key: idempotencyKey,
+            reported_to_stripe: false,
           },
-        })
-        .eq('id', existingRecords.id)
+          { onConflict: 'idempotency_key' }
+        )
         .select()
         .single();
 
-      return updated as UsageRecord;
+      if (upsertError) {
+        throw new Error(`Failed to record usage: ${upsertError.message}`);
+      }
+
+      return record as UsageRecord;
+    } catch (error: any) {
+      if (error.code === '23505') {
+        const { data: existingRecords, error: fetchError } = await supabase
+          .from('usage_records')
+          .select('*')
+          .eq('idempotency_key', idempotencyKey)
+          .single();
+
+        if (!fetchError && existingRecords) {
+          const newQuantity = (existingRecords.quantity || 0) + quantity;
+
+          const { data: updated } = await supabase
+            .from('usage_records')
+            .update({
+              quantity: newQuantity,
+              metadata: {
+                ...existingRecords.metadata,
+                ...metadata,
+              },
+            })
+            .eq('id', existingRecords.id)
+            .select()
+            .single();
+
+          return updated as UsageRecord;
+        }
+      }
+      throw error;
     }
-
-    // Create new usage record
-    const { data: record, error: insertError } = await supabase
-      .from('usage_records')
-      .insert({
-        user_id: userId,
-        operation_type: operationType,
-        quantity,
-        metadata,
-        billing_period_start: billingPeriod.start.toISOString(),
-        billing_period_end: billingPeriod.end.toISOString(),
-        idempotency_key: dedupKey,
-        reported_to_stripe: false,
-      })
-      .select()
-      .single();
-
-    if (insertError) {
-      throw new Error(`Failed to record usage: ${insertError.message}`);
-    }
-
-    return record as UsageRecord;
   }
 
   /**
@@ -346,6 +342,7 @@ export class MeteringService {
     // Report each usage record
     let reported = 0;
     let failed = 0;
+    let consecutiveFailures = 0;
     const errors: string[] = [];
 
     for (const record of pendingRecords || []) {
@@ -358,9 +355,19 @@ export class MeteringService {
 
       if (result.success) {
         reported++;
+        consecutiveFailures = 0;
       } else {
         failed++;
+        consecutiveFailures++;
         errors.push(`${record.operation_type}: ${result.error}`);
+        if (consecutiveFailures >= MAX_CONSECUTIVE_REPORT_FAILURES) {
+          console.warn('Stopping Stripe usage reporting after consecutive failures', {
+            userId,
+            consecutiveFailures,
+            remainingRecords: (pendingRecords?.length ?? 0) - reported - failed,
+          });
+          break;
+        }
       }
     }
 

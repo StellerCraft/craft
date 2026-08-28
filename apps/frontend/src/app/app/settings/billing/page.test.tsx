@@ -242,6 +242,35 @@ describe('BillingPage', () => {
       await waitFor(() => screen.getByTestId('cancellation-notice'));
       expect(fetchSpy).toHaveBeenCalledWith('/api/payments/cancel', expect.objectContaining({ method: 'POST' }));
     });
+
+    it('keeps the confirm dialog open with an inline error when cancellation fails', async () => {
+      vi.spyOn(global, 'fetch').mockImplementation(async (input) => {
+        const url = typeof input === 'string' ? input : (input as Request).url;
+        if (url.includes('/api/payments/cancel')) {
+          return { ok: false } as Response;
+        }
+        return {
+          ok: true,
+          json: async () => ({
+            tier: 'pro',
+            status: 'active',
+            currentPeriodEnd: PERIOD_END,
+            cancelAtPeriodEnd: false,
+          }),
+        } as Response;
+      });
+
+      render(<BillingPage />);
+      await waitFor(() => screen.getByTestId('cancel-subscription-btn'));
+      fireEvent.click(screen.getByTestId('cancel-subscription-btn'));
+      fireEvent.click(screen.getByTestId('confirm-cancel-btn'));
+
+      await waitFor(() => screen.getByTestId('cancel-error'));
+      expect(screen.getByTestId('cancel-confirm-dialog')).toBeDefined();
+      expect(screen.getByTestId('cancel-error').textContent).toContain('Failed to cancel subscription');
+      expect(screen.getByTestId('confirm-cancel-btn').hasAttribute('disabled')).toBe(false);
+      expect(screen.queryByTestId('cancellation-notice')).toBeNull();
+    });
   });
 
   describe('cancelled subscription', () => {

@@ -1,11 +1,11 @@
 'use client';
 
 import React, { forwardRef, useEffect, useState } from 'react';
-import { ViewportClass, VIEWPORT_DIMENSIONS } from '@craft/types';
+import { ViewportClass, VIEWPORT_DIMENSIONS, CustomizationConfig } from '@craft/types';
 
 interface PreviewIframeProps {
   readonly templateId?: string;
-  readonly customization?: any;
+  readonly customization?: CustomizationConfig;
   readonly viewport: ViewportClass;
   readonly onLoad?: () => void;
   readonly onError?: (error: Error) => void;

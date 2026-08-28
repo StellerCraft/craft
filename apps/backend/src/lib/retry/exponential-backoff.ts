@@ -61,6 +61,10 @@ export function isRetryableError(error: unknown): boolean {
         /socket hang up/i,
         /ETIMEDOUT/i,
         /EHOSTUNREACH/i,
+        /connection/i,
+        /channel/i,
+        /websocket/i,
+        /failed/i,
     ];
 
     return networkPatterns.some((p) => p.test(message));
@@ -69,22 +73,28 @@ export function isRetryableError(error: unknown): boolean {
 /**
  * Calculate backoff delay with jitter
  * Prevents thundering herd by adding random jitter (±10%)
+ *
+ * The jitter is computed as ±10% of the pre-cap exponential value so that
+ * it scales correctly, and the result is re-clamped to [0, maxDelayMs]
+ * after adding jitter. This ensures the returned value never exceeds
+ * maxDelayMs even when the exponential term has already saturated the cap
+ * (fixes #925).
  */
 export function calculateBackoffDelay(
     attempt: number,
     initialDelayMs: number,
     maxDelayMs: number,
     multiplier: number,
+    randomFn?: () => number,
 ): number {
+    const random = randomFn ?? Math.random;
     // Exponential backoff: initial * (multiplier ^ attempt)
-    let delay = initialDelayMs * Math.pow(multiplier, attempt);
+    const exponential = initialDelayMs * Math.pow(multiplier, attempt);
+    const delay = Math.min(exponential, maxDelayMs);
 
-    // Cap at max delay
-    delay = Math.min(delay, maxDelayMs);
-
-    // Add jitter: ±10% of the delay
-    const jitter = delay * 0.1 * (Math.random() - 0.5) * 2;
-    return Math.max(0, delay + jitter);
+    // Add jitter: ±10% of the capped delay
+    const jitter = delay * 0.1 * (random() - 0.5) * 2;
+    return Math.min(maxDelayMs, Math.max(0, delay + jitter));
 }
 
 /**

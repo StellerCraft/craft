@@ -47,17 +47,18 @@ function crc16(data: Uint8Array): number {
 /**
  * Verify the Stellar strkey checksum embedded in a contract address.
  * The last 2 bytes of the decoded payload are a little-endian CRC-16 of the
- * preceding bytes.
+ * preceding bytes. Returns both the validity and the decoded payload if valid.
  */
-function verifyStrKeyChecksum(address: string): boolean {
+function verifyStrKeyChecksum(address: string): { valid: boolean; decoded?: Uint8Array } {
     try {
         const decoded = base32Decode(address);
-        if (decoded.length < 3) return false;
+        if (decoded.length < 3) return { valid: false };
         const payload = decoded.slice(0, -2);
         const storedCrc = decoded[decoded.length - 2]! | (decoded[decoded.length - 1]! << 8);
-        return crc16(payload) === storedCrc;
+        const isValid = crc16(payload) === storedCrc;
+        return isValid ? { valid: true, decoded } : { valid: false };
     } catch {
-        return false;
+        return { valid: false };
     }
 }
 
@@ -121,12 +122,25 @@ export function validateContractAddress(address: string): ContractValidationResu
         };
     }
 
-    // 6. Checksum check
-    if (!verifyStrKeyChecksum(address)) {
+    // 6. Checksum check (also decodes the address)
+    const checksumResult = verifyStrKeyChecksum(address);
+    if (!checksumResult.valid) {
         return {
             valid: false,
             reason: 'Contract address checksum is invalid',
             code: 'CONTRACT_ADDRESS_INVALID_CHECKSUM',
+        };
+    }
+
+    // 7. Version byte check: SEP-0023 CONTRACT type = 0x10
+    // The decoded payload's first byte must be exactly 0x10 for a valid Soroban contract address
+    const decoded = checksumResult.decoded!;
+    const payload = decoded.slice(0, -2);
+    if (payload[0] !== 0x10) {
+        return {
+            valid: false,
+            reason: 'Contract address version byte does not match Soroban CONTRACT type',
+            code: 'CONTRACT_ADDRESS_INVALID_VERSION_BYTE',
         };
     }
 

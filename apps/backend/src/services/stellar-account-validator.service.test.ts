@@ -91,4 +91,17 @@ describe('StellarAccountValidator.checkExistence', () => {
         expect(r.exists).toBe(false);
         expect(r.error).toContain('timeout');
     });
+
+    it('returns timeout error when request exceeds timeout', async () => {
+        const mockFetch = vi.fn().mockImplementation(
+            (_url, init) => new Promise(() => {
+                /* never resolves to simulate hanging request */
+            })
+        );
+        const v = new StellarAccountValidator(mockFetch as any, 100);
+        const r = await v.checkExistence(VALID_ADDRESS, HORIZON_URL);
+        expect(r.exists).toBe(false);
+        expect(r.funded).toBe(false);
+        expect(r.error).toContain('timed out after 100ms');
+    });
 });

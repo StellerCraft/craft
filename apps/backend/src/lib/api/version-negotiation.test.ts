@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
     negotiateVersion,
+    DEFAULT_API_VERSION,
     parseVersionFromPath,
     parseVersionFromHeader,
     parseVersionFromQuery,
@@ -87,9 +88,9 @@ describe('version-negotiation', () => {
             expect(result.source).toBe('query');
         });
 
-        it('should default to version 1', () => {
+        it('should default to the shared default version', () => {
             const result = negotiateVersion('/api/users');
-            expect(result.version).toBe(1);
+            expect(result.version).toBe(DEFAULT_API_VERSION);
             expect(result.source).toBe('default');
         });
 

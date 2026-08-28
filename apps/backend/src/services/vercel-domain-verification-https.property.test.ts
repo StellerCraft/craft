@@ -31,7 +31,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { VercelService, type DomainCertificate } from './vercel.service';
+import { VercelService, type DomainCertificate, type HttpsVerificationResult } from './vercel.service';
 
 // ── Seeded PRNG (mulberry32) ──────────────────────────────────────────────────
 
@@ -272,5 +272,225 @@ describe('Property 28 — Verified Domains Automatically Enable HTTPS', () => {
         const cert = await service.getCertificate(scenario.projectId, scenario.domain);
         expect(cert.state).not.toBe('active');
         delete process.env.VERCEL_TOKEN;
+    });
+});
+
+// ── Certificate error scenarios (Issue #739) ──────────────────────────────────
+//
+// Tests that verifyHttpsCertificate() surfaces the correct machine-readable
+// reason for every certificate failure type.  The mock fetch intercepts both
+// the Vercel cert API call (/cert) and the HSTS HEAD check (https://{domain}).
+//
+// All TLS behaviour is simulated — no real HTTPS connections are made.
+
+const TOKEN_739 = 'test_token_issue_739';
+const PROJECT_739 = 'prj_issue_739';
+const DOMAIN_739 = 'app.stellar.finance';
+
+/** Builds a mock fetch that returns the given cert body and optional HSTS header. */
+function makeCertFetch(
+    certBody: Record<string, unknown>,
+    hstsValue: string | null = 'max-age=31536000; includeSubDomains',
+) {
+    return async (url: string, init: RequestInit = {}): Promise<Response> => {
+        const method = (init.method ?? 'GET').toUpperCase();
+
+        // Vercel cert API
+        if (method === 'GET' && url.includes('/cert')) {
+            return {
+                ok: true, status: 200,
+                headers: { get: () => null },
+                json: async () => certBody,
+            } as unknown as Response;
+        }
+
+        // HSTS HEAD check
+        if (method === 'HEAD' && url.startsWith('https://')) {
+            return {
+                ok: true, status: 200,
+                headers: { get: (h: string) => h.toLowerCase() === 'strict-transport-security' ? hstsValue : null },
+            } as unknown as Response;
+        }
+
+        return {
+            ok: false, status: 500,
+            headers: { get: () => null },
+            json: async () => ({ error: { message: 'unexpected call' } }),
+        } as unknown as Response;
+    };
+}
+
+describe('Issue #739 — HTTPS Verification Under Expired / Untrusted Certificate Scenarios', () => {
+    // ── Expired certificate ───────────────────────────────────────────────────
+
+    it('expired certificate → verified: false, reason: cert_expired', async () => {
+        const fetch = makeCertFetch({ error: { message: 'Certificate expired' } });
+        process.env.VERCEL_TOKEN = TOKEN_739;
+        const service = new VercelService(fetch as typeof globalThis.fetch);
+
+        const result: HttpsVerificationResult = await service.verifyHttpsCertificate(PROJECT_739, DOMAIN_739);
+
+        delete process.env.VERCEL_TOKEN;
+        expect(result.verified).toBe(false);
+        expect(result.reason).toBe('cert_expired');
+        expect(result.certState).toBe('error');
+    });
+
+    it('cert error message containing "expired" always maps to cert_expired', async () => {
+        const variants = [
+            'Certificate expired',
+            'SSL cert expired on 2024-01-01',
+            'The certificate has expired',
+            'cert expired for this domain',
+        ];
+        for (const msg of variants) {
+            const fetch = makeCertFetch({ error: { message: msg } });
+            process.env.VERCEL_TOKEN = TOKEN_739;
+            const service = new VercelService(fetch as typeof globalThis.fetch);
+            const result = await service.verifyHttpsCertificate(PROJECT_739, DOMAIN_739);
+            delete process.env.VERCEL_TOKEN;
+
+            expect(result.verified).toBe(false);
+            expect(result.reason).toBe('cert_expired');
+        }
+    });
+
+    // ── Self-signed / untrusted CA ────────────────────────────────────────────
+
+    it('self-signed certificate → verified: false, reason: cert_untrusted', async () => {
+        const fetch = makeCertFetch({ error: { message: 'Certificate is self-signed' } });
+        process.env.VERCEL_TOKEN = TOKEN_739;
+        const service = new VercelService(fetch as typeof globalThis.fetch);
+
+        const result = await service.verifyHttpsCertificate(PROJECT_739, DOMAIN_739);
+
+        delete process.env.VERCEL_TOKEN;
+        expect(result.verified).toBe(false);
+        expect(result.reason).toBe('cert_untrusted');
+        expect(result.certState).toBe('error');
+    });
+
+    it('untrusted CA certificate → verified: false, reason: cert_untrusted', async () => {
+        const fetch = makeCertFetch({ error: { message: 'certificate signed by unknown ca' } });
+        process.env.VERCEL_TOKEN = TOKEN_739;
+        const service = new VercelService(fetch as typeof globalThis.fetch);
+
+        const result = await service.verifyHttpsCertificate(PROJECT_739, DOMAIN_739);
+
+        delete process.env.VERCEL_TOKEN;
+        expect(result.verified).toBe(false);
+        expect(result.reason).toBe('cert_untrusted');
+    });
+
+    it('cert error messages indicating untrusted issuer always map to cert_untrusted', async () => {
+        const variants = [
+            'Certificate is self-signed',
+            'self-signed certificate',
+            'certificate issued by untrusted authority',
+            'untrusted cert chain',
+            'Certificate issued by unknown CA',
+        ];
+        for (const msg of variants) {
+            const fetch = makeCertFetch({ error: { message: msg } });
+            process.env.VERCEL_TOKEN = TOKEN_739;
+            const service = new VercelService(fetch as typeof globalThis.fetch);
+            const result = await service.verifyHttpsCertificate(PROJECT_739, DOMAIN_739);
+            delete process.env.VERCEL_TOKEN;
+
+            expect(result.verified).toBe(false);
+            expect(result.reason).toBe('cert_untrusted');
+        }
+    });
+
+    // ── Pending certificate ───────────────────────────────────────────────────
+
+    it('pending certificate (no expiresAt, no error) → verified: false, reason: cert_pending', async () => {
+        const fetch = makeCertFetch({}); // empty body = pending
+        process.env.VERCEL_TOKEN = TOKEN_739;
+        const service = new VercelService(fetch as typeof globalThis.fetch);
+
+        const result = await service.verifyHttpsCertificate(PROJECT_739, DOMAIN_739);
+
+        delete process.env.VERCEL_TOKEN;
+        expect(result.verified).toBe(false);
+        expect(result.reason).toBe('cert_pending');
+        expect(result.certState).toBe('pending');
+    });
+
+    // ── HSTS header validation ────────────────────────────────────────────────
+
+    it('active cert with HSTS present → verified: true', async () => {
+        const fetch = makeCertFetch(
+            { expiresAt: '2027-06-01T00:00:00Z', cns: [DOMAIN_739] },
+            'max-age=31536000; includeSubDomains',
+        );
+        process.env.VERCEL_TOKEN = TOKEN_739;
+        const service = new VercelService(fetch as typeof globalThis.fetch);
+
+        const result = await service.verifyHttpsCertificate(PROJECT_739, DOMAIN_739);
+
+        delete process.env.VERCEL_TOKEN;
+        expect(result.verified).toBe(true);
+        expect(result.certState).toBe('active');
+        expect(result.reason).toBeUndefined();
+    });
+
+    it('active cert but HSTS header absent → verified: false, reason: no_hsts', async () => {
+        const fetch = makeCertFetch(
+            { expiresAt: '2027-06-01T00:00:00Z', cns: [DOMAIN_739] },
+            null, // HSTS header missing
+        );
+        process.env.VERCEL_TOKEN = TOKEN_739;
+        const service = new VercelService(fetch as typeof globalThis.fetch);
+
+        const result = await service.verifyHttpsCertificate(PROJECT_739, DOMAIN_739);
+
+        delete process.env.VERCEL_TOKEN;
+        expect(result.verified).toBe(false);
+        expect(result.reason).toBe('no_hsts');
+        expect(result.certState).toBe('active');
+    });
+
+    it('HSTS header is validated as part of HTTPS verification — 100 domain iterations', async () => {
+        const rand = makePrng(BASE_SEED + 739);
+
+        for (let i = 0; i < 100; i++) {
+            const domain = genDomain(rand);
+            const hasHsts = rand() < 0.5;
+            const certActive = rand() < 0.7;
+
+            const certBody = certActive
+                ? { expiresAt: '2027-06-01T00:00:00Z', cns: [domain] }
+                : {};
+            const hstsHeader = hasHsts ? 'max-age=31536000' : null;
+
+            const fetch = makeCertFetch(certBody, hstsHeader);
+            process.env.VERCEL_TOKEN = TOKEN_739;
+            const service = new VercelService(fetch as typeof globalThis.fetch);
+            const result = await service.verifyHttpsCertificate(PROJECT_739, domain);
+            delete process.env.VERCEL_TOKEN;
+
+            if (certActive && hasHsts) {
+                // Invariant: cert active + HSTS present → fully verified
+                expect(result.verified).toBe(true);
+            } else {
+                // Invariant: any missing condition → not verified
+                expect(result.verified).toBe(false);
+            }
+        }
+    });
+
+    // ── Generic cert error (no specific keyword) ──────────────────────────────
+
+    it('generic cert error with no recognized keyword → reason: cert_error', async () => {
+        const fetch = makeCertFetch({ error: { message: 'provisioning failed' } });
+        process.env.VERCEL_TOKEN = TOKEN_739;
+        const service = new VercelService(fetch as typeof globalThis.fetch);
+
+        const result = await service.verifyHttpsCertificate(PROJECT_739, DOMAIN_739);
+
+        delete process.env.VERCEL_TOKEN;
+        expect(result.verified).toBe(false);
+        expect(result.reason).toBe('cert_error');
     });
 });

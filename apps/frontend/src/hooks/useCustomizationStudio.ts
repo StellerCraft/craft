@@ -12,7 +12,7 @@ export interface UseCustomizationStudioReturn {
   loadError: string | null;
   loading: boolean;
   setConfig: (config: CustomizationConfig) => void;
-  save: () => Promise<void>;
+  save: (next?: CustomizationConfig) => Promise<void>;
 }
 
 const DEFAULT_CONFIG: CustomizationConfig = {
@@ -91,28 +91,32 @@ export function useCustomizationStudio(templateId: string): UseCustomizationStud
 
   const isDirty = JSON.stringify(config) !== JSON.stringify(savedSnapshot);
 
-  const save = useCallback(async () => {
-    if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
-    setSaveState('saving');
-    try {
-      const res = await fetch(`/api/drafts/${templateId}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(config),
-      });
-      if (!res.ok) throw new Error(`Save failed (${res.status})`);
-      if (isMounted.current) {
-        setSavedSnapshot(config);
-        setSaveState('saved');
-        // Reset to idle after 2 s so the "Saved" indicator fades
-        setTimeout(() => {
-          if (isMounted.current) setSaveState('idle');
-        }, 2000);
+  const save = useCallback(
+    async (next?: CustomizationConfig) => {
+      const configToSave = next ?? config;
+      if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+      setSaveState('saving');
+      try {
+        const res = await fetch(`/api/drafts/${templateId}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(configToSave),
+        });
+        if (!res.ok) throw new Error(`Save failed (${res.status})`);
+        if (isMounted.current) {
+          setSavedSnapshot(configToSave);
+          setSaveState('saved');
+          // Reset to idle after 2 s so the "Saved" indicator fades
+          setTimeout(() => {
+            if (isMounted.current) setSaveState('idle');
+          }, 2000);
+        }
+      } catch {
+        if (isMounted.current) setSaveState('error');
       }
-    } catch {
-      if (isMounted.current) setSaveState('error');
-    }
-  }, [config, templateId]);
+    },
+    [config, templateId],
+  );
 
   const setConfig = useCallback(
     (next: CustomizationConfig) => {

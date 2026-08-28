@@ -180,3 +180,89 @@ export function validateAssetPairs(pairs: unknown): ValidationError[] {
 
     return errors;
 }
+
+// ── Bridge Liquidity Check (#793) ─────────────────────────────────────────────
+
+/** Minimum USD-equivalent depth required on each side of the order book. */
+export const MIN_LIQUIDITY_USD = 1_000;
+
+/** Cache TTL: 5 minutes in milliseconds. */
+export const LIQUIDITY_CACHE_TTL_MS = 5 * 60 * 1_000;
+
+export type LiquidityCheckResult =
+    | { valid: true; liquidityWarning: false }
+    | { valid: true; liquidityWarning: true; depth: number };
+
+interface CacheEntry {
+    result: LiquidityCheckResult;
+    storedAt: number;
+}
+
+const liquidityCache = new Map<string, CacheEntry>();
+
+/** Flush all cached liquidity results (for testing). */
+export function clearLiquidityCache(): void {
+    liquidityCache.clear();
+}
+
+function liquidityCacheKey(pair: AssetPair): string {
+    return `${assetKey(pair.base)}|${assetKey(pair.counter)}`;
+}
+
+/**
+ * Horizon order book response subset used for depth calculation.
+ * Mirrors the shape returned by `GET /order_book?selling=…&buying=…`.
+ */
+export interface HorizonOrderBookResponse {
+    bids: Array<{ price: string; amount: string }>;
+    asks: Array<{ price: string; amount: string }>;
+}
+
+export type OrderBookFetchFn = (pair: AssetPair) => Promise<HorizonOrderBookResponse>;
+
+/**
+ * Sum the USD-equivalent volume on one side of the order book.
+ * Each level contributes `price × amount`.
+ */
+function sumSideDepth(levels: Array<{ price: string; amount: string }>): number {
+    return levels.reduce((sum, lvl) => {
+        const p = parseFloat(lvl.price);
+        const a = parseFloat(lvl.amount);
+        return sum + (isFinite(p) && isFinite(a) ? p * a : 0);
+    }, 0);
+}
+
+/**
+ * Check whether sufficient bridge liquidity exists for the given asset pair
+ * on the Stellar DEX.
+ *
+ * Results are cached for 5 minutes per pair. Pass `fetchOrderBook` to
+ * inject a custom fetcher (required for testing; defaults to Horizon fetch).
+ *
+ * @param pair            - Asset pair to check
+ * @param fetchOrderBook  - Async function that returns a Horizon order book
+ * @returns `LiquidityCheckResult` indicating whether liquidity is sufficient
+ */
+export async function checkBridgeLiquidity(
+    pair: AssetPair,
+    fetchOrderBook: OrderBookFetchFn,
+): Promise<LiquidityCheckResult> {
+    const cacheKey = liquidityCacheKey(pair);
+    const cached = liquidityCache.get(cacheKey);
+    if (cached && Date.now() - cached.storedAt < LIQUIDITY_CACHE_TTL_MS) {
+        return cached.result;
+    }
+
+    const book = await fetchOrderBook(pair);
+    const bidDepth = sumSideDepth(book.bids);
+    const askDepth = sumSideDepth(book.asks);
+    const minDepth = Math.min(bidDepth, askDepth);
+
+    const result: LiquidityCheckResult =
+        minDepth >= MIN_LIQUIDITY_USD
+            ? { valid: true, liquidityWarning: false }
+            : { valid: true, liquidityWarning: true, depth: minDepth };
+
+    liquidityCache.set(cacheKey, { result, storedAt: Date.now() });
+    return result;
+}

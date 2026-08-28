@@ -13,7 +13,18 @@
  * - AUTH_IMMUTABLE conflicts with AUTH_REVOCABLE (cannot be both immutable and revocable)
  * - AUTH_REVOCABLE requires AUTH_REQUIRED (cannot revoke if authorization not required)
  * - Once AUTH_IMMUTABLE is set, no flags can be changed
+ *
+ * @see https://developers.stellar.org/docs/learn/glossary#authorization-flags
  */
+
+/** AUTH_REQUIRED flag bitmask (bit 0). Requires authorization to hold the asset. */
+export const AUTH_REQUIRED_FLAG = 1;
+
+/** AUTH_REVOCABLE flag bitmask (bit 1). Allows revoking authorization. */
+export const AUTH_REVOCABLE_FLAG = 2;
+
+/** AUTH_IMMUTABLE flag bitmask (bit 2). Makes flags permanent and unchangeable. */
+export const AUTH_IMMUTABLE_FLAG = 4;
 
 export interface AssetAuthorizationFlags {
   authRequired?: boolean;
@@ -194,4 +205,49 @@ export function canRevokeAuthorization(
   flags: AssetAuthorizationFlags
 ): boolean {
   return flags.authRequired === true && flags.authRevocable === true;
+}
+
+/**
+ * Converts AssetAuthorizationFlags to a numeric bitmask for Stellar operations.
+ *
+ * The bitmask is used in Operation.setOptions({ setFlags / clearFlags }) and
+ * corresponds to the numeric flags returned by Horizon's account flags object.
+ *
+ * @param flags - Authorization flags to convert
+ * @returns Numeric bitmask combining AUTH_REQUIRED_FLAG, AUTH_REVOCABLE_FLAG, and AUTH_IMMUTABLE_FLAG
+ *
+ * @example
+ * ```typescript
+ * const flags = { authRequired: true, authRevocable: true };
+ * const bitmask = toAuthFlagsBitmask(flags); // 3
+ * ```
+ */
+export function toAuthFlagsBitmask(flags: AssetAuthorizationFlags): number {
+  let bitmask = 0;
+  if (flags.authRequired) bitmask |= AUTH_REQUIRED_FLAG;
+  if (flags.authRevocable) bitmask |= AUTH_REVOCABLE_FLAG;
+  if (flags.authImmutable) bitmask |= AUTH_IMMUTABLE_FLAG;
+  return bitmask;
+}
+
+/**
+ * Converts a numeric bitmask back to AssetAuthorizationFlags.
+ *
+ * This is the inverse of toAuthFlagsBitmask and is used to parse account flags
+ * from Horizon responses into the boolean shape used by this module.
+ *
+ * @param bitmask - Numeric flag bitmask from Horizon or Operation.setOptions
+ * @returns Authorization flags object with boolean fields
+ *
+ * @example
+ * ```typescript
+ * const flags = fromAuthFlagsBitmask(3); // { authRequired: true, authRevocable: true }
+ * ```
+ */
+export function fromAuthFlagsBitmask(bitmask: number): AssetAuthorizationFlags {
+  return {
+    authRequired: (bitmask & AUTH_REQUIRED_FLAG) !== 0,
+    authRevocable: (bitmask & AUTH_REVOCABLE_FLAG) !== 0,
+    authImmutable: (bitmask & AUTH_IMMUTABLE_FLAG) !== 0,
+  };
 }

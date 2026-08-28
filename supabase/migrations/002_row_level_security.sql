@@ -138,3 +138,27 @@ CREATE POLICY "Anyone can view active templates" ON templates
 
 CREATE POLICY "Service role can manage templates" ON templates
     FOR ALL USING (auth.jwt()->>'role' = 'service_role');
+
+-- rollback: DROP POLICY IF EXISTS "Service role can manage templates" ON templates;
+-- rollback: DROP POLICY IF EXISTS "Anyone can view active templates" ON templates;
+-- rollback: ALTER TABLE templates DISABLE ROW LEVEL SECURITY;
+-- rollback: DROP POLICY IF EXISTS "System can insert analytics" ON deployment_analytics;
+-- rollback: DROP POLICY IF EXISTS "Users can view analytics for own deployments" ON deployment_analytics;
+-- rollback: DROP POLICY IF EXISTS "Users can delete own drafts" ON customization_drafts;
+-- rollback: DROP POLICY IF EXISTS "Users can update own drafts" ON customization_drafts;
+-- rollback: DROP POLICY IF EXISTS "Users can create own drafts" ON customization_drafts;
+-- rollback: DROP POLICY IF EXISTS "Users can view own drafts" ON customization_drafts;
+-- rollback: DROP POLICY IF EXISTS "System can insert deployment logs" ON deployment_logs;
+-- rollback: DROP POLICY IF EXISTS "Users can view logs for own deployments" ON deployment_logs;
+-- rollback: DROP POLICY IF EXISTS "Users can delete own deployments" ON deployments;
+-- rollback: DROP POLICY IF EXISTS "Users can update own deployments" ON deployments;
+-- rollback: DROP POLICY IF EXISTS "Users can create own deployments" ON deployments;
+-- rollback: DROP POLICY IF EXISTS "Users can view own deployments" ON deployments;
+-- rollback: DROP POLICY IF EXISTS "Users can insert own profile" ON profiles;
+-- rollback: DROP POLICY IF EXISTS "Users can update own profile" ON profiles;
+-- rollback: DROP POLICY IF EXISTS "Users can view own profile" ON profiles;
+-- rollback: ALTER TABLE deployment_analytics DISABLE ROW LEVEL SECURITY;
+-- rollback: ALTER TABLE customization_drafts DISABLE ROW LEVEL SECURITY;
+-- rollback: ALTER TABLE deployment_logs DISABLE ROW LEVEL SECURITY;
+-- rollback: ALTER TABLE deployments DISABLE ROW LEVEL SECURITY;
+-- rollback: ALTER TABLE profiles DISABLE ROW LEVEL SECURITY;

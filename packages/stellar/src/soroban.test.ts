@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { SOROBAN_RPC_URLS } from './config';
 
 describe('Soroban RPC client', () => {
     beforeEach(() => {
@@ -24,7 +25,7 @@ describe('Soroban RPC client', () => {
             createSorobanClient();
 
             expect(MockServer).toHaveBeenCalledWith(
-                'https://soroban-testnet.stellar.org',
+                SOROBAN_RPC_URLS.testnet,
                 expect.any(Object)
             );
         });
@@ -43,7 +44,7 @@ describe('Soroban RPC client', () => {
             createSorobanClient();
 
             expect(MockServer).toHaveBeenCalledWith(
-                'https://soroban-mainnet.stellar.org',
+                SOROBAN_RPC_URLS.mainnet,
                 expect.any(Object)
             );
         });
@@ -159,6 +160,67 @@ describe('Soroban RPC client', () => {
 
             expect(mockGetTx).toHaveBeenCalledTimes(2);
             expect(result).toMatchObject({ status: ActualRpc.Api.GetTransactionStatus.SUCCESS });
+        });
+    });
+
+    describe('deriveContractAddress', () => {
+        it('requires network passphrase parameter', async () => {
+            const { Keypair, Networks } = await import('stellar-sdk');
+            const { deriveContractAddress } = await import('./soroban');
+
+            const deployer = Keypair.random().publicKey();
+            const salt = '0000000000000000000000000000000000000000000000000000000000000001';
+            const wasmHash = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+
+            const addr = deriveContractAddress(deployer, salt, wasmHash, Networks.PUBLIC);
+            expect(typeof addr).toBe('string');
+            expect(addr.startsWith('C')).toBe(true);
+        });
+
+        it('produces different addresses for testnet and mainnet with same params', async () => {
+            const { Keypair, Networks } = await import('stellar-sdk');
+            const { deriveContractAddress } = await import('./soroban');
+
+            const deployer = Keypair.random().publicKey();
+            const salt = '0000000000000000000000000000000000000000000000000000000000000001';
+            const wasmHash = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+
+            const mainnetAddr = deriveContractAddress(deployer, salt, wasmHash, Networks.PUBLIC);
+            const testnetAddr = deriveContractAddress(deployer, salt, wasmHash, Networks.TESTNET);
+
+            expect(mainnetAddr).not.toBe(testnetAddr);
+            expect(mainnetAddr.startsWith('C')).toBe(true);
+            expect(testnetAddr.startsWith('C')).toBe(true);
+        });
+    });
+
+    describe('verifyContractAddress', () => {
+        it('verifies a contract address on the correct network', async () => {
+            const { Keypair, Networks } = await import('stellar-sdk');
+            const { deriveContractAddress, verifyContractAddress } = await import('./soroban');
+
+            const deployer = Keypair.random().publicKey();
+            const salt = '0000000000000000000000000000000000000000000000000000000000000002';
+            const wasmHash = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+
+            const derived = deriveContractAddress(deployer, salt, wasmHash, Networks.PUBLIC);
+            const isValid = verifyContractAddress(deployer, salt, wasmHash, derived, Networks.PUBLIC);
+
+            expect(isValid).toBe(true);
+        });
+
+        it('rejects a contract address verified against the wrong network', async () => {
+            const { Keypair, Networks } = await import('stellar-sdk');
+            const { deriveContractAddress, verifyContractAddress } = await import('./soroban');
+
+            const deployer = Keypair.random().publicKey();
+            const salt = '0000000000000000000000000000000000000000000000000000000000000003';
+            const wasmHash = 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc';
+
+            const mainnetAddr = deriveContractAddress(deployer, salt, wasmHash, Networks.PUBLIC);
+            const isValidOnTestnet = verifyContractAddress(deployer, salt, wasmHash, mainnetAddr, Networks.TESTNET);
+
+            expect(isValidOnTestnet).toBe(false);
         });
     });
 });

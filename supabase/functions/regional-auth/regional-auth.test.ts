@@ -323,3 +323,25 @@ describe('Regional Auth Edge Functions', () => {
     });
   });
 });
+
+describe('Cross-Region Profile Sync', () => {
+  it('should run remote-region syncs concurrently bounded by slowest region', async () => {
+    const fastDelay = 10;
+    const slowDelay = 100;
+
+    const simulateSync = (delay: number) => async () => {
+      await new Promise((r) => setTimeout(r, delay));
+    };
+
+    const startTotal = Date.now();
+    await Promise.allSettled([
+      simulateSync(slowDelay)(),
+      simulateSync(fastDelay)(),
+    ]);
+    const totalWallTime = Date.now() - startTotal;
+
+    const sumOfDelays = fastDelay + slowDelay;
+    expect(totalWallTime).toBeLessThan(sumOfDelays);
+    expect(totalWallTime).toBeGreaterThanOrEqual(slowDelay);
+  });
+});

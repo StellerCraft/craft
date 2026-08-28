@@ -112,3 +112,25 @@ CREATE TRIGGER update_deployments_updated_at BEFORE
 UPDATE ON deployments FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 CREATE TRIGGER update_customization_drafts_updated_at BEFORE
 UPDATE ON customization_drafts FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- rollback: DROP TABLE IF EXISTS deployment_analytics CASCADE;
+-- rollback: DROP TABLE IF EXISTS customization_drafts CASCADE;
+-- rollback: DROP TABLE IF EXISTS deployment_logs CASCADE;
+-- rollback: DROP TABLE IF EXISTS deployments CASCADE;
+-- rollback: DROP TABLE IF EXISTS templates CASCADE;
+-- rollback: DROP TABLE IF EXISTS profiles CASCADE;
+-- rollback: DROP TRIGGER IF EXISTS update_customization_drafts_updated_at ON customization_drafts;
+-- rollback: DROP TRIGGER IF EXISTS update_deployments_updated_at ON deployments;
+-- rollback: DROP TRIGGER IF EXISTS update_templates_updated_at ON templates;
+-- rollback: DROP TRIGGER IF EXISTS update_profiles_updated_at ON profiles;
+-- rollback: DROP FUNCTION IF EXISTS update_updated_at_column CASCADE;
+-- rollback: DROP INDEX IF EXISTS idx_templates_is_active;
+-- rollback: DROP INDEX IF EXISTS idx_templates_category;
+-- rollback: DROP INDEX IF EXISTS idx_deployment_analytics_deployment_id;
+-- rollback: DROP INDEX IF EXISTS idx_customization_drafts_user_id;
+-- rollback: DROP INDEX IF EXISTS idx_deployment_logs_created_at;
+-- rollback: DROP INDEX IF EXISTS idx_deployment_logs_deployment_id;
+-- rollback: DROP INDEX IF EXISTS idx_deployments_status;
+-- rollback: DROP INDEX IF EXISTS idx_deployments_user_id;
+-- rollback: DROP INDEX IF EXISTS idx_profiles_stripe_customer;
+-- rollback: DROP EXTENSION IF EXISTS "uuid-ossp";

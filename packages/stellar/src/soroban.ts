@@ -1,5 +1,5 @@
-import { SorobanRpc, Contract, Transaction, TransactionBuilder, Networks, BASE_FEE, xdr, hash, StrKey } from 'stellar-sdk';
-import { config } from './config';
+import { SorobanRpc, Contract, Transaction, TransactionBuilder, BASE_FEE, xdr, hash, StrKey } from 'stellar-sdk';
+import { config, getSorobanRpcUrl, getNetworkPassphrase } from './config';
 import { parseStellarError } from './errors';
 
 // Minimal AppError shape — matches apps/backend/src/lib/api/retryable-error.ts
@@ -25,24 +25,6 @@ export interface WasmValidationResult {
     size?: number;
     maxSize: number;
     error?: string;
-}
-
-const SOROBAN_RPC_URLS = {
-    mainnet: 'https://soroban-mainnet.stellar.org',
-    testnet: 'https://soroban-testnet.stellar.org',
-} as const;
-
-function getSorobanRpcUrl(): string {
-    return (
-        process.env.NEXT_PUBLIC_SOROBAN_RPC_URL ||
-        SOROBAN_RPC_URLS[config.stellar.network]
-    );
-}
-
-function getNetworkPassphrase(): string {
-    return config.stellar.network === 'mainnet'
-        ? Networks.PUBLIC
-        : Networks.TESTNET;
 }
 
 /**
@@ -129,20 +111,24 @@ export function clearCache(): void {
  * @param method - The contract method name
  * @param args - XDR-encoded method arguments
  * @param sourcePublicKey - The source account public key
+ * @param options.skipCache - When true, bypass the cache and always fetch from RPC
  */
 export async function simulateContractCall(
     contractId: string,
     method: string,
     args: xdr.ScVal[],
-    sourcePublicKey: string
+    sourcePublicKey: string,
+    options: { skipCache?: boolean } = {},
 ): Promise<SorobanRpc.Api.SimulateTransactionResponse> {
     const cacheKey = buildCacheKey(contractId, method, args, sourcePublicKey);
     const now = Date.now();
 
-    // Cache hit – return the stored response if still within TTL.
-    const cached = simulationCache.get(cacheKey);
-    if (cached && now - cached.storedAt < CACHE_TTL_MS) {
-        return cached.response;
+    // Cache hit – return the stored response if still within TTL (unless cache is skipped).
+    if (!options.skipCache) {
+        const cached = simulationCache.get(cacheKey);
+        if (cached && now - cached.storedAt < CACHE_TTL_MS) {
+            return cached.response;
+        }
     }
 
     // Cache miss (or stale) – fetch from RPC.
@@ -466,14 +452,230 @@ export async function buildFeeBumpTransaction(
 
         const innerTx = TransactionBuilder.fromXDR(innerTxXdr, getNetworkPassphrase());
 
+        // Defensive guard: ensure innerTx is a plain Transaction, not a FeeBumpTransaction.
+        if (!(innerTx instanceof Transaction)) {
+            return { ok: false, error: 'Cannot fee-bump an already fee-bumped transaction' };
+        }
+
         const feeBumpTx = TransactionBuilder.buildFeeBumpTransaction(
             feeSourcePublicKey,
             feeCharged.toString(),
-            innerTx as Transaction,
+            innerTx,
             getNetworkPassphrase(),
         );
 
         return { ok: true, feeBumpXdr: feeBumpTx.toXDR(), feeCharged };
+    } catch (error: unknown) {
+        const parsed = parseStellarError(error);
+        return { ok: false, error: parsed.message };
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Contract Address Derivation (#613)
+// ---------------------------------------------------------------------------
+
+/**
+ * Derive a deterministic Soroban contract address from the deployer's public
+ * key, a 32-byte salt, and the contract's 32-byte WASM hash.
+ *
+ * The address is produced by SHA-256 hashing the concatenation of the three
+ * inputs and encoding the result as a Stellar contract StrKey (C…).
+ *
+ * @param deployer   - Stellar G-key of the deploying account
+ * @param salt       - 32-byte salt as a hex string or Buffer
+ * @param wasmHash   - 32-byte WASM hash as a hex string or Buffer
+ * @returns          Contract address as a C… StrKey (56 chars)
+ * @throws           When salt or wasmHash is not exactly 32 bytes
+ */
+/**
+ * Derives a Soroban contract address from its deployment parameters.
+ * The network passphrase is bound into the derivation to ensure that
+ * identical deployer/salt/wasmHash combinations produce different
+ * addresses on different networks (testnet vs. mainnet), preventing
+ * cross-network address collisions.
+ *
+ * @param deployer - Stellar G-key of the deploying account
+ * @param salt - 32-byte salt as a hex string or Buffer
+ * @param wasmHash - 32-byte WASM hash as a hex string or Buffer
+ * @param networkPassphrase - Network passphrase (e.g., Networks.PUBLIC or Networks.TESTNET)
+ * @returns Contract address in C... StrKey format
+ */
+export function deriveContractAddress(
+    deployer: string,
+    salt: string | Buffer,
+    wasmHash: string | Buffer,
+    networkPassphrase: string,
+): string {
+    const saltBytes = Buffer.isBuffer(salt) ? salt : Buffer.from(salt as string, 'hex');
+    const wasmBytes = Buffer.isBuffer(wasmHash) ? wasmHash : Buffer.from(wasmHash as string, 'hex');
+
+    if (saltBytes.length !== 32) throw new Error('salt must be 32 bytes');
+    if (wasmBytes.length !== 32) throw new Error('wasmHash must be 32 bytes');
+
+    const deployerBytes = StrKey.decodeEd25519PublicKey(deployer);
+    const networkBytes = hash(Buffer.from(networkPassphrase, 'utf-8'));
+    const preimage = Buffer.concat([networkBytes, deployerBytes, saltBytes, wasmBytes]);
+    const contractId = hash(preimage);
+    return StrKey.encodeContract(contractId);
+}
+
+/**
+ * Verify that a deployed contract address matches what would be derived from
+ * the given deployer, salt, WASM hash, and network.
+ *
+ * @param deployer  - Stellar G-key of the deploying account
+ * @param salt      - 32-byte salt as a hex string or Buffer
+ * @param wasmHash  - 32-byte WASM hash as a hex string or Buffer
+ * @param deployed  - Contract address to verify (C… StrKey)
+ * @param networkPassphrase - Network passphrase (e.g., Networks.PUBLIC or Networks.TESTNET)
+ * @returns         `true` when the address matches the derivation on the specified network
+ */
+export function verifyContractAddress(
+    deployer: string,
+    salt: string | Buffer,
+    wasmHash: string | Buffer,
+    deployed: string,
+    networkPassphrase: string,
+): boolean {
+    return deriveContractAddress(deployer, salt, wasmHash, networkPassphrase) === deployed;
+}
+
+// ---------------------------------------------------------------------------
+// Soroban Contract Dry-Run Forecasting (#782)
+// ---------------------------------------------------------------------------
+
+export interface ContractForecast {
+    estimatedFee: string;
+    cpuInstructions: string;
+    memoryBytes: string;
+    ledgerEntriesRead: number;
+    ledgerEntriesWritten: number;
+    eventsEmitted: number;
+    warnings: string[];
+}
+
+export type DryRunForecastResult =
+    | { ok: true; forecast: ContractForecast }
+    | { ok: false; error: string };
+
+// Soroban resource limits for warning thresholds
+const CPU_INSTRUCTIONS_LIMIT = 100_000_000;
+const MEMORY_BYTES_LIMIT = 41_943_040;
+const WARNING_THRESHOLD_PERCENT = 80;
+
+interface ForecastCacheEntry {
+    result: DryRunForecastResult;
+    storedAt: number;
+}
+
+const forecastCache = new Map<string, ForecastCacheEntry>();
+const FORECAST_CACHE_TTL_MS = 60_000; // 60 seconds
+
+/**
+ * Build a stable cache key for dryRunWithForecast results.
+ */
+function buildForecastCacheKey(
+    contractId: string,
+    method: string,
+    args: xdr.ScVal[],
+    sourcePublicKey: string
+): string {
+    const argsKey = args.map((a) => a.toXDR('base64')).join(',');
+    return `${contractId}:${method}:${argsKey}:${sourcePublicKey}`;
+}
+
+/**
+ * Clear all cached forecast results.
+ * Call in test teardown to ensure isolation between test cases.
+ */
+export function clearForecastCache(): void {
+    forecastCache.clear();
+}
+
+/**
+ * Dry-run a contract call with detailed resource consumption forecast.
+ *
+ * Simulates the contract invocation and returns detailed resource estimates
+ * including CPU instructions, memory, ledger entries accessed, and events emitted.
+ * Results are cached for 60 seconds to avoid redundant RPC calls.
+ *
+ * Emits warnings when resource usage exceeds 80% of network limits.
+ *
+ * @param contractId - The contract address (C...)
+ * @param method - The contract method name
+ * @param args - XDR-encoded method arguments
+ * @param sourcePublicKey - The source account public key
+ * @param _simulate - Optional override for simulateContractCall (for testing)
+ * @returns Forecast result with resource estimates or error
+ */
+export async function dryRunWithForecast(
+    contractId: string,
+    method: string,
+    args: xdr.ScVal[],
+    sourcePublicKey: string,
+    _simulate: typeof simulateContractCall = simulateContractCall,
+): Promise<DryRunForecastResult> {
+    const cacheKey = buildForecastCacheKey(contractId, method, args, sourcePublicKey);
+    const now = Date.now();
+
+    // Check cache
+    const cached = forecastCache.get(cacheKey);
+    if (cached && now - cached.storedAt < FORECAST_CACHE_TTL_MS) {
+        return cached.result;
+    }
+
+    try {
+        const simulation = await _simulate(contractId, method, args, sourcePublicKey);
+
+        // Check for simulation errors
+        if (SorobanRpc.Api.isSimulationError(simulation)) {
+            return { ok: false, error: `Simulation failed: ${simulation.error}` };
+        }
+
+        // Extract resource estimates
+        const cpuInsns = simulation.cost?.cpuInsns ?? '0';
+        const memBytes = simulation.cost?.memBytes ?? '0';
+        const estimatedFee = simulation.minResourceFee ?? '0';
+
+        // Count ledger entries accessed from the events or use defaults
+        const ledgerEntriesRead = 0;
+        const ledgerEntriesWritten = 0;
+        const eventsEmitted = simulation.events?.length ?? 0;
+
+        // Check for warning conditions
+        const warnings: string[] = [];
+        const cpuInsnsNum = Number(cpuInsns);
+        const memBytesNum = Number(memBytes);
+
+        if (cpuInsnsNum > (CPU_INSTRUCTIONS_LIMIT * WARNING_THRESHOLD_PERCENT) / 100) {
+            warnings.push(
+                `CPU instructions (${cpuInsnsNum.toLocaleString()}) exceed 80% of limit (${CPU_INSTRUCTIONS_LIMIT.toLocaleString()})`
+            );
+        }
+
+        if (memBytesNum > (MEMORY_BYTES_LIMIT * WARNING_THRESHOLD_PERCENT) / 100) {
+            warnings.push(
+                `Memory bytes (${memBytesNum.toLocaleString()}) exceed 80% of limit (${MEMORY_BYTES_LIMIT.toLocaleString()})`
+            );
+        }
+
+        const forecast: ContractForecast = {
+            estimatedFee,
+            cpuInstructions: cpuInsns,
+            memoryBytes: memBytes,
+            ledgerEntriesRead,
+            ledgerEntriesWritten,
+            eventsEmitted,
+            warnings,
+        };
+
+        const result: DryRunForecastResult = { ok: true, forecast };
+
+        // Cache the result
+        forecastCache.set(cacheKey, { result, storedAt: now });
+
+        return result;
     } catch (error: unknown) {
         const parsed = parseStellarError(error);
         return { ok: false, error: parsed.message };

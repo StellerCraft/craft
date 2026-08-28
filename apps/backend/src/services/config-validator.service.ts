@@ -18,13 +18,22 @@ export interface ValidationResult {
 }
 
 /** Required top-level keys per well-known JSON config file (basename match). */
-const REQUIRED_JSON_KEYS: Record<string, string[]> = {
+export const REQUIRED_JSON_KEYS: Record<string, string[]> = {
   'package.json': ['name', 'version', 'scripts'],
   'vercel.json': ['version'],
   'turbo.json': ['tasks'],
 };
 
 export class ConfigValidator {
+  private readonly requiredKeys: Record<string, string[]>;
+
+  constructor(additionalRequiredKeys: Record<string, string[]> = {}) {
+    this.requiredKeys = {
+      ...REQUIRED_JSON_KEYS,
+      ...additionalRequiredKeys,
+    };
+  }
+
   validateJSON(filePath: string, content: string): ValidationResult {
     const diagnostics: Diagnostic[] = [];
 
@@ -44,7 +53,7 @@ export class ConfigValidator {
 
     // Required-key checks for known filenames (match on basename).
     const basename = filePath.split('/').pop() ?? filePath;
-    const requiredKeys = REQUIRED_JSON_KEYS[basename];
+    const requiredKeys = this.requiredKeys[basename];
     if (requiredKeys && typeof parsed === 'object' && parsed !== null) {
       for (const key of requiredKeys) {
         if (!(key in (parsed as Record<string, unknown>))) {

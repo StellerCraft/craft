@@ -17,6 +17,14 @@ export default function RootLayout({
 }) {
     return (
         <html lang="en">
+            <head>
+                <style>{`
+                    :root {
+                        --primary-color: ${config.branding.primaryColor};
+                        --secondary-color: ${config.branding.secondaryColor};
+                    }
+                `}</style>
+            </head>
             <body className={inter.className}>{children}</body>
         </html>
     );

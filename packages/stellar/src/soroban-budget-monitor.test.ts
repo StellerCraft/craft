@@ -6,6 +6,9 @@ import {
     onBudgetAlert,
     clearBudgetMetrics,
     getBudgetMetrics,
+    setAnalyticsSink,
+    addAnalyticsSink,
+    emitBudgetMetrics,
     SOROBAN_CPU_INSN_LIMIT,
     SOROBAN_MEMORY_LIMIT_BYTES,
     DEFAULT_ALERT_THRESHOLD,
@@ -23,6 +26,7 @@ function makeSimulation(cpuInsns: string, memBytes: string): SorobanRpc.Api.Simu
 
 beforeEach(() => {
     clearBudgetMetrics();
+    setAnalyticsSink(null);
 });
 
 describe('trackContractBudget', () => {
@@ -89,6 +93,20 @@ describe('trackContractBudget', () => {
         const usage = await trackContractBudget(CONTRACT_ID, 'ping', [], SOURCE_KEY, {}, mockSimulate);
 
         expect(usage).toBeNull();
+    });
+
+    it('bypasses cache to get fresh simulation results', async () => {
+        const mockSimulate = vi.fn().mockResolvedValue(makeSimulation('1000000', '512000'));
+
+        await trackContractBudget(CONTRACT_ID, 'transfer', [], SOURCE_KEY, {}, mockSimulate);
+        await trackContractBudget(CONTRACT_ID, 'transfer', [], SOURCE_KEY, {}, mockSimulate);
+
+        // Both calls should invoke the simulate function, not use cache
+        expect(mockSimulate).toHaveBeenCalledTimes(2);
+
+        // Verify skipCache=true was passed both times
+        expect(mockSimulate).toHaveBeenNthCalledWith(1, CONTRACT_ID, 'transfer', [], SOURCE_KEY, { skipCache: true });
+        expect(mockSimulate).toHaveBeenNthCalledWith(2, CONTRACT_ID, 'transfer', [], SOURCE_KEY, { skipCache: true });
     });
 
     it('stores metric in the metrics store', async () => {
@@ -192,5 +210,231 @@ describe('getBudgetMetrics + clearBudgetMetrics', () => {
         clearBudgetMetrics();
 
         expect(getBudgetMetrics()).toHaveLength(0);
+    });
+});
+
+// ── Analytics emission (#788) ─────────────────────────────────────────────────
+
+describe('emitBudgetMetrics – analytics sink', () => {
+    it('emits budget_metric event for every invocation', async () => {
+        const sink = { emit: vi.fn() };
+        setAnalyticsSink(sink);
+
+        const mockSimulate = vi.fn().mockResolvedValue(makeSimulation('500000', '256000'));
+        await trackContractBudget(CONTRACT_ID, 'transfer', [], SOURCE_KEY, {}, mockSimulate);
+
+        expect(sink.emit).toHaveBeenCalledWith('budget_metric', expect.objectContaining({
+            contractId: CONTRACT_ID,
+            functionName: 'transfer',
+        }));
+    });
+
+    it('emits budget_warning event when CPU threshold exceeded', async () => {
+        const sink = { emit: vi.fn() };
+        setAnalyticsSink(sink);
+
+        const over = String(Math.floor(SOROBAN_CPU_INSN_LIMIT * 0.9));
+        const mockSimulate = vi.fn().mockResolvedValue(makeSimulation(over, '0'));
+        await trackContractBudget(CONTRACT_ID, 'heavyOp', [], SOURCE_KEY, {}, mockSimulate);
+
+        const warningCall = sink.emit.mock.calls.find(([event]) => event === 'budget_warning');
+        expect(warningCall).toBeDefined();
+        expect(warningCall![1]).toMatchObject({ cpuAlert: true });
+    });
+
+    it('does not emit budget_warning when below threshold', async () => {
+        const sink = { emit: vi.fn() };
+        setAnalyticsSink(sink);
+
+        const mockSimulate = vi.fn().mockResolvedValue(makeSimulation('100', '512'));
+        await trackContractBudget(CONTRACT_ID, 'cheapOp', [], SOURCE_KEY, {}, mockSimulate);
+
+        const warningCall = sink.emit.mock.calls.find(([event]) => event === 'budget_warning');
+        expect(warningCall).toBeUndefined();
+    });
+
+    it('does not throw when no analytics sink is registered', async () => {
+        const mockSimulate = vi.fn().mockResolvedValue(makeSimulation('1000', '512'));
+        await expect(
+            trackContractBudget(CONTRACT_ID, 'op', [], SOURCE_KEY, {}, mockSimulate)
+        ).resolves.not.toThrow();
+    });
+
+    it('emitBudgetMetrics sends cpuInstructions and memBytes fields', () => {
+        const sink = { emit: vi.fn() };
+        setAnalyticsSink(sink);
+
+        emitBudgetMetrics({
+            contractId: CONTRACT_ID,
+            method: 'ping',
+            timestamp: 1000,
+            usage: {
+                cpuInsns: 5_000_000n,
+                memoryBytes: 1_000_000n,
+                cpuLimitFraction: 0.05,
+                memoryLimitFraction: 0.02,
+                cpuAlert: false,
+                memoryAlert: false,
+            },
+        });
+
+        expect(sink.emit).toHaveBeenCalledWith('budget_metric', expect.objectContaining({
+            cpuInstructions: '5000000',
+            memBytes: '1000000',
+        }));
+    });
+
+    it('addAnalyticsSink supports multiple concurrent sinks', () => {
+        const sink1 = { emit: vi.fn() };
+        const sink2 = { emit: vi.fn() };
+
+        const off1 = addAnalyticsSink(sink1);
+        const off2 = addAnalyticsSink(sink2);
+
+        emitBudgetMetrics({
+            contractId: CONTRACT_ID,
+            method: 'ping',
+            timestamp: 1000,
+            usage: {
+                cpuInsns: 5_000_000n,
+                memoryBytes: 1_000_000n,
+                cpuLimitFraction: 0.05,
+                memoryLimitFraction: 0.02,
+                cpuAlert: false,
+                memoryAlert: false,
+            },
+        });
+
+        expect(sink1.emit).toHaveBeenCalledWith('budget_metric', expect.any(Object));
+        expect(sink2.emit).toHaveBeenCalledWith('budget_metric', expect.any(Object));
+
+        off1();
+        off2();
+    });
+
+    it('addAnalyticsSink returns unsubscribe function', () => {
+        const sink = { emit: vi.fn() };
+        const off = addAnalyticsSink(sink);
+
+        emitBudgetMetrics({
+            contractId: CONTRACT_ID,
+            method: 'a',
+            timestamp: 1000,
+            usage: {
+                cpuInsns: 1_000_000n,
+                memoryBytes: 512_000n,
+                cpuLimitFraction: 0.01,
+                memoryLimitFraction: 0.01,
+                cpuAlert: false,
+                memoryAlert: false,
+            },
+        });
+
+        expect(sink.emit).toHaveBeenCalledOnce();
+        sink.emit.mockClear();
+
+        off();
+
+        emitBudgetMetrics({
+            contractId: CONTRACT_ID,
+            method: 'b',
+            timestamp: 2000,
+            usage: {
+                cpuInsns: 1_000_000n,
+                memoryBytes: 512_000n,
+                cpuLimitFraction: 0.01,
+                memoryLimitFraction: 0.01,
+                cpuAlert: false,
+                memoryAlert: false,
+            },
+        });
+
+        expect(sink.emit).not.toHaveBeenCalled();
+    });
+
+    it('setAnalyticsSink clears previous sinks and registers a new one', () => {
+        const sink1 = { emit: vi.fn() };
+        const sink2 = { emit: vi.fn() };
+
+        addAnalyticsSink(sink1);
+        setAnalyticsSink(sink2);
+
+        emitBudgetMetrics({
+            contractId: CONTRACT_ID,
+            method: 'op',
+            timestamp: 1000,
+            usage: {
+                cpuInsns: 1_000_000n,
+                memoryBytes: 512_000n,
+                cpuLimitFraction: 0.01,
+                memoryLimitFraction: 0.01,
+                cpuAlert: false,
+                memoryAlert: false,
+            },
+        });
+
+        expect(sink1.emit).not.toHaveBeenCalled();
+        expect(sink2.emit).toHaveBeenCalledWith('budget_metric', expect.any(Object));
+    });
+});
+
+// ── #1108 – precomputedSimulation regression tests ────────────────────────────
+
+describe('trackContractBudget – precomputedSimulation (#1108)', () => {
+    it('does not call _simulate when a precomputedSimulation is supplied', async () => {
+        const mockSimulate = vi.fn();
+        const precomputedSim = makeSimulation('5000000', '2000000');
+
+        const usage = await trackContractBudget(
+            CONTRACT_ID, 'transfer', [], SOURCE_KEY,
+            {},
+            mockSimulate,
+            precomputedSim,
+        );
+
+        // _simulate must NOT have been called — we reused the supplied result.
+        expect(mockSimulate).not.toHaveBeenCalled();
+        expect(usage).not.toBeNull();
+        expect(usage!.cpuInsns).toBe(5_000_000n);
+    });
+
+    it('issues a fresh RPC call (skipCache:true) when no precomputedSimulation is supplied', async () => {
+        const mockSimulate = vi.fn().mockResolvedValue(makeSimulation('1000000', '512000'));
+
+        await trackContractBudget(CONTRACT_ID, 'transfer', [], SOURCE_KEY, {}, mockSimulate);
+
+        expect(mockSimulate).toHaveBeenCalledOnce();
+        expect(mockSimulate).toHaveBeenCalledWith(
+            CONTRACT_ID, 'transfer', [], SOURCE_KEY, { skipCache: true },
+        );
+    });
+
+    it('calling simulateContractCall then trackContractBudget with the result issues only one RPC call', async () => {
+        const mockSimulate = vi.fn().mockResolvedValue(makeSimulation('3000000', '1500000'));
+
+        // Simulate the pattern: "I already simulated, now track budget"
+        const sim = await mockSimulate(CONTRACT_ID, 'transfer', [], SOURCE_KEY, { skipCache: false });
+        const usage = await trackContractBudget(
+            CONTRACT_ID, 'transfer', [], SOURCE_KEY,
+            {},
+            mockSimulate, // pass mockSimulate but it should NOT be called again
+            sim,
+        );
+
+        // mockSimulate was called once (for the explicit simulate), not a second time for tracking.
+        expect(mockSimulate).toHaveBeenCalledOnce();
+        expect(usage).not.toBeNull();
+    });
+
+    it('still records metric when precomputedSimulation is supplied', async () => {
+        const mockSimulate = vi.fn();
+        const precomputedSim = makeSimulation('8000000', '4000000');
+
+        await trackContractBudget(CONTRACT_ID, 'myMethod', [], SOURCE_KEY, {}, mockSimulate, precomputedSim);
+
+        const metrics = getBudgetMetrics();
+        expect(metrics).toHaveLength(1);
+        expect(metrics[0].contractId).toBe(CONTRACT_ID);
+        expect(metrics[0].method).toBe('myMethod');
     });
 });

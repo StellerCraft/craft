@@ -5,6 +5,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import fc from 'fast-check';
 import { validateWasmSize, assertValidWasmSize, MAX_WASM_SIZE_BYTES } from './soroban';
 
 describe('Soroban WASM Size Validation', () => {
@@ -215,6 +216,111 @@ describe('Soroban WASM Size Validation', () => {
 
       expect(result1.maxSize).toBe(result2.maxSize);
       expect(result1.maxSize).toBe(MAX_WASM_SIZE_BYTES);
+    });
+  });
+
+  describe('Property-Based Tests for Boundary Enforcement', () => {
+    it('should accept all WASM buffers of size <= MAX_WASM_SIZE_BYTES', () => {
+      fc.assert(
+        fc.property(fc.integer({ min: 0, max: MAX_WASM_SIZE_BYTES }), (size) => {
+          const wasm = Buffer.alloc(size);
+          const result = validateWasmSize(wasm);
+          expect(result.valid).toBe(true);
+          expect(result.size).toBe(size);
+          expect(result.error).toBeUndefined();
+        }),
+        { numRuns: 500 }
+      );
+    });
+
+    it('should reject all WASM buffers of size > MAX_WASM_SIZE_BYTES', () => {
+      fc.assert(
+        fc.property(fc.integer({ min: MAX_WASM_SIZE_BYTES + 1, max: MAX_WASM_SIZE_BYTES + 100000 }), (size) => {
+          const wasm = Buffer.alloc(size);
+          const result = validateWasmSize(wasm);
+          expect(result.valid).toBe(false);
+          expect(result.size).toBe(size);
+          expect(result.error).toBeDefined();
+        }),
+        { numRuns: 500 }
+      );
+    });
+
+    it('should handle exact boundary at MAX_WASM_SIZE_BYTES', () => {
+      const wasm = Buffer.alloc(MAX_WASM_SIZE_BYTES);
+      const result = validateWasmSize(wasm);
+      expect(result.valid).toBe(true);
+      expect(result.size).toBe(MAX_WASM_SIZE_BYTES);
+    });
+
+    it('should handle off-by-one above boundary', () => {
+      const wasm = Buffer.alloc(MAX_WASM_SIZE_BYTES + 1);
+      const result = validateWasmSize(wasm);
+      expect(result.valid).toBe(false);
+      expect(result.size).toBe(MAX_WASM_SIZE_BYTES + 1);
+    });
+
+    it('should always return valid maxSize in result', () => {
+      fc.assert(
+        fc.property(fc.integer({ min: 0, max: MAX_WASM_SIZE_BYTES + 10000 }), (size) => {
+          const wasm = Buffer.alloc(size);
+          const result = validateWasmSize(wasm);
+          expect(result.maxSize).toBe(MAX_WASM_SIZE_BYTES);
+        }),
+        { numRuns: 500 }
+      );
+    });
+
+    it('should work with Uint8Array for all generated sizes', () => {
+      fc.assert(
+        fc.property(fc.integer({ min: 0, max: MAX_WASM_SIZE_BYTES + 1000 }), (size) => {
+          const wasm = new Uint8Array(size);
+          const result = validateWasmSize(wasm);
+          expect(result.size).toBe(size);
+        }),
+        { numRuns: 300 }
+      );
+    });
+
+    it('should have error defined only for oversized binaries', () => {
+      fc.assert(
+        fc.property(fc.integer({ min: 0, max: MAX_WASM_SIZE_BYTES + 5000 }), (size) => {
+          const wasm = Buffer.alloc(size);
+          const result = validateWasmSize(wasm);
+          if (size <= MAX_WASM_SIZE_BYTES) {
+            expect(result.error).toBeUndefined();
+          } else {
+            expect(result.error).toBeDefined();
+          }
+        }),
+        { numRuns: 500 }
+      );
+    });
+
+    it('should consistently validate the same buffer', () => {
+      fc.assert(
+        fc.property(fc.integer({ min: 0, max: MAX_WASM_SIZE_BYTES + 1000 }), (size) => {
+          const wasm = Buffer.alloc(size);
+          const result1 = validateWasmSize(wasm);
+          const result2 = validateWasmSize(wasm);
+          expect(result1.valid).toBe(result2.valid);
+          expect(result1.size).toBe(result2.size);
+          expect(result1.error).toBe(result2.error);
+        }),
+        { numRuns: 300 }
+      );
+    });
+
+    it('should provide error message for oversized binaries', () => {
+      fc.assert(
+        fc.property(fc.integer({ min: MAX_WASM_SIZE_BYTES + 1, max: MAX_WASM_SIZE_BYTES + 50000 }), (size) => {
+          const wasm = Buffer.alloc(size);
+          const result = validateWasmSize(wasm);
+          expect(result.error).toBeTruthy();
+          expect(typeof result.error).toBe('string');
+        }),
+        { numRuns: 300 }
+      );
     });
   });
 });

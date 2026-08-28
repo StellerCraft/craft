@@ -11,7 +11,7 @@
 
 import React from 'react';
 import Link from 'next/link';
-import { TIER_CONFIGS } from '@/lib/stripe/pricing';
+import { TIER_CONFIGS, formatTierPrice } from '@/lib/stripe/pricing';
 import { MATRIX_FEATURES, MatrixCell } from '@/components/marketing/FeatureMatrix';
 import type { SubscriptionTier } from '@craft/types';
 
@@ -49,8 +49,7 @@ export function SubscriptionComparison({ currentTier }: { currentTier: Subscript
           const isCurrent = tier === currentTier;
           const ctaHref = buildCtaHref(tier);
           const ctaLabel = buildCtaLabel(tier, isCurrent);
-          const priceDisplay =
-            config.monthlyPriceCents === 0 ? '$0' : `$${config.monthlyPriceCents / 100}`;
+          const priceDisplay = formatTierPrice(config.monthlyPriceCents);
 
           return (
             <div

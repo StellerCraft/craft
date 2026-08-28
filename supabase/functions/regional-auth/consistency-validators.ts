@@ -6,6 +6,7 @@
  * tokens are consistent across all regional deployments.
  */
 
+import { SUPPORTED_REGIONS } from '../_shared/regions.ts';
 import { getRegionalSupabaseAdmin } from './auth-utils.ts';
 
 export interface ConsistencyCheckResult {
@@ -30,7 +31,7 @@ export interface RegionState {
 export async function validateUserStateConsistency(
   userId: string
 ): Promise<ConsistencyCheckResult> {
-  const regions = ['us-east', 'eu-west', 'ap-southeast'];
+  const regions = SUPPORTED_REGIONS;
   const states: Record<string, RegionState> = {};
   const mismatches: string[] = [];
   let referenceState: RegionState | null = null;
@@ -120,7 +121,7 @@ export async function validateTokenConsistency(
   userId: string,
   accessToken: string
 ): Promise<{ valid: boolean; regions: Record<string, boolean>; mismatches: string[] }> {
-  const regions = ['us-east', 'eu-west', 'ap-southeast'];
+  const regions = SUPPORTED_REGIONS;
   const tokenStates: Record<string, boolean> = {};
   const mismatches: string[] = [];
 
@@ -162,7 +163,7 @@ export async function syncUserProfileToAllRegions(
   userId: string,
   sourceRegion: string
 ): Promise<{ success: boolean; synced: Record<string, boolean>; errors: Record<string, string> }> {
-  const regions = ['us-east', 'eu-west', 'ap-southeast'];
+  const regions = SUPPORTED_REGIONS;
   const synced: Record<string, boolean> = {};
   const errors: Record<string, string> = {};
 
@@ -253,7 +254,7 @@ export async function repairUserStateConsistency(
   authorityRegion: string;
   repairs: Record<string, { repaired: boolean; error?: string }>;
 }> {
-  const regions = ['us-east', 'eu-west', 'ap-southeast'];
+  const regions = SUPPORTED_REGIONS;
   const repairs: Record<string, { repaired: boolean; error?: string }> = {};
 
   // Determine authority region (most recent or explicitly specified)
@@ -312,7 +313,26 @@ export async function repairUserStateConsistency(
 }
 
 /**
- * Validate regional auth audit logs consistency
+ * Validate regional auth audit log consistency for a given user.
+ *
+ * IMPORTANT — per-region logging semantics:
+ *   `logAuthEvent()` inserts audit rows only into the region that handled the
+ *   current request; there is NO automatic cross-region replication of audit
+ *   events.  Counts will therefore legitimately differ across regions for
+ *   virtually every active user.
+ *
+ *   Do NOT use this function to assert equal counts across regions, and do NOT
+ *   use its result to trigger cross-region alerts based on count equality.
+ *
+ * What "consistent" means here:
+ *   Each region that recorded at least one event for the user within the time
+ *   window has those events present and retrievable.  A region that recorded
+ *   zero events is also "consistent" — it simply had no traffic for this user.
+ *   The only inconsistency we can detect is a region returning an error when
+ *   queried (which may indicate a database connectivity problem).
+ *
+ * @param userId          - UUID of the user to check.
+ * @param timeWindowMinutes - Look-back window (default 60 min).
  */
 export async function validateAuditLogConsistency(
   userId: string,
@@ -322,35 +342,51 @@ export async function validateAuditLogConsistency(
   regions: Record<string, number>;
   message: string;
 }> {
-  const regions = ['us-east', 'eu-west', 'ap-southeast'];
+  const regions = SUPPORTED_REGIONS;
   const regionCounts: Record<string, number> = {};
   const cutoff = new Date(Date.now() - timeWindowMinutes * 60 * 1000);
+  const errorRegions: string[] = [];
 
   for (const region of regions) {
     try {
       const admin = getRegionalSupabaseAdmin(region);
 
-      const { data, count } = await admin
+      const { count, error } = await admin
         .from('auth_audit_logs')
-        .select('*', { count: 'exact' })
+        .select('*', { count: 'exact', head: true })
         .eq('user_id', userId)
         .gte('created_at', cutoff.toISOString());
 
-      regionCounts[region] = count || 0;
-    } catch {
-      regionCounts[region] = -1; // Error indicator
+      if (error) {
+        // A query error means we cannot confirm the region's data is accessible.
+        regionCounts[region] = -1;
+        errorRegions.push(region);
+      } else {
+        // Zero is a valid, non-erroneous count (events were recorded elsewhere).
+        regionCounts[region] = count ?? 0;
+      }
+    } catch (err) {
+      // Network / runtime failure — region is unreachable.
+      regionCounts[region] = -1;
+      errorRegions.push(region);
     }
   }
 
-  const validCounts = Object.values(regionCounts).filter((c) => c >= 0);
-  const consistent =
-    validCounts.length > 0 && validCounts.every((c) => c === validCounts[0]);
+  // Consistent = every reachable region responded without error.
+  // Differing counts across regions is expected and is NOT an inconsistency.
+  const consistent = errorRegions.length === 0;
+
+  const totalEvents = Object.values(regionCounts)
+    .filter((c) => c >= 0)
+    .reduce((sum, c) => sum + c, 0);
+
+  const message = consistent
+    ? `Audit logs consistent: ${totalEvents} total events across regions (per-region logging — counts differ by design)`
+    : `Audit log check failed: regions [${errorRegions.join(', ')}] returned errors; per-region counts: ${JSON.stringify(regionCounts)}`;
 
   return {
     consistent,
     regions: regionCounts,
-    message: consistent
-      ? `Audit logs consistent: ${validCounts[0]} events in each region`
-      : `Audit log inconsistency detected: ${JSON.stringify(regionCounts)}`,
+    message,
   };
 }

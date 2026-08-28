@@ -52,6 +52,12 @@ export interface TriggerDeploymentResult {
     errorMessage?: string;
     /** W3C traceparent identifying this deployment across all pipeline stages. */
     traceId?: string;
+    /**
+     * False when the Vercel deployment was triggered successfully but the
+     * Supabase metadata row could not be persisted. Status sync will not
+     * work for this deployment until the row is recovered.
+     */
+    metadataPersisted?: boolean;
 }
 
 export interface DeploymentMetadata {
@@ -140,6 +146,8 @@ export class GitHubToVercelDeploymentService {
 
             // Stage 3: Persist metadata
             const deploymentId = crypto.randomUUID();
+            let metadataInsertError: { message: string } | null = null;
+
             const { durationMs: storeMs, spanId: storeSpanId } = await withSpan(
                 'store-metadata',
                 trace.traceId,
@@ -162,11 +170,31 @@ export class GitHubToVercelDeploymentService {
                         updated_at: new Date().toISOString(),
                     });
                     if (insertError) {
-                        log.error('Failed to store deployment metadata', insertError, { traceId: trace.traceId });
+                        log.error(
+                            'Failed to persist deployment metadata — status sync will be orphaned',
+                            insertError,
+                            { traceId: trace.traceId, vercelDeploymentId: deployment.deploymentId },
+                        );
+                        metadataInsertError = insertError;
                     }
                     return null;
                 },
             );
+
+            // The Vercel deployment already exists; do not roll it back.
+            // Surface the metadata failure so callers know status sync is broken.
+            if (metadataInsertError) {
+                return {
+                    success: false,
+                    deploymentId: '',
+                    deploymentUrl: deployment.deploymentUrl,
+                    errorMessage: `Deployment triggered on Vercel but metadata could not be persisted: ${
+                        (metadataInsertError as { message: string }).message
+                    }`,
+                    metadataPersisted: false,
+                    traceId: trace.traceId,
+                };
+            }
 
             log.info('Deployment pipeline complete', {
                 traceId: trace.traceId,
@@ -180,6 +208,7 @@ export class GitHubToVercelDeploymentService {
                 deploymentId,
                 deploymentUrl: deployment.deploymentUrl,
                 status: deployment.status,
+                metadataPersisted: true,
                 traceId: trace.traceId,
             };
         } catch (error: any) {
@@ -233,7 +262,17 @@ export class GitHubToVercelDeploymentService {
                 .single();
 
             if (error || !data) {
-                log.error('Failed to update deployment status', error);
+                if (!data && !error) {
+                    // The row was never inserted (metadata persist failed at trigger time).
+                    // This is a distinct error from a transient DB failure.
+                    log.error(
+                        'Deployment row missing from database — metadata was never persisted; status sync is permanently orphaned',
+                        undefined,
+                        { vercelDeploymentId },
+                    );
+                } else {
+                    log.error('Failed to update deployment status', error);
+                }
                 return null;
             }
 

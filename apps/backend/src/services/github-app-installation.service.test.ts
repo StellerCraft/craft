@@ -164,10 +164,18 @@ describe('GitHubAppInstallationService', () => {
         it('adds new repositories to existing installation', async () => {
             const existingRepos = [{ id: 1, name: 'repo1', full_name: 'test/repo1' }];
             const eqFnForSelect = vi.fn().mockReturnValue({
-                single: vi.fn().mockResolvedValue({ data: { repositories: existingRepos }, error: null }),
+                single: vi.fn().mockResolvedValue({
+                    data: { repositories: existingRepos, updated_at: '2026-01-01T00:00:00Z' },
+                    error: null,
+                }),
             });
             const selectFn = vi.fn().mockReturnValue({ eq: eqFnForSelect });
-            const eqFnForUpdate = vi.fn().mockResolvedValue({ error: null });
+            const updateSelectFn = vi.fn().mockResolvedValue({
+                data: [{ installation_id: 123 }],
+                error: null,
+            });
+            const eqFnForUpdateInner = vi.fn().mockReturnValue({ select: updateSelectFn });
+            const eqFnForUpdate = vi.fn().mockReturnValue({ eq: eqFnForUpdateInner });
             const updateFn = vi.fn().mockReturnValue({ eq: eqFnForUpdate });
 
             mockFrom.mockReturnValue({
@@ -221,10 +229,18 @@ describe('GitHubAppInstallationService', () => {
                 { id: 2, name: 'repo2', full_name: 'test/repo2' },
             ];
             const eqFnForSelect = vi.fn().mockReturnValue({
-                single: vi.fn().mockResolvedValue({ data: { repositories: existingRepos }, error: null }),
+                single: vi.fn().mockResolvedValue({
+                    data: { repositories: existingRepos, updated_at: '2026-01-01T00:00:00Z' },
+                    error: null,
+                }),
             });
             const selectFn = vi.fn().mockReturnValue({ eq: eqFnForSelect });
-            const eqFnForUpdate = vi.fn().mockResolvedValue({ error: null });
+            const updateSelectFn = vi.fn().mockResolvedValue({
+                data: [{ installation_id: 123 }],
+                error: null,
+            });
+            const eqFnForUpdateInner = vi.fn().mockReturnValue({ select: updateSelectFn });
+            const eqFnForUpdate = vi.fn().mockReturnValue({ eq: eqFnForUpdateInner });
             const updateFn = vi.fn().mockReturnValue({ eq: eqFnForUpdate });
 
             mockFrom.mockReturnValue({

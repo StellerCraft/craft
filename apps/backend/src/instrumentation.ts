@@ -10,7 +10,9 @@
  *  1. Signal received → draining flag set via shutdown-manager.
  *  2. New deployment POST requests receive 503 Service Unavailable.
  *  3. Manager polls in-flight set until empty or timeout expires.
- *  4. Process exits with code 0 (or 1 on timeout).
+ *  4. On timeout, remaining deployments are force-failed with reason shutdown.
+ *  5. All Supabase realtime subscriptions are unsubscribed.
+ *  6. Process exits with code 0 (or 1 on timeout).
  */
 export async function register() {
     if (process.env.NEXT_RUNTIME !== 'nodejs') return;

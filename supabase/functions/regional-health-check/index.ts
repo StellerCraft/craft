@@ -7,10 +7,8 @@
  */
 
 import { serve } from 'https://deno.land/std@0.208.0/http/server.ts';
-import {
-  getRegionalSupabaseClient,
-  type RegionalAuthContext,
-} from './regional-auth/auth-utils.ts';
+import { SUPPORTED_REGIONS, getRegionalEndpointConfig } from '../_shared/regions.ts';
+import { getRegionalSupabaseClient } from '../regional-auth/auth-utils.ts';
 
 interface RegionHealthStatus {
   region: string;
@@ -32,7 +30,18 @@ interface HealthCheckResponse {
 }
 
 /**
- * Check health of a specific region
+ * Check health of a specific region.
+ *
+ * Two checks are performed:
+ *   1. Database – a lightweight `SELECT count` on the `profiles` table.
+ *   2. Auth service – a real network request to the region's
+ *      `/auth/v1/health` endpoint.  This is the key fix for issue #978:
+ *      the previous implementation called `supabase.auth.getSession()` which
+ *      resolves locally (no I/O) in a stateless edge function context,
+ *      making `authHealthy` effectively always `true` even when the remote
+ *      auth service is completely down.  We now hit the auth health endpoint
+ *      directly so that a network failure or non-2xx response correctly
+ *      marks the region as unhealthy and triggers failover in the router.
  */
 async function checkRegionHealth(region: string): Promise<RegionHealthStatus> {
   const startTime = Date.now();
@@ -40,20 +49,36 @@ async function checkRegionHealth(region: string): Promise<RegionHealthStatus> {
   try {
     const supabase = getRegionalSupabaseClient(region);
 
-    // Test 1: Database connectivity by querying auth schema
-    const { data, error } = await supabase
+    // ── Check 1: Database connectivity ──────────────────────────────────────
+    const { error: dbError } = await supabase
       .from('profiles')
       .select('count', { count: 'exact', head: true });
 
-    const dbHealthy = !error;
+    const dbHealthy = !dbError;
 
-    // Test 2: Auth service connectivity
-    let authHealthy = true;
+    // ── Check 2: Auth service reachability (real network round-trip) ─────────
+    //
+    // We fetch the Supabase auth service's built-in /health endpoint.
+    // A 200 response means the auth service is reachable and operational.
+    // Any network error, timeout, or non-2xx status means the service is
+    // unreachable — we set authHealthy = false so the router fails over.
+    //
+    // This replaces the previous `supabase.auth.getSession()` call which
+    // did no I/O and was therefore a no-op false-positive probe.
+    let authHealthy = false;
     try {
-      // Try to check auth connection without actual authentication
-      const { error: authError } = await supabase.auth.getSession();
-      authHealthy = authError === null;
+      const regionConfig = getRegionalEndpointConfig(region);
+      // Supabase exposes an unauthenticated health endpoint at /auth/v1/health
+      const authHealthUrl = `${regionConfig.supabaseUrl}/auth/v1/health`;
+      const authResponse = await fetch(authHealthUrl, {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' },
+        // 5-second timeout: a hung auth service should be considered unhealthy
+        signal: AbortSignal.timeout(5000),
+      });
+      authHealthy = authResponse.ok; // true only for 2xx status codes
     } catch {
+      // Network error, DNS failure, or AbortError (timeout) → auth is down
       authHealthy = false;
     }
 
@@ -67,6 +92,8 @@ async function checkRegionHealth(region: string): Promise<RegionHealthStatus> {
       timestamp: new Date().toISOString(),
       details: {
         database: dbHealthy,
+        // authHealthy now reflects actual auth service reachability, not a
+        // local no-op getSession() call.
         auth: authHealthy,
         error: !healthy ? `DB: ${dbHealthy}, Auth: ${authHealthy}` : undefined,
       },
@@ -92,11 +119,8 @@ async function checkRegionHealth(region: string): Promise<RegionHealthStatus> {
  * Check health of all regions in parallel
  */
 async function checkAllRegionsHealth(): Promise<RegionHealthStatus[]> {
-  const regions = ['us-east', 'eu-west', 'ap-southeast'];
-
-  // Check all regions in parallel for faster response
   const healthChecks = await Promise.all(
-    regions.map((region) => checkRegionHealth(region))
+    SUPPORTED_REGIONS.map((region) => checkRegionHealth(region))
   );
 
   return healthChecks;
@@ -114,7 +138,7 @@ async function handleHealthCheck(req: Request): Promise<Response> {
 
     let regionStatuses: RegionHealthStatus[];
 
-    if (region && ['us-east', 'eu-west', 'ap-southeast'].includes(region)) {
+    if (region && (SUPPORTED_REGIONS as readonly string[]).includes(region)) {
       // Check specific region
       const status = await checkRegionHealth(region);
       regionStatuses = [status];

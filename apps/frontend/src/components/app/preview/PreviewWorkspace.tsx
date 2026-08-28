@@ -25,6 +25,7 @@ export function PreviewWorkspace({
   const [isRefreshing, setIsRefreshing] = useState(false);
   
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const sequenceRef = useRef(0);
   const { generatePreview, refreshPreview } = usePreviewService();
 
   const handleViewportChange = useCallback((viewport: ViewportClass) => {
@@ -34,18 +35,25 @@ export function PreviewWorkspace({
 
   const handleRefresh = useCallback(async () => {
     if (!customization) return;
-    
+
+    const requestId = ++sequenceRef.current;
+
     setIsRefreshing(true);
     setError(null);
-    
+
     try {
       await refreshPreview(customization, activeViewport);
+      if (requestId !== sequenceRef.current) return;
       setPreviewStatus('ready');
     } catch (err) {
+      if (requestId !== sequenceRef.current) return;
+      if (err instanceof Error && err.name === 'AbortError') return;
       setError(err instanceof Error ? err.message : 'Failed to refresh preview');
       setPreviewStatus('error');
     } finally {
-      setIsRefreshing(false);
+      if (requestId === sequenceRef.current) {
+        setIsRefreshing(false);
+      }
     }
   }, [customization, activeViewport, refreshPreview]);
 
@@ -59,7 +67,10 @@ export function PreviewWorkspace({
     if (customization) {
       handleRefresh();
     }
-  }, [customization, activeViewport]);
+    return () => {
+      sequenceRef.current += 1;
+    };
+  }, [customization, activeViewport, handleRefresh]);
 
   const renderPreviewContent = () => {
     switch (previewStatus) {

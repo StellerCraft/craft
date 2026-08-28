@@ -36,6 +36,10 @@ export type ErrorCode =
   | 'GITHUB_NETWORK_ERROR'
   | 'GITHUB_CONFIGURATION_ERROR'
   | 'GITHUB_NOT_FOUND'
+  | 'GITHUB_UNKNOWN'
+  | 'GITHUB_UPSTREAM_ERROR'
+  | 'GITHUB_REQUEST_ERROR'
+  | 'GITHUB_INVALID_RESPONSE'
   // ── Vercel (external) ────────────────────────────────────────────────────
   | 'VERCEL_AUTH_FAILED'
   | 'VERCEL_RATE_LIMITED'
@@ -123,6 +127,10 @@ export const ERROR_CODE_META: Record<ErrorCode, ErrorCodeMeta> = {
   GITHUB_NETWORK_ERROR:         { category: 'external', httpStatus: 502 },
   GITHUB_CONFIGURATION_ERROR:   { category: 'external', httpStatus: 500 },
   GITHUB_NOT_FOUND:             { category: 'external', httpStatus: 404 },
+  GITHUB_UNKNOWN:               { category: 'external', httpStatus: 502 },
+  GITHUB_UPSTREAM_ERROR:        { category: 'external', httpStatus: 502 },
+  GITHUB_REQUEST_ERROR:         { category: 'external', httpStatus: 502 },
+  GITHUB_INVALID_RESPONSE:      { category: 'external', httpStatus: 502 },
   // Vercel
   VERCEL_AUTH_FAILED:           { category: 'external', httpStatus: 502 },
   VERCEL_RATE_LIMITED:          { category: 'external', httpStatus: 429 },

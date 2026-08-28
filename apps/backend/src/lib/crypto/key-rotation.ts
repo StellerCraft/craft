@@ -71,24 +71,27 @@ export async function rotateProfileEncryptedColumns(
         if (error) throw new Error(`Failed to fetch profiles for ${col}: ${error.message}`);
         if (!rows?.length) continue;
 
-        for (const row of rows) {
-            const stored = row[col] as string;
-            summary[col].total++;
+        const updates = rows
+            .map((row) => {
+                const stored = row[col] as string;
+                summary[col].total++;
 
-            const { value, rotated } = reEncrypt(stored);
-            if (!rotated) continue;
+                const { value, rotated } = reEncrypt(stored);
+                return rotated ? { id: row.id, [col]: value } : null;
+            })
+            .filter((update): update is { id: string; [key: string]: string } => update !== null);
 
-            const { error: updateError } = await supabase
-                .from('profiles')
-                .update({ [col]: value })
-                .eq('id', row.id);
+        if (updates.length === 0) continue;
 
-            if (updateError) {
-                throw new Error(`Failed to update row ${row.id} for ${col}: ${updateError.message}`);
-            }
+        const { error: updateError } = await supabase
+            .from('profiles')
+            .upsert(updates);
 
-            summary[col].rotated++;
+        if (updateError) {
+            throw new Error(`Failed to update rows for ${col}: ${updateError.message}`);
         }
+
+        summary[col].rotated += updates.length;
     }
 
     return summary;

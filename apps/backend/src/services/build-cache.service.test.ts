@@ -9,6 +9,7 @@ const makeFiles = (entries: Array<[string, string]>): GeneratedFile[] =>
     entries.map(([path, content]) => ({ path, content, type: 'config' as const }));
 
 const makeSupabase = (storedHash: string | null) => ({
+    rpc: vi.fn().mockResolvedValue({ data: null, error: null }),
     from: vi.fn().mockReturnValue({
         select: vi.fn().mockReturnThis(),
         update: vi.fn().mockReturnThis(),
@@ -92,30 +93,15 @@ describe('BuildCacheService', () => {
 
     // ── storeHash ─────────────────────────────────────────────────────────────
 
-    it('merges _buildCacheHash into existing customization_config', async () => {
-        const mockUpdate = vi.fn().mockReturnValue({
-            eq: vi.fn().mockResolvedValue({}),
-        });
-        const supabase = {
-            from: vi.fn().mockReturnValue({
-                select: vi.fn().mockReturnThis(),
-                update: mockUpdate,
-                eq: vi.fn().mockReturnThis(),
-                single: vi.fn().mockResolvedValue({
-                    data: { customization_config: { existingKey: 'value' } },
-                }),
-            }),
-        } as any;
+    it('updates only the build cache key through the atomic JSONB merge RPC', async () => {
+        const supabase = makeSupabase(null) as any;
 
         await service.storeHash(supabase, 'dep-1', 'abc123');
 
-        expect(mockUpdate).toHaveBeenCalledWith(
-            expect.objectContaining({
-                customization_config: expect.objectContaining({
-                    existingKey: 'value',
-                    _buildCacheHash: 'abc123',
-                }),
-            }),
-        );
+        expect(supabase.rpc).toHaveBeenCalledWith('set_deployment_build_cache_hash', {
+            p_deployment_id: 'dep-1',
+            p_hash: 'abc123',
+        });
+        expect(supabase.from).not.toHaveBeenCalledWith('deployments');
     });
 });

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { NextRequest } from 'next/server';
 import { POST } from './route';
 
 vi.mock('@/lib/supabase/server', () => ({
@@ -9,6 +10,13 @@ vi.mock('@/lib/supabase/server', () => ({
                 error: null,
             }),
         },
+        from: vi.fn().mockReturnValue({
+            select: vi.fn(() => ({
+                eq: vi.fn(() => ({
+                    single: vi.fn().mockResolvedValue({ data: { subscription_tier: 'pro' }, error: null })
+                }))
+            }))
+        }),
     }),
 }));
 
@@ -32,7 +40,7 @@ const validConfig = {
 };
 
 const post = (url: string, body: any) =>
-    new Request(url, {
+    new NextRequest(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -133,7 +141,7 @@ describe('POST /api/preview/update', () => {
     });
 
     it('returns 400 for invalid JSON', async () => {
-        const req = new Request('http://localhost/api/preview/update', {
+        const req = new NextRequest('http://localhost/api/preview/update', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: 'invalid json',

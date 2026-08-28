@@ -128,4 +128,66 @@ describe('GitHubAppAuthClient', () => {
             retryable: true,
         } satisfies Partial<GitHubAppAuthError>);
     });
+
+    it('deduplicates concurrent getInstallationAuthContext calls against a cold cache', async () => {
+        // fetchFn is set up to resolve only once — if called more than once the
+        // second call would hang (no additional mock value), surfacing the bug.
+        const fetchFn = vi
+            .fn()
+            .mockResolvedValueOnce(
+                jsonResponse(201, {
+                    token: 'token-deduped',
+                    expires_at: new Date(Date.now() + 10 * 60_000).toISOString(),
+                }),
+            );
+
+        const client = new GitHubAppAuthClient({ config: baseConfig, fetchFn });
+
+        // Fire 5 concurrent calls against an empty cache
+        const results = await Promise.all([
+            client.getInstallationAuthContext(),
+            client.getInstallationAuthContext(),
+            client.getInstallationAuthContext(),
+            client.getInstallationAuthContext(),
+            client.getInstallationAuthContext(),
+        ]);
+
+        // fetchFn must have been called exactly once — all 5 callers shared the in-flight request
+        expect(fetchFn).toHaveBeenCalledTimes(1);
+
+        // All callers must have received the same token
+        for (const ctx of results) {
+            expect(ctx.token).toBe('token-deduped');
+        }
+    });
+
+    it('forceRefresh: true bypasses deduplication and starts its own fresh fetch', async () => {
+        const fetchFn = vi
+            .fn()
+            // First call: primes the cache
+            .mockResolvedValueOnce(
+                jsonResponse(201, {
+                    token: 'token-cached',
+                    expires_at: new Date(Date.now() + 10 * 60_000).toISOString(),
+                }),
+            )
+            // Second call: forced refresh
+            .mockResolvedValueOnce(
+                jsonResponse(201, {
+                    token: 'token-forced',
+                    expires_at: new Date(Date.now() + 10 * 60_000).toISOString(),
+                }),
+            );
+
+        const client = new GitHubAppAuthClient({ config: baseConfig, fetchFn });
+
+        // Prime the cache
+        const cached = await client.getInstallationAuthContext();
+        expect(cached.token).toBe('token-cached');
+
+        // forceRefresh must bypass the cached token and issue a new fetch
+        const forced = await client.getInstallationAuthContext({ forceRefresh: true });
+        expect(forced.token).toBe('token-forced');
+        expect(fetchFn).toHaveBeenCalledTimes(2);
+    });
 });

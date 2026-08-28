@@ -16,6 +16,23 @@ const mockUser = { id: 'test-user' };
 
 const mockDeployment = { user_id: 'test-user', id: 'test-deployment' };
 
+vi.mock('@/lib/api/cors', () => ({
+    corsHeaders: vi.fn((origin: string | null) => {
+        const headers: Record<string, string> = {
+            'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With',
+            'Access-Control-Max-Age': '86400',
+        };
+
+        if (origin === 'http://localhost:3000' || origin === 'https://allowed-origin.com') {
+            headers['Access-Control-Allow-Origin'] = origin;
+            headers['Vary'] = 'Origin';
+        }
+
+        return headers;
+    }),
+}));
+
 describe('GET /api/deployments/[id]/logs/stream', () => {
     beforeEach(() => {
         vi.clearAllMocks();
@@ -122,13 +139,15 @@ describe('GET /api/deployments/[id]/logs/stream', () => {
         expect(response.headers.get('content-type')).toBe('text/event-stream');
     });
 
-    it('should set proper CORS headers', async () => {
+    it('should set proper CORS headers for allowed origin', async () => {
         mockSupabase.single.mockResolvedValueOnce({
             data: mockDeployment,
             error: null,
         });
 
-        const req = new NextRequest('http://localhost/api/deployments/test-id/logs/stream');
+        const req = new NextRequest('http://localhost/api/deployments/test-id/logs/stream', {
+            headers: { origin: 'http://localhost:3000' },
+        });
 
         const response = await GET(req, {
             params: { id: 'test-id' },
@@ -136,9 +155,29 @@ describe('GET /api/deployments/[id]/logs/stream', () => {
             supabase: mockSupabase,
         } as any);
 
-        expect(response.headers.get('access-control-allow-origin')).toBe('*');
-        expect(response.headers.get('access-control-allow-methods')).toBe('GET');
-        expect(response.headers.get('access-control-allow-headers')).toBe('Content-Type');
+        expect(response.headers.get('access-control-allow-origin')).toBe('http://localhost:3000');
+        expect(response.headers.get('access-control-allow-methods')).toContain('GET');
+        expect(response.headers.get('vary')).toBe('Origin');
+    });
+
+    it('should omit CORS origin header for disallowed origin', async () => {
+        mockSupabase.single.mockResolvedValueOnce({
+            data: mockDeployment,
+            error: null,
+        });
+
+        const req = new NextRequest('http://localhost/api/deployments/test-id/logs/stream', {
+            headers: { origin: 'https://disallowed-origin.com' },
+        });
+
+        const response = await GET(req, {
+            params: { id: 'test-id' },
+            user: mockUser,
+            supabase: mockSupabase,
+        } as any);
+
+        expect(response.headers.get('access-control-allow-origin')).toBeNull();
+        expect(response.headers.get('access-control-allow-methods')).toContain('GET');
     });
 
     it('should handle stream cancellation gracefully', async () => {

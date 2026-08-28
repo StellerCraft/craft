@@ -5,6 +5,99 @@ import type {
     DeploymentLogResponse,
     PaginatedLogsResponse,
 } from '@craft/types';
+import { trackOperation } from '@/lib/shutdown-manager';
+
+// ── Write batching (issue #747) ───────────────────────────────────────────────
+
+const BATCH_SIZE = parseInt(process.env.LOG_BATCH_SIZE ?? '50', 10);
+const FLUSH_INTERVAL_MS = 500;
+const MAX_QUEUED_BATCHES = 10;
+
+export interface LogWriteEntry {
+    deploymentId: string;
+    level: LogLevel;
+    message: string;
+    stage?: string;
+    metadata?: Record<string, unknown>;
+    /** ISO timestamp; defaults to now if omitted. */
+    timestamp?: string;
+}
+
+interface PendingBatch {
+    entries: LogWriteEntry[];
+    supabase: SupabaseClient;
+}
+
+const pendingBatches: PendingBatch[] = [];
+let inFlightWrites = 0;
+let currentBatch: { entries: LogWriteEntry[]; supabase: SupabaseClient | null } = {
+    entries: [],
+    supabase: null,
+};
+let flushTimer: ReturnType<typeof setInterval> | null = null;
+
+function startFlushTimer(): void {
+    if (flushTimer !== null) return;
+    flushTimer = setInterval(() => {
+        flushCurrentBatch();
+    }, FLUSH_INTERVAL_MS);
+}
+
+function flushCurrentBatch(): void {
+    if (currentBatch.entries.length === 0 || currentBatch.supabase === null) return;
+
+    // Apply backpressure: if too many in-flight writes, drop oldest queued batch
+    if (inFlightWrites >= MAX_QUEUED_BATCHES) {
+        console.warn('[deployment-logs] Backpressure: dropping oldest pending batch');
+        pendingBatches.shift();
+    }
+
+    pendingBatches.push({ entries: [...currentBatch.entries], supabase: currentBatch.supabase });
+    currentBatch.entries = [];
+    currentBatch.supabase = null;
+
+    processPendingBatches();
+}
+
+function processPendingBatches(): void {
+    while (pendingBatches.length > 0) {
+        const batch = pendingBatches.shift()!;
+        writeBatch(batch).catch((err) => {
+            console.error('[deployment-logs] Batch write failed', err);
+        });
+    }
+}
+
+async function writeBatch(batch: PendingBatch): Promise<void> {
+    inFlightWrites++;
+    const done = trackOperation(`log-batch-${Date.now()}`);
+    try {
+        // Sort by timestamp to guarantee ordering
+        const rows = batch.entries
+            .slice()
+            .sort((a, b) => {
+                const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+                const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+                return ta - tb;
+            })
+            .map((e) => ({
+                deployment_id: e.deploymentId,
+                level: e.level,
+                message: e.message,
+                stage: e.stage ?? 'build',
+                metadata: e.metadata ?? null,
+                created_at: e.timestamp ?? new Date().toISOString(),
+            }));
+
+        const { error } = await batch.supabase.from('deployment_logs').insert(rows);
+        if (error) {
+            console.error('[deployment-logs] Batch insert error', error.message);
+        }
+    } finally {
+        inFlightWrites--;
+        done();
+    }
+}
 
 const MAX_LIMIT = 200;
 const DEFAULT_PAGE = 1;
@@ -105,6 +198,61 @@ export function parseLogsQueryParams(searchParams: URLSearchParams): ParseResult
 }
 
 export const deploymentLogsService = {
+    /**
+     * Buffer a single log entry for batched write.
+     * Entries are flushed every 500ms or when the batch reaches BATCH_SIZE.
+     * Uses the provided supabase client for the flush of this batch.
+     */
+    writeLog(entry: LogWriteEntry, supabase: SupabaseClient): void {
+        startFlushTimer();
+
+        if (currentBatch.supabase === null) {
+            currentBatch.supabase = supabase;
+        }
+
+        currentBatch.entries.push({
+            ...entry,
+            timestamp: entry.timestamp ?? new Date().toISOString(),
+        });
+
+        if (currentBatch.entries.length >= BATCH_SIZE) {
+            flushCurrentBatch();
+        }
+    },
+
+    /**
+     * Immediately flush all buffered entries.
+     * Should be called during graceful shutdown (integrates with shutdown-manager).
+     */
+    async flushAll(): Promise<void> {
+        flushCurrentBatch();
+        // Wait for any in-flight writes (processPendingBatches is sync-dispatch)
+        await new Promise((resolve) => setTimeout(resolve, 0));
+    },
+
+    /**
+     * Stop the flush timer (for testing / shutdown).
+     */
+    stopFlushTimer(): void {
+        if (flushTimer !== null) {
+            clearInterval(flushTimer);
+            flushTimer = null;
+        }
+    },
+
+    /**
+     * Exposed for testing only – resets batch state.
+     */
+    _resetBatch(): void {
+        currentBatch.entries = [];
+        currentBatch.supabase = null;
+        pendingBatches.length = 0;
+        inFlightWrites = 0;
+        if (flushTimer !== null) {
+            clearInterval(flushTimer);
+            flushTimer = null;
+        }
+    },
     /**
      * Get logs for a deployment with filtering support.
      *

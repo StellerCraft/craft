@@ -20,6 +20,27 @@ vi.mock('./template-generator.service', () => ({
     mapCategoryToFamily: vi.fn().mockReturnValue('stellar-dex'),
 }));
 
+vi.mock('./github-commit-status.service', () => ({
+    GitHubCommitStatusService: vi.fn(),
+    githubCommitStatusService: {
+        reportPending: vi.fn().mockResolvedValue({ success: true }),
+        reportSuccess: vi.fn().mockResolvedValue({ success: true }),
+        reportFailure: vi.fn().mockResolvedValue({ success: true }),
+    },
+}));
+
+vi.mock('./build-cache.service', () => ({
+    BuildCacheService: vi.fn(),
+    buildCacheService: {
+        checkCache: vi.fn().mockResolvedValue({
+            status: 'miss',
+            contentHash: 'hash-abc',
+            filesToBuild: [],
+        }),
+        storeHash: vi.fn().mockResolvedValue(undefined),
+    },
+}));
+
 import { DeploymentPipelineService } from './deployment-pipeline.service';
 import type { DeploymentPipelineRequest } from './deployment-pipeline.service';
 import type { CustomizationConfig } from '@craft/types';

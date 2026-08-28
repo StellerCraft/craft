@@ -116,11 +116,35 @@ export function decrypt(stored: string): string {
     ]).toString('utf8');
 }
 
+const BASE64URL_RE = /^[A-Za-z0-9_-]+$/;
+
 /**
  * Returns true if the value looks like an encrypted blob produced by encrypt().
  * Useful for migration scripts to skip already-encrypted rows.
+ *
+ * Validates blob structure, version prefix, base64url encoding, and exact IV / auth tag byte lengths.
  */
 export function isEncrypted(value: string): boolean {
+    if (typeof value !== 'string') return false;
     const parts = value.split('.');
-    return parts.length === 4 && /^v\d+$/.test(parts[0]);
+    if (parts.length !== 4) return false;
+
+    const [versionPart, ivB64, ciphertextB64, tagB64] = parts;
+    if (!/^v\d+$/.test(versionPart)) return false;
+
+    if (
+        !BASE64URL_RE.test(ivB64) ||
+        !BASE64URL_RE.test(ciphertextB64) ||
+        !BASE64URL_RE.test(tagB64)
+    ) {
+        return false;
+    }
+
+    try {
+        const iv = Buffer.from(ivB64, 'base64url');
+        const tag = Buffer.from(tagB64, 'base64url');
+        return iv.length === IV_BYTES && tag.length === TAG_BYTES;
+    } catch {
+        return false;
+    }
 }

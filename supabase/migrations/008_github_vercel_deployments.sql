@@ -48,3 +48,13 @@ CREATE POLICY "Authenticated users can read github_vercel_deployments"
     FOR SELECT
     TO authenticated
     USING (true);
+
+-- rollback: DROP POLICY IF EXISTS "Authenticated users can read github_vercel_deployments" ON github_vercel_deployments;
+-- rollback: DROP POLICY IF EXISTS "Service role can manage github_vercel_deployments" ON github_vercel_deployments;
+-- rollback: ALTER TABLE github_vercel_deployments DISABLE ROW LEVEL SECURITY;
+-- rollback: DROP TRIGGER IF EXISTS update_github_vercel_deployments_updated_at ON github_vercel_deployments;
+-- rollback: DROP INDEX IF EXISTS idx_github_vercel_deployments_created_at;
+-- rollback: DROP INDEX IF EXISTS idx_github_vercel_deployments_status;
+-- rollback: DROP INDEX IF EXISTS idx_github_vercel_deployments_vercel_deployment_id;
+-- rollback: DROP INDEX IF EXISTS idx_github_vercel_deployments_repo_full_name;
+-- rollback: DROP TABLE IF EXISTS github_vercel_deployments;

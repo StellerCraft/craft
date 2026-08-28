@@ -96,6 +96,21 @@ describe('ConfigValidator', () => {
             const result = configValidator.validateJSON('custom-config.json', content);
             expect(result.valid).toBe(true);
         });
+
+        it('supports injectable required-key schemas via constructor while leaving default singleton unaffected', () => {
+            const customValidator = new ConfigValidator({
+                'tsconfig.json': ['compilerOptions'],
+            });
+
+            // Custom instance flags missing compilerOptions in tsconfig.json
+            const customResult = customValidator.validateJSON('tsconfig.json', JSON.stringify({ include: ['src'] }));
+            expect(customResult.valid).toBe(false);
+            expect(customResult.diagnostics.find((d) => d.field === 'compilerOptions')).toBeDefined();
+
+            // Default singleton is unaffected by custom validator instantiation
+            const defaultResult = configValidator.validateJSON('tsconfig.json', JSON.stringify({ include: ['src'] }));
+            expect(defaultResult.valid).toBe(true);
+        });
     });
 
     // ── YAML validation ────────────────────────────────────────────────────────

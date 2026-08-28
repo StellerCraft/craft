@@ -1,10 +1,11 @@
 'use client';
 
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { NavItem } from './NavItem';
 import { User, NavItem as NavItemType } from '@/types/navigation';
+import { getInitials } from '@/lib/format/initials';
 
 interface MobileDrawerProps {
   open: boolean;
@@ -13,8 +14,18 @@ interface MobileDrawerProps {
   navItems: NavItemType[];
 }
 
+const FOCUSABLE_SELECTOR =
+  'a[href], button:not([disabled]), textarea, input, select, [tabindex]:not([tabindex="-1"])';
+
+function getFocusableElements(container: HTMLElement): HTMLElement[] {
+  return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
+}
+
 export function MobileDrawer({ open, onClose, user, navItems }: MobileDrawerProps) {
   const pathname = usePathname();
+  const drawerRef = useRef<HTMLElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const triggerRef = useRef<HTMLElement | null>(null);
 
   // Close drawer on route change
   useEffect(() => {
@@ -33,15 +44,48 @@ export function MobileDrawer({ open, onClose, user, navItems }: MobileDrawerProp
     };
   }, [open]);
 
-  // Handle escape key
+  // Move focus into the drawer when it opens; restore it to the trigger on close
   useEffect(() => {
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && open) {
+    if (open) {
+      triggerRef.current = document.activeElement as HTMLElement | null;
+      closeButtonRef.current?.focus();
+    } else {
+      triggerRef.current?.focus();
+      triggerRef.current = null;
+    }
+  }, [open]);
+
+  // Handle escape key and trap Tab/Shift+Tab within the drawer
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!open) return;
+
+      if (e.key === 'Escape') {
         onClose();
+        return;
+      }
+
+      if (e.key === 'Tab' && drawerRef.current) {
+        const focusable = getFocusableElements(drawerRef.current);
+        if (focusable.length === 0) return;
+
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        const active = document.activeElement;
+
+        if (e.shiftKey) {
+          if (active === first || !drawerRef.current.contains(active)) {
+            e.preventDefault();
+            last.focus();
+          }
+        } else if (active === last || !drawerRef.current.contains(active)) {
+          e.preventDefault();
+          first.focus();
+        }
       }
     };
-    document.addEventListener('keydown', handleEscape);
-    return () => document.removeEventListener('keydown', handleEscape);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
   }, [open, onClose]);
 
   const isActive = (itemPath: string): boolean => {
@@ -49,15 +93,6 @@ export function MobileDrawer({ open, onClose, user, navItems }: MobileDrawerProp
       return pathname === '/app';
     }
     return pathname.startsWith(itemPath);
-  };
-
-  const getInitials = (name: string) => {
-    return name
-      .split(' ')
-      .map(n => n[0])
-      .join('')
-      .toUpperCase()
-      .slice(0, 2);
   };
 
   return (
@@ -73,6 +108,9 @@ export function MobileDrawer({ open, onClose, user, navItems }: MobileDrawerProp
 
       {/* Drawer */}
       <aside
+        ref={drawerRef}
+        role="dialog"
+        aria-modal={open}
         className={`fixed top-0 left-0 h-full w-72 bg-surface-container-low z-50 md:hidden transform transition-transform duration-300 ease-in-out ${
           open ? 'translate-x-0' : '-translate-x-full'
         }`}
@@ -87,6 +125,7 @@ export function MobileDrawer({ open, onClose, user, navItems }: MobileDrawerProp
             CRAFT
           </Link>
           <button
+            ref={closeButtonRef}
             onClick={onClose}
             className="p-2 -mr-2 text-on-surface-variant hover:text-on-surface hover:bg-surface-container rounded-lg transition-colors"
             aria-label="Close menu"

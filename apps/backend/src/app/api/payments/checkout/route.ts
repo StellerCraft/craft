@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { withAuth } from '@/lib/api/with-auth';
-import { paymentService } from '@/services/payment.service';
+import { paymentService, CheckoutLockError } from '@/services/payment.service';
 import { getValidPriceIds } from '@/lib/stripe/pricing';
 
 const checkoutSchema = z.object({
@@ -42,6 +42,12 @@ export const POST = withAuth(async (req: NextRequest, { user }) => {
         );
         return NextResponse.json(session);
     } catch (error: any) {
+        if (error instanceof CheckoutLockError) {
+            return NextResponse.json(
+                { error: 'Checkout already in progress. Please retry shortly.' },
+                { status: 409, headers: { 'Retry-After': '10' } }
+            );
+        }
         console.error('Error creating checkout session:', error);
         const isClientError = error.message === 'User email not found';
         return NextResponse.json(

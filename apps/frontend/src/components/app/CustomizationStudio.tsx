@@ -134,7 +134,7 @@ export interface CustomizationStudioProps {
   isDirty: boolean;
   saveState: SaveState;
   onChange: (config: CustomizationConfig) => void;
-  onSave: () => void;
+  onSave: (next?: CustomizationConfig) => void;
   onDeploy: () => void;
 }
 
@@ -173,8 +173,9 @@ export function CustomizationStudio({
 
   // Sync branding form changes back to the studio config
   function handleBrandingSubmit() {
-    onChange({ ...config, branding: brandingForm.state.branding, features: brandingForm.state.features });
-    onSave();
+    const next = { ...config, branding: brandingForm.state.branding, features: brandingForm.state.features };
+    onChange(next);
+    onSave(next);
   }
 
   function handleStellarChange(stellar: CustomizationConfig['stellar']) {

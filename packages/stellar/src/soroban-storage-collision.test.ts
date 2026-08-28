@@ -6,7 +6,7 @@ import {
     detectStorageKeyCollisions,
     assertNoStorageKeyCollisions,
     StorageKeyCollisionError,
-} from './soroban';
+} from './storage-namespace';
 
 describe('detectStorageKeyCollisions (#616)', () => {
     it('returns empty array when no collisions exist', () => {
@@ -49,6 +49,28 @@ describe('detectStorageKeyCollisions (#616)', () => {
 
     it('returns empty array for empty input', () => {
         expect(detectStorageKeyCollisions([])).toHaveLength(0);
+    });
+
+    it('does not report false collision for duplicate same-owner entries', () => {
+        const result = detectStorageKeyCollisions([
+            { owner: 'TokenA', key: 'balance' },
+            { owner: 'TokenA', key: 'balance' },
+        ]);
+        expect(result).toHaveLength(0);
+    });
+
+    it('correctly deduplicates owners and reports only distinct cross-owner collisions', () => {
+        const result = detectStorageKeyCollisions([
+            { owner: 'TokenA', key: 'balance' },
+            { owner: 'TokenA', key: 'balance' },
+            { owner: 'TokenB', key: 'balance' },
+            { owner: 'TokenB', key: 'balance' },
+        ]);
+        expect(result).toHaveLength(1);
+        expect(result[0].key).toBe('balance');
+        expect(result[0].owners).toHaveLength(2);
+        expect(result[0].owners).toContain('TokenA');
+        expect(result[0].owners).toContain('TokenB');
     });
 });
 

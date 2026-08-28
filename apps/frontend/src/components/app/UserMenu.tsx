@@ -2,6 +2,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { User } from '@/types/navigation';
+import { getInitials } from '@/lib/format/initials';
 
 interface UserMenuProps {
   user: User;
@@ -44,15 +45,6 @@ export function UserMenu({
       document.removeEventListener('keydown', handleEscape);
     };
   }, [isOpen]);
-
-  const getInitials = (name: string) => {
-    return name
-      .split(' ')
-      .map(n => n[0])
-      .join('')
-      .toUpperCase()
-      .slice(0, 2);
-  };
 
   const menuItems = [
     { label: 'Profile', onClick: onProfileClick, icon: '👤' },

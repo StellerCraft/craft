@@ -100,6 +100,9 @@ interface PipelineExecutionResult {
     commitRef?: GitHubCommitReference;
     deploymentUrl?: string;
     vercelDeploymentId?: string;
+    stagingDeploymentId?: string;
+    productionDeploymentId?: string;
+    previousProductionDeploymentId?: string;
     canaryPercent: number;
     rollbackReason?: string;
 }
@@ -373,12 +376,16 @@ export class DeploymentUpdateService {
             repoFullName,
         );
         const candidateStatus = await this._vercelService.getDeploymentStatus(candidate.deploymentId);
+
+        const stagingDeploymentId = candidate.deploymentId;
+
         if (candidateStatus.status === 'failed' || candidateStatus.status === 'canceled') {
             return {
                 success: false,
                 commitRef,
                 deploymentUrl: candidate.deploymentUrl,
                 vercelDeploymentId: candidate.deploymentId,
+                stagingDeploymentId,
                 canaryPercent: 0,
                 rollbackReason: 'Candidate deployment did not become ready',
             };
@@ -417,6 +424,7 @@ export class DeploymentUpdateService {
                     commitRef,
                     deploymentUrl: candidate.deploymentUrl,
                     vercelDeploymentId: candidate.deploymentId,
+                    stagingDeploymentId,
                     canaryPercent: 0,
                     rollbackReason: metrics.forceRollback
                         ? 'Manual rollback requested during rollout'
@@ -432,6 +440,7 @@ export class DeploymentUpdateService {
                 commitRef,
                 deploymentUrl: candidate.deploymentUrl,
                 vercelDeploymentId: candidate.deploymentId,
+                stagingDeploymentId,
                 canaryPercent: 0,
                 rollbackReason: 'Candidate failed blue-green promotion health gate',
             };
@@ -450,6 +459,9 @@ export class DeploymentUpdateService {
             commitRef,
             deploymentUrl: candidate.deploymentUrl,
             vercelDeploymentId: candidate.deploymentId,
+            stagingDeploymentId: null,
+            productionDeploymentId: candidate.deploymentId,
+            previousProductionDeploymentId: previousState?.vercelDeploymentId ?? undefined,
             canaryPercent: 100,
         };
     }
@@ -461,15 +473,27 @@ export class DeploymentUpdateService {
     ): Promise<void> {
         const supabase = createClient();
 
+        const updatePayload: Record<string, any> = {
+            customization_config: config,
+            deployment_url: pipeline.deploymentUrl,
+            vercel_deployment_id: pipeline.vercelDeploymentId,
+            status: 'completed',
+            updated_at: new Date().toISOString(),
+        };
+
+        if ('stagingDeploymentId' in pipeline) {
+            updatePayload.staging_deployment_id = pipeline.stagingDeploymentId;
+        }
+        if ('productionDeploymentId' in pipeline) {
+            updatePayload.production_deployment_id = pipeline.productionDeploymentId;
+        }
+        if ('previousProductionDeploymentId' in pipeline) {
+            updatePayload.previous_production_deployment_id = pipeline.previousProductionDeploymentId;
+        }
+
         await supabase
             .from('deployments')
-            .update({
-                customization_config: config,
-                deployment_url: pipeline.deploymentUrl,
-                vercel_deployment_id: pipeline.vercelDeploymentId,
-                status: 'completed',
-                updated_at: new Date().toISOString(),
-            })
+            .update(updatePayload)
             .eq('id', deploymentId);
     }
 
@@ -508,6 +532,8 @@ export class DeploymentUpdateService {
                     customization_config: previousState.customizationConfig,
                     deployment_url: previousState.deploymentUrl,
                     vercel_deployment_id: previousState.vercelDeploymentId,
+                    production_deployment_id: previousState.vercelDeploymentId,
+                    staging_deployment_id: null,
                     status: 'completed',
                     error_message: null,
                     updated_at: new Date().toISOString(),

@@ -8,10 +8,14 @@ export interface Template {
     blockchainType: 'stellar';
     baseRepositoryUrl: string;
     previewImageUrl: string;
+    /** Keyword tags used for full-text search and discovery. */
+    tags: string[];
     features: TemplateFeature[];
     customizationSchema: CustomizationSchema;
     isActive: boolean;
     createdAt: Date;
+    /** ts_rank relevance score — present when returned from searchTemplates(). */
+    relevanceScore?: number;
 }
 
 export interface TemplateFeature {
@@ -52,8 +56,11 @@ export interface StellarConfiguration {
 
 export interface TemplateFilters {
     category?: TemplateCategory;
+    /** Legacy ilike search — kept for backward compatibility. */
     search?: string;
     blockchainType?: 'stellar';
+    /** Full-text search query (phrase / prefix / keyword). Takes precedence over `search`. */
+    q?: string;
 }
 
 export interface TemplateMetadata {

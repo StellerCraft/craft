@@ -315,3 +315,27 @@ COMMENT ON FUNCTION mark_delivery_failed(TEXT, TEXT) IS
 
 COMMENT ON FUNCTION get_deliveries_for_replay() IS
     'Get all deliveries that need replay (failed or missed)';
+
+-- rollback: DROP VIEW IF EXISTS github_webhook_delivery_stats;
+-- rollback: DROP POLICY IF EXISTS "Authenticated users can read github_webhook_missed_deliveries" ON github_webhook_missed_deliveries;
+-- rollback: DROP POLICY IF EXISTS "Service role can manage github_webhook_missed_deliveries" ON github_webhook_missed_deliveries;
+-- rollback: DROP POLICY IF EXISTS "Authenticated users can read github_webhook_deliveries" ON github_webhook_deliveries;
+-- rollback: DROP POLICY IF EXISTS "Service role can manage github_webhook_deliveries" ON github_webhook_deliveries;
+-- rollback: ALTER TABLE github_webhook_missed_deliveries DISABLE ROW LEVEL SECURITY;
+-- rollback: ALTER TABLE github_webhook_deliveries DISABLE ROW LEVEL SECURITY;
+-- rollback: DROP FUNCTION IF EXISTS get_deliveries_for_replay;
+-- rollback: DROP FUNCTION IF EXISTS mark_delivery_failed;
+-- rollback: DROP FUNCTION IF EXISTS mark_delivery_processed;
+-- rollback: DROP FUNCTION IF EXISTS record_webhook_delivery;
+-- rollback: DROP FUNCTION IF EXISTS has_received_delivery;
+-- rollback: DROP INDEX IF EXISTS idx_github_webhook_missed_deliveries_detected_at;
+-- rollback: DROP INDEX IF EXISTS idx_github_webhook_missed_deliveries_replayed;
+-- rollback: DROP INDEX IF EXISTS idx_github_webhook_deliveries_event_created;
+-- rollback: DROP INDEX IF EXISTS idx_github_webhook_deliveries_created_at;
+-- rollback: DROP INDEX IF EXISTS idx_github_webhook_deliveries_status;
+-- rollback: DROP INDEX IF EXISTS idx_github_webhook_deliveries_event_type;
+-- rollback: DROP INDEX IF EXISTS idx_github_webhook_deliveries_delivery_id;
+-- rollback: DROP TRIGGER IF EXISTS update_github_webhook_missed_deliveries_updated_at ON github_webhook_missed_deliveries;
+-- rollback: DROP TRIGGER IF EXISTS update_github_webhook_deliveries_updated_at ON github_webhook_deliveries;
+-- rollback: DROP TABLE IF EXISTS github_webhook_missed_deliveries;
+-- rollback: DROP TABLE IF EXISTS github_webhook_deliveries;

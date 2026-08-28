@@ -2,11 +2,6 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  --primary-color: #4f9eff;
-  --secondary-color: #1a1f36;
-}
-
 body {
   @apply bg-gray-50;
 }

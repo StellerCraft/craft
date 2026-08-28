@@ -10,6 +10,7 @@ import {
   validateStellarEndpoints,
 } from '@/lib/customization/validate';
 import { withIdempotency } from '@/lib/api/idempotency';
+import { checkDeploymentRateLimit } from '@/lib/api/deployment-rate-limit';
 
 function encodeCursor(createdAt: string, id: string): string {
   return Buffer.from(`${createdAt}:${id}`).toString('base64');
@@ -114,6 +115,36 @@ deploymentRouter.register('POST', {
       return NextResponse.json(
         { error: 'Server is shutting down. Please retry shortly.' },
         { status: 503, headers: { 'Retry-After': '30' } },
+      );
+    }
+
+    // ── Sliding window rate limit ───────────────────────────────────────────
+    const rateTier = ((await supabase
+      .from('profiles')
+      .select('subscription_tier')
+      .eq('id', user.id)
+      .single()
+      .then((r: any) => r.data?.subscription_tier)) ?? 'free') as SubscriptionTier;
+
+    const rateLimit = await checkDeploymentRateLimit(supabase, user.id, rateTier);
+
+    if (!rateLimit.allowed) {
+      return NextResponse.json(
+        {
+          error: 'Too many deployment requests. Please try again later.',
+          retryAfterSeconds: rateLimit.retryAfterSeconds,
+          resetAt: rateLimit.resetAt,
+          escalated: rateLimit.escalated,
+        },
+        {
+          status: 429,
+          headers: {
+            'Retry-After': String(rateLimit.retryAfterSeconds),
+            'X-RateLimit-Limit': String(rateLimit.limit),
+            'X-RateLimit-Remaining': '0',
+            'X-RateLimit-Reset': String(Math.ceil(rateLimit.resetAt / 1_000)),
+          },
+        },
       );
     }
 

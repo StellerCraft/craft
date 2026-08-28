@@ -13,6 +13,11 @@ import {
   isImmutableConfiguration,
   hasIssuerControl,
   canRevokeAuthorization,
+  toAuthFlagsBitmask,
+  fromAuthFlagsBitmask,
+  AUTH_REQUIRED_FLAG,
+  AUTH_REVOCABLE_FLAG,
+  AUTH_IMMUTABLE_FLAG,
   type AssetAuthorizationFlags,
 } from './asset-auth';
 
@@ -282,6 +287,175 @@ describe('Asset Authorization Flag Validation', () => {
         authImmutable: true, // Conflict!
       });
       expect(result.valid).toBe(false);
+    });
+  });
+
+  describe('Bitmask Conversion', () => {
+    describe('toAuthFlagsBitmask', () => {
+      it('should convert no flags to zero', () => {
+        const bitmask = toAuthFlagsBitmask({});
+        expect(bitmask).toBe(0);
+      });
+
+      it('should convert AUTH_REQUIRED only', () => {
+        const bitmask = toAuthFlagsBitmask({ authRequired: true });
+        expect(bitmask).toBe(AUTH_REQUIRED_FLAG);
+        expect(bitmask).toBe(1);
+      });
+
+      it('should convert AUTH_REVOCABLE only', () => {
+        const bitmask = toAuthFlagsBitmask({ authRevocable: true });
+        expect(bitmask).toBe(AUTH_REVOCABLE_FLAG);
+        expect(bitmask).toBe(2);
+      });
+
+      it('should convert AUTH_IMMUTABLE only', () => {
+        const bitmask = toAuthFlagsBitmask({ authImmutable: true });
+        expect(bitmask).toBe(AUTH_IMMUTABLE_FLAG);
+        expect(bitmask).toBe(4);
+      });
+
+      it('should combine AUTH_REQUIRED and AUTH_REVOCABLE', () => {
+        const bitmask = toAuthFlagsBitmask({
+          authRequired: true,
+          authRevocable: true,
+        });
+        expect(bitmask).toBe(3); // 1 | 2
+      });
+
+      it('should combine AUTH_REQUIRED and AUTH_IMMUTABLE', () => {
+        const bitmask = toAuthFlagsBitmask({
+          authRequired: true,
+          authImmutable: true,
+        });
+        expect(bitmask).toBe(5); // 1 | 4
+      });
+
+      it('should combine all flags', () => {
+        const bitmask = toAuthFlagsBitmask({
+          authRequired: true,
+          authRevocable: true,
+          authImmutable: true,
+        });
+        expect(bitmask).toBe(7); // 1 | 2 | 4
+      });
+    });
+
+    describe('fromAuthFlagsBitmask', () => {
+      it('should convert zero to no flags', () => {
+        const flags = fromAuthFlagsBitmask(0);
+        expect(flags).toEqual({
+          authRequired: false,
+          authRevocable: false,
+          authImmutable: false,
+        });
+      });
+
+      it('should convert AUTH_REQUIRED flag', () => {
+        const flags = fromAuthFlagsBitmask(AUTH_REQUIRED_FLAG);
+        expect(flags).toEqual({
+          authRequired: true,
+          authRevocable: false,
+          authImmutable: false,
+        });
+      });
+
+      it('should convert AUTH_REVOCABLE flag', () => {
+        const flags = fromAuthFlagsBitmask(AUTH_REVOCABLE_FLAG);
+        expect(flags).toEqual({
+          authRequired: false,
+          authRevocable: true,
+          authImmutable: false,
+        });
+      });
+
+      it('should convert AUTH_IMMUTABLE flag', () => {
+        const flags = fromAuthFlagsBitmask(AUTH_IMMUTABLE_FLAG);
+        expect(flags).toEqual({
+          authRequired: false,
+          authRevocable: false,
+          authImmutable: true,
+        });
+      });
+
+      it('should convert combined flags (3)', () => {
+        const flags = fromAuthFlagsBitmask(3); // AUTH_REQUIRED | AUTH_REVOCABLE
+        expect(flags).toEqual({
+          authRequired: true,
+          authRevocable: true,
+          authImmutable: false,
+        });
+      });
+
+      it('should convert combined flags (5)', () => {
+        const flags = fromAuthFlagsBitmask(5); // AUTH_REQUIRED | AUTH_IMMUTABLE
+        expect(flags).toEqual({
+          authRequired: true,
+          authRevocable: false,
+          authImmutable: true,
+        });
+      });
+
+      it('should convert all flags (7)', () => {
+        const flags = fromAuthFlagsBitmask(7); // All flags
+        expect(flags).toEqual({
+          authRequired: true,
+          authRevocable: true,
+          authImmutable: true,
+        });
+      });
+    });
+
+    describe('Round-trip Conversion', () => {
+      it('should round-trip no flags', () => {
+        const original: AssetAuthorizationFlags = {};
+        const bitmask = toAuthFlagsBitmask(original);
+        const restored = fromAuthFlagsBitmask(bitmask);
+        expect(restored).toEqual({
+          authRequired: false,
+          authRevocable: false,
+          authImmutable: false,
+        });
+      });
+
+      it('should round-trip AUTH_REQUIRED only', () => {
+        const original: AssetAuthorizationFlags = { authRequired: true };
+        const bitmask = toAuthFlagsBitmask(original);
+        const restored = fromAuthFlagsBitmask(bitmask);
+        expect(restored).toEqual({
+          authRequired: true,
+          authRevocable: false,
+          authImmutable: false,
+        });
+      });
+
+      it('should round-trip AUTH_REQUIRED + AUTH_REVOCABLE', () => {
+        const original: AssetAuthorizationFlags = {
+          authRequired: true,
+          authRevocable: true,
+        };
+        const bitmask = toAuthFlagsBitmask(original);
+        const restored = fromAuthFlagsBitmask(bitmask);
+        expect(restored).toEqual({
+          authRequired: true,
+          authRevocable: true,
+          authImmutable: false,
+        });
+      });
+
+      it('should round-trip AUTH_REQUIRED + AUTH_IMMUTABLE', () => {
+        const original: AssetAuthorizationFlags = {
+          authRequired: true,
+          authImmutable: true,
+        };
+        const bitmask = toAuthFlagsBitmask(original);
+        const restored = fromAuthFlagsBitmask(bitmask);
+        expect(restored).toEqual({
+          authRequired: true,
+          authRevocable: false,
+          authImmutable: true,
+        });
+      });
     });
   });
 });

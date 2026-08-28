@@ -152,10 +152,281 @@ export function assertPriceClose(actual: number, expected: number, tolerance = P
     }
 }
 
+// ── Multi-endpoint consistency verification (#781) ────────────────────────────
+
+/** Maximum relative price divergence (%) allowed between two Horizon endpoints. */
+export const CONSISTENCY_TOLERANCE_PERCENT = 1.0;
+
+export interface SnapshotWithMeta {
+    /** The order book snapshot from this endpoint. */
+    snapshot: OrderBookSnapshot;
+    /** Ledger sequence number at the time the snapshot was taken. */
+    ledgerSequence: number;
+}
+
+export interface ConsistencyResult {
+    /** true when the two endpoints agree within {@link CONSISTENCY_TOLERANCE_PERCENT}. */
+    consistent: boolean;
+    /** Percentage divergence between mid-prices; undefined when a mid-price cannot be computed. */
+    divergencePercent: number | undefined;
+    /** The snapshot to use: primary when consistent or when primary is more recent; otherwise secondary. */
+    selectedSnapshot: OrderBookSnapshot;
+    /** Human-readable explanation of why this snapshot was selected. */
+    reason: string;
+}
+
+/**
+ * Compare two order book snapshots from different Horizon endpoints and detect
+ * stale data caused by network splits.
+ *
+ * Algorithm:
+ * 1. Compute mid-price for each snapshot.
+ * 2. Calculate relative divergence = |p1 − p2| / avg(p1, p2) × 100.
+ * 3. If divergence ≤ {@link CONSISTENCY_TOLERANCE_PERCENT} (1%), return primary.
+ * 4. Otherwise log a violation via `onViolation` and return the snapshot with
+ *    the higher ledger sequence (more recent data wins).
+ *
+ * @param primary - Snapshot from the primary Horizon endpoint.
+ * @param secondary - Snapshot from the secondary Horizon endpoint.
+ * @param onViolation - Optional callback invoked with a description when
+ *   divergence exceeds the tolerance (use for analytics / logging).
+ */
+export function verifyOrderBookConsistency(
+    primary: SnapshotWithMeta,
+    secondary: SnapshotWithMeta,
+    onViolation?: (message: string) => void,
+): ConsistencyResult {
+    const primaryPrice = computeDexPrice(primary.snapshot);
+    const secondaryPrice = computeDexPrice(secondary.snapshot);
+
+    if (
+        primaryPrice.midPrice === undefined ||
+        secondaryPrice.midPrice === undefined
+    ) {
+        return {
+            consistent: true,
+            divergencePercent: undefined,
+            selectedSnapshot: primary.snapshot,
+            reason: 'Cannot compute mid-price for one or both endpoints; defaulting to primary',
+        };
+    }
+
+    const avg = (primaryPrice.midPrice + secondaryPrice.midPrice) / 2;
+    const divergencePercent =
+        avg > 0
+            ? (Math.abs(primaryPrice.midPrice - secondaryPrice.midPrice) / avg) * 100
+            : 0;
+
+    if (divergencePercent <= CONSISTENCY_TOLERANCE_PERCENT) {
+        return {
+            consistent: true,
+            divergencePercent,
+            selectedSnapshot: primary.snapshot,
+            reason: 'Endpoints within tolerance; using primary snapshot',
+        };
+    }
+
+    const msg =
+        `Order book consistency violation: ${divergencePercent.toFixed(4)}% divergence ` +
+        `exceeds ${CONSISTENCY_TOLERANCE_PERCENT}% tolerance ` +
+        `(primary ledger ${primary.ledgerSequence}, secondary ledger ${secondary.ledgerSequence})`;
+    onViolation?.(msg);
+
+    const useSecondary = secondary.ledgerSequence > primary.ledgerSequence;
+    return {
+        consistent: false,
+        divergencePercent,
+        selectedSnapshot: useSecondary ? secondary.snapshot : primary.snapshot,
+        reason: useSecondary
+            ? `Selected secondary (ledger ${secondary.ledgerSequence} > ${primary.ledgerSequence})`
+            : `Selected primary (ledger ${primary.ledgerSequence} >= ${secondary.ledgerSequence})`,
+    };
+}
+
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 function topPrice(levels: OrderBookLevel[]): number | undefined {
     if (levels.length === 0) return undefined;
     const p = parseFloat(levels[0].price);
     return isFinite(p) ? p : undefined;
+}
+
+// ---------------------------------------------------------------------------
+// VWAP Outlier Detection (#791)
+// ---------------------------------------------------------------------------
+
+export interface VwapOutlierResult {
+    /** VWAP across all order book levels on this side. */
+    vwap: number | undefined;
+    /** Best (top-of-book) price for this side. */
+    bestPrice: number | undefined;
+    /** Prices flagged as anomalous (> 3 σ from the mean). */
+    outliers: number[];
+    /** Whether any outlier was detected. */
+    hasOutlier: boolean;
+}
+
+export interface EnrichedDexPriceResult extends DexPriceResult {
+    /** VWAP and outlier info for the bid side. */
+    bidAnalysis: VwapOutlierResult;
+    /** VWAP and outlier info for the ask side. */
+    askAnalysis: VwapOutlierResult;
+}
+
+/**
+ * Detect outlier prices in a list of order book levels using a robust
+ * median / median-absolute-deviation (MAD) statistic.
+ *
+ * Unlike a naive population mean/stdDev test, a single extreme value cannot
+ * inflate the detection threshold and thereby mask its own detection
+ * (the so-called "self-masking" flaw of the classical 3-sigma test).
+ *
+ * A price is classified as an outlier when
+ *   |price − median| > 3 × (MAD / 0.6745)
+ * where the 0.6745 factor makes the normalised MAD a consistent estimator of
+ * the standard deviation for a Gaussian distribution (same scale as the
+ * classical 3-sigma rule for well-behaved data).
+ *
+ * When MAD = 0 (i.e. more than half the values share the same price) but the
+ * data is not all identical, the function falls back to the mean absolute
+ * deviation (MAD_mean) as the spread estimator so that lone extreme values
+ * are still correctly flagged in "majority-tie" distributions.
+ *
+ * @param levels - Order book price levels
+ * @returns Array of outlier price values (empty when none detected)
+ */
+export function detectOutliers(levels: OrderBookLevel[]): number[] {
+    const prices = levels
+        .map((l) => parseFloat(l.price))
+        .filter((p) => isFinite(p));
+
+    if (prices.length < 2) return [];
+
+    // Compute median
+    const sorted = [...prices].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    const median =
+        sorted.length % 2 === 1
+            ? sorted[mid]
+            : (sorted[mid - 1] + sorted[mid]) / 2;
+
+    // Compute MAD (median of absolute deviations from the median)
+    const deviations = prices.map((p) => Math.abs(p - median));
+    const sortedDev = [...deviations].sort((a, b) => a - b);
+    const madMid = Math.floor(sortedDev.length / 2);
+    const mad =
+        sortedDev.length % 2 === 1
+            ? sortedDev[madMid]
+            : (sortedDev[madMid - 1] + sortedDev[madMid]) / 2;
+
+    // Normalise MAD to the same scale as a standard deviation (Gaussian assumption)
+    let normalisedMad = mad / 0.6745;
+
+    if (normalisedMad === 0) {
+        // MAD is zero when more than half the values share the same price.
+        // Check whether all values are identical — if so, nothing is an outlier.
+        if (sorted[0] === sorted[sorted.length - 1]) return [];
+
+        // Fall back to the mean absolute deviation so lone extreme values are
+        // still detected in majority-tie distributions (e.g. 20 × 1.0 + 1 × 10).
+        const meanAbsDev =
+            deviations.reduce((s, d) => s + d, 0) / deviations.length;
+        normalisedMad = meanAbsDev / 0.6745;
+
+        // If the fallback is still zero (can't happen given the all-equal check
+        // above, but guard defensively), nothing is an outlier.
+        if (normalisedMad === 0) return [];
+    }
+
+    return prices.filter((p) => Math.abs(p - median) > 3 * normalisedMad);
+}
+
+/**
+ * Analyse one side of the order book: compute VWAP and detect outliers.
+ */
+function analyseSide(levels: OrderBookLevel[]): VwapOutlierResult {
+    const vwap = computeVwap(levels);
+    const bestPrice = topPrice(levels);
+    const outliers = detectOutliers(levels);
+    return { vwap, bestPrice, outliers, hasOutlier: outliers.length > 0 };
+}
+
+/**
+ * Compute enriched price metrics including per-side VWAP and outlier detection.
+ *
+ * @param book - Order book snapshot
+ * @returns Base `DexPriceResult` fields plus `bidAnalysis` and `askAnalysis`
+ */
+export function computeEnrichedDexPrice(book: OrderBookSnapshot): EnrichedDexPriceResult {
+    return {
+        ...computeDexPrice(book),
+        bidAnalysis: analyseSide(book.bids),
+        askAnalysis: analyseSide(book.asks),
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Ledger-close triggered price feed (#791)
+// ---------------------------------------------------------------------------
+
+export type PriceFeedUpdateHandler = (result: EnrichedDexPriceResult) => void;
+
+export interface LedgerEvent {
+    sequence: number;
+}
+
+export interface LedgerEventEmitter {
+    on(event: 'ledger', handler: (ledger: LedgerEvent) => void): void;
+    off(event: 'ledger', handler: (ledger: LedgerEvent) => void): void;
+}
+
+export interface OrderBookFetcher {
+    fetch(): Promise<OrderBookSnapshot>;
+}
+
+/**
+ * Subscribe to ledger-close events and call `onUpdate` with a freshly
+ * computed `EnrichedDexPriceResult` on every new ledger.
+ *
+ * A single failing `fetcher.fetch()` never tears the subscription down — the
+ * stream stays alive and keeps trying on the next ledger. That resilience,
+ * however, previously made a *persistent* failure (expired credentials, a
+ * renamed Horizon endpoint, a network partition) indistinguishable from a quiet
+ * market: the subscription stops producing updates while remaining technically
+ * active, with nothing logged. Pass `onError` to observe and alert on sustained
+ * failures; it is invoked once per failed ledger event with the thrown error and
+ * the triggering `LedgerEvent`, and its own exceptions are ignored so a broken
+ * handler cannot break the feed.
+ *
+ * @param emitter  - Source of `'ledger'` events (e.g. Horizon SSE stream)
+ * @param fetcher  - Fetches the current order book snapshot on demand
+ * @param onUpdate - Called with the enriched price result after each ledger
+ * @param onError  - Optional; called with `(error, ledger)` each time a per-ledger
+ *                   fetch fails. Does not change the resilience behaviour — the
+ *                   subscription stays alive regardless.
+ * @returns Unsubscribe function – call it to stop receiving updates
+ */
+export function subscribeLedgerPriceFeed(
+    emitter: LedgerEventEmitter,
+    fetcher: OrderBookFetcher,
+    onUpdate: PriceFeedUpdateHandler,
+    onError?: (error: unknown, ledger: LedgerEvent) => void,
+): () => void {
+    const handler = async (ledger: LedgerEvent) => {
+        try {
+            const book = await fetcher.fetch();
+            onUpdate(computeEnrichedDexPrice(book));
+        } catch (error) {
+            // Swallow individual fetch errors; the stream stays alive.
+            // Surface them through onError so callers can alert on sustained failures.
+            try {
+                onError?.(error, ledger);
+            } catch {
+                // A misbehaving error handler must not break the feed.
+            }
+        }
+    };
+
+    emitter.on('ledger', handler);
+    return () => emitter.off('ledger', handler);
 }

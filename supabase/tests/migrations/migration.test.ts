@@ -10,6 +10,8 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createClient } from '@supabase/supabase-js';
+import { readFileSync, readdirSync } from 'fs';
+import { join } from 'path';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
@@ -440,5 +442,256 @@ describe('Migration 007 – Stripe field encryption', () => {
         });
       expect(error).toBeTruthy();
     });
+  });
+});
+
+// ── Rollback Safety Validation ──────────────────────────────────────────────
+
+const MIGRATIONS_DIR = join(__dirname, '../../migrations');
+
+interface MigrationGroup {
+  number: number;
+  files: string[];
+  sql: string;
+}
+
+interface ForwardOp {
+  type: string;
+  name: string;
+  line: number;
+}
+
+interface RollbackOp {
+  sql: string;
+  line: number;
+}
+
+function getMigrationGroups(): MigrationGroup[] {
+  const files = readdirSync(MIGRATIONS_DIR)
+    .filter((f) => f.endsWith('.sql'))
+    .sort();
+
+  const groups = new Map<number, MigrationGroup>();
+
+  for (const file of files) {
+    const num = parseInt(file.split('_')[0], 10);
+    if (!groups.has(num)) {
+      groups.set(num, { number: num, files: [], sql: '' });
+    }
+    const group = groups.get(num)!;
+    group.files.push(file);
+    group.sql += readFileSync(join(MIGRATIONS_DIR, file), 'utf-8') + '\n';
+  }
+
+  return Array.from(groups.values()).sort((a, b) => a.number - b.number);
+}
+
+function extractForwardOps(sql: string): ForwardOp[] {
+  const ops: ForwardOp[] = [];
+
+  const tableRegex = /CREATE\s+TABLE(?:\s+IF\s+NOT\s+EXISTS)?\s+(\w+)/gi;
+  let match: RegExpExecArray | null;
+  while ((match = tableRegex.exec(sql)) !== null) {
+    ops.push({ type: 'TABLE', name: match[1].toLowerCase(), line: getLine(sql, match.index) });
+  }
+
+  const indexRegex = /CREATE\s+(?:UNIQUE\s+)?INDEX(?:\s+IF\s+NOT\s+EXISTS)?\s+(\w+)/gi;
+  while ((match = indexRegex.exec(sql)) !== null) {
+    ops.push({ type: 'INDEX', name: match[1].toLowerCase(), line: getLine(sql, match.index) });
+  }
+
+  const funcRegex = /CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+(\w+)/gi;
+  while ((match = funcRegex.exec(sql)) !== null) {
+    ops.push({ type: 'FUNCTION', name: match[1].toLowerCase(), line: getLine(sql, match.index) });
+  }
+
+  const triggerRegex = /CREATE\s+TRIGGER\s+(\w+)/gi;
+  while ((match = triggerRegex.exec(sql)) !== null) {
+    ops.push({ type: 'TRIGGER', name: match[1].toLowerCase(), line: getLine(sql, match.index) });
+  }
+
+  const viewRegex = /CREATE\s+(?:OR\s+REPLACE\s+)?VIEW\s+(\w+)/gi;
+  while ((match = viewRegex.exec(sql)) !== null) {
+    ops.push({ type: 'VIEW', name: match[1].toLowerCase(), line: getLine(sql, match.index) });
+  }
+
+  const policyRegex = /CREATE\s+POLICY\s+(?:"([^"]+)"|(\w+))/gi;
+  while ((match = policyRegex.exec(sql)) !== null) {
+    const name = match[1] || match[2];
+    ops.push({ type: 'POLICY', name: name.toLowerCase(), line: getLine(sql, match.index) });
+  }
+
+  const extRegex = /CREATE\s+EXTENSION(?:\s+IF\s+NOT\s+EXISTS)?\s+(?:"?(\w+)"?)/gi;
+  while ((match = extRegex.exec(sql)) !== null) {
+    ops.push({ type: 'EXTENSION', name: match[1].toLowerCase(), line: getLine(sql, match.index) });
+  }
+
+  const columnRegex = /ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN(?:\s+IF\s+NOT\s+EXISTS)?\s+(\w+)/gi;
+  while ((match = columnRegex.exec(sql)) !== null) {
+    ops.push({ type: 'COLUMN', name: `${match[1].toLowerCase()}.${match[2].toLowerCase()}`, line: getLine(sql, match.index) });
+  }
+
+  const constraintRegex = /ALTER\s+TABLE\s+(\w+)\s+ADD\s+CONSTRAINT(?:\s+IF\s+NOT\s+EXISTS)?\s+(\w+)/gi;
+  while ((match = constraintRegex.exec(sql)) !== null) {
+    ops.push({ type: 'CONSTRAINT', name: match[2].toLowerCase(), line: getLine(sql, match.index) });
+  }
+
+  return ops;
+}
+
+function extractRollbackOps(sql: string): RollbackOp[] {
+  const ops: RollbackOp[] = [];
+  const regex = /^--\s+rollback:\s+(.+)$/gm;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(sql)) !== null) {
+    ops.push({ sql: match[1].trim(), line: getLine(sql, match.index) });
+  }
+  return ops;
+}
+
+function getLine(sql: string, index: number): number {
+  return sql.substring(0, index).split('\n').length;
+}
+
+function isIdempotent(sql: string): boolean {
+  const idempotentPatterns = [
+    /CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS/i,
+    /CREATE\s+(?:UNIQUE\s+)?INDEX\s+IF\s+NOT\s+EXISTS/i,
+    /ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS/i,
+    /CREATE\s+OR\s+REPLACE\s+FUNCTION/i,
+    /CREATE\s+OR\s+REPLACE\s+VIEW/i,
+    /CREATE\s+EXTENSION\s+IF\s+NOT\s+EXISTS/i,
+    /DROP\s+(?:TABLE|INDEX|TRIGGER|VIEW|FUNCTION|EXTENSION|POLICY)\s+IF\s+EXISTS/i,
+    /ON\s+CONFLICT\s+DO\s+NOTHING/i,
+    /ALTER\s+TABLE\s+\w+\s+ENABLE\s+ROW\s+LEVEL\s+SECURITY/i,
+    /DO\s*\$\$\s*BEGIN\s+IF\s+NOT\s+EXISTS/i,
+  ];
+  return idempotentPatterns.some((p) => p.test(sql));
+}
+
+describe('Rollback Safety Validation', () => {
+  const groups = getMigrationGroups();
+
+  it.each(groups.map((g) => g.number))(
+    'migration group %d – every forward operation has a matching rollback',
+    (num) => {
+      const group = groups.find((g) => g.number === num)!;
+      const forwardOps = extractForwardOps(group.sql);
+      const rollbackOps = extractRollbackOps(group.sql);
+
+      for (const op of forwardOps) {
+        const hasRollback = rollbackOps.some((r) => {
+          const lower = r.sql.toLowerCase();
+          const name = op.name.includes('.') ? op.name.split('.')[1] : op.name;
+          switch (op.type) {
+            case 'TABLE':   return lower.includes(`drop table`) && lower.includes(name);
+            case 'INDEX':   return lower.includes(`drop index`) && lower.includes(name);
+            case 'FUNCTION': return lower.includes(`drop function`) && lower.includes(name);
+            case 'TRIGGER': return lower.includes(`drop trigger`) && lower.includes(name);
+            case 'VIEW':    return lower.includes(`drop view`) && lower.includes(name);
+            case 'POLICY':  return lower.includes(`drop policy`) && lower.includes(name);
+            case 'EXTENSION': return lower.includes(`drop extension`) && lower.includes(name);
+            case 'COLUMN':  return lower.includes(`drop column`) && lower.includes(name);
+            case 'CONSTRAINT': return lower.includes(`drop constraint`) && lower.includes(name);
+            default: return false;
+          }
+        });
+
+        expect(hasRollback).toBe(true);
+      }
+    },
+  );
+
+  it('rollback operations within each file appear in reverse order of forward operations', () => {
+    const files = readdirSync(MIGRATIONS_DIR)
+      .filter((f) => f.endsWith('.sql'))
+      .sort();
+    for (const file of files) {
+      const sql = readFileSync(join(MIGRATIONS_DIR, file), 'utf-8');
+      const forwardOps = extractForwardOps(sql);
+      const rollbackOps = extractRollbackOps(sql);
+
+      if (forwardOps.length === 0 || rollbackOps.length === 0) continue;
+
+      const createTables = forwardOps.filter((o) => o.type === 'TABLE').map((o) => o.name);
+      const dropTables = rollbackOps
+        .filter((r) => r.sql.toLowerCase().startsWith('drop table'))
+        .map((r) => {
+          const m = r.sql.match(/drop\s+table\s+(?:if\s+exists\s+)?(\w+)/i);
+          return m ? m[1].toLowerCase() : '';
+        })
+        .filter(Boolean);
+      if (createTables.length > 1 && dropTables.length > 1) {
+        expect(dropTables).toEqual([...createTables].reverse());
+      }
+    }
+  });
+
+  it('every migration group has at least one rollback statement', () => {
+    for (const group of groups) {
+      const rollbackOps = extractRollbackOps(group.sql);
+      expect(rollbackOps.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('each migration file in every group has rollback comments', () => {
+    const files = readdirSync(MIGRATIONS_DIR)
+      .filter((f) => f.endsWith('.sql'))
+      .sort();
+    for (const file of files) {
+      const sql = readFileSync(join(MIGRATIONS_DIR, file), 'utf-8');
+      const rollbackOps = extractRollbackOps(sql);
+      expect(rollbackOps.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe('Migration Idempotency Guards', () => {
+  const groups = getMigrationGroups();
+
+  const BASE_TABLES = new Set([
+    'profiles', 'templates', 'deployments',
+    'deployment_logs', 'customization_drafts', 'deployment_analytics',
+  ]);
+
+  it.each(groups.filter((g) => g.number > 1).map((g) => g.number))(
+    'migration group %d is idempotent',
+    (num) => {
+      const group = groups.find((g) => g.number === num)!;
+      const lines = group.sql.split('\n').filter((l) => l.trim() && !l.trim().startsWith('--'));
+      if (lines.length === 0) return;
+      expect(isIdempotent(group.sql)).toBe(true);
+    },
+  );
+
+  it.each(groups.map((g) => g.number))(
+    'migration group %d – CREATE TABLE uses IF NOT EXISTS outside base tables',
+    (num) => {
+      const group = groups.find((g) => g.number === num)!;
+      const tables = [...group.sql.matchAll(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)/gi)];
+      for (const [, name] of tables) {
+        if (BASE_TABLES.has(name.toLowerCase())) continue;
+        expect(new RegExp(`CREATE TABLE IF NOT EXISTS ${name}`, 'i').test(group.sql)).toBe(true);
+      }
+    },
+  );
+
+  it('no hard CREATE TABLE without IF NOT EXISTS in non-base migrations', () => {
+    for (const group of groups) {
+      if (group.number <= 1) continue;
+      const hardCreates = [...group.sql.matchAll(/CREATE\s+TABLE\s+(?!IF\s+NOT\s+EXISTS)\s*(\w+)/gi)];
+      for (const [, name] of hardCreates) {
+        expect(BASE_TABLES.has(name.toLowerCase())).toBe(true);
+      }
+    }
+  });
+
+  it('ADD COLUMN uses IF NOT EXISTS', () => {
+    for (const group of groups) {
+      const addColumns = [...group.sql.matchAll(/ALTER\s+TABLE\s+\w+\s+ADD\s+COLUMN(?:\s+IF\s+NOT\s+EXISTS)?/gi)];
+      for (const m of addColumns) {
+        expect(m[0]).toMatch(/ADD COLUMN IF NOT EXISTS/i);
+      }
+    }
   });
 });

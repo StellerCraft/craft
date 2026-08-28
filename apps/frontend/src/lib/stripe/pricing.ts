@@ -95,6 +95,24 @@ export const TIER_CONFIGS: Record<SubscriptionTier, TierConfig> = {
   },
 };
 
+// ── Display helpers ───────────────────────────────────────────────────────────
+
+const currencyFormatter = new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD',
+});
+
+/**
+ * Formats a tier price in cents as a locale-aware USD currency string
+ * (e.g. 1950 -> "$19.50", 100000 -> "$1,000.00"). Renders "$0" for the
+ * free tier instead of "$0.00". Callers append their own "/mo" or
+ * "/month" suffix.
+ */
+export function formatTierPrice(cents: number): string {
+  if (cents === 0) return '$0';
+  return currencyFormatter.format(cents / 100);
+}
+
 // ── Lookup helpers ────────────────────────────────────────────────────────────
 
 /**

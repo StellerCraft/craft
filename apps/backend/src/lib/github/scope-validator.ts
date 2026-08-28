@@ -21,11 +21,48 @@
  * `repo:deployment`, etc. The validator resolves this — if `repo` is granted,
  * narrower `repo:*` sub-scopes are satisfied automatically.
  *
+ * Caching
+ * ───────
+ * Successful validations are cached in-memory with a short TTL (default: 5 minutes,
+ * configurable via SCOPE_VALIDATION_CACHE_TTL_MS env var) keyed by a SHA-256 hash
+ * of the access token to avoid holding plaintext tokens in memory. Failures are
+ * never cached so transient GitHub outages don't get stuck as false negatives.
+ *
  * Feature: github-oauth-scope-validation
- * Issue: #658
+ * Issue: #658, #938
+ *
+ * See "Rate Limiting, Idempotency, and Tier Enforcement" in CONTRIBUTING.md
+ * for the full env-var reference.
  */
 
+import { createHash } from 'node:crypto';
+
 const GITHUB_USER_URL = 'https://api.github.com/user';
+const SCOPE_VALIDATION_CACHE_TTL_MS = parseInt(
+    process.env.SCOPE_VALIDATION_CACHE_TTL_MS ?? '300000',
+    10,
+); // 5 minutes default
+
+/** Maximum number of validation results held in memory. */
+export const MAX_SCOPE_VALIDATION_CACHE_ENTRIES = 1_000;
+
+interface CacheEntry {
+    result: ScopeValidationResult;
+    expiresAt: number;
+}
+
+const scopeValidationCache = new Map<string, CacheEntry>();
+
+function evictOldestScopeValidationEntry(): void {
+    const oldestKey = scopeValidationCache.keys().next().value;
+    if (oldestKey !== undefined) {
+        scopeValidationCache.delete(oldestKey);
+    }
+}
+
+function hashToken(token: string): string {
+    return createHash('sha256').update(token).digest('hex');
+}
 
 /** All scopes CRAFT requires for deployment operations. */
 export const REQUIRED_SCOPES = ['repo', 'read:user'] as const;
@@ -89,8 +126,20 @@ export function validateScopes(grantedScopes: string[]): ScopeValidationResult {
 }
 
 /**
+ * Clear the scope validation cache.
+ * Used for test isolation or manual cache flush.
+ */
+export function clearScopeValidationCache(): void {
+    scopeValidationCache.clear();
+}
+
+/**
  * Fetch the X-OAuth-Scopes header from GitHub by making an authenticated
  * request to GET /user and reading the response headers.
+ *
+ * Results are cached (in-memory, short TTL) to avoid redundant API calls.
+ * Only successful validations are cached; failures are never cached to prevent
+ * transient errors from persisting as false negatives.
  *
  * Returns a ScopeValidationResult. Never throws — all error paths return
  * { valid: false } so callers can surface actionable messages.
@@ -98,6 +147,19 @@ export function validateScopes(grantedScopes: string[]): ScopeValidationResult {
 export async function fetchAndValidateScopes(
     accessToken: string,
 ): Promise<ScopeValidationResult & { fetchError?: string }> {
+    const tokenHash = hashToken(accessToken);
+
+    // Check cache
+    const cached = scopeValidationCache.get(tokenHash);
+    if (cached && Date.now() < cached.expiresAt) {
+        return cached.result;
+    }
+
+    // Remove expired entry if present
+    if (cached) {
+        scopeValidationCache.delete(tokenHash);
+    }
+
     let res: Response;
     try {
         res = await fetch(GITHUB_USER_URL, {
@@ -128,7 +190,18 @@ export async function fetchAndValidateScopes(
 
     const scopeHeader = res.headers.get('X-OAuth-Scopes');
     const grantedScopes = parseGrantedScopes(scopeHeader);
-    return validateScopes(grantedScopes);
+    const result = validateScopes(grantedScopes);
+
+    // Cache successful validations
+    if (scopeValidationCache.size >= MAX_SCOPE_VALIDATION_CACHE_ENTRIES) {
+        evictOldestScopeValidationEntry();
+    }
+    scopeValidationCache.set(tokenHash, {
+        result,
+        expiresAt: Date.now() + SCOPE_VALIDATION_CACHE_TTL_MS,
+    });
+
+    return result;
 }
 
 /**

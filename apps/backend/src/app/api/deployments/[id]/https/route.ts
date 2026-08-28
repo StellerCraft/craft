@@ -60,7 +60,7 @@ export const POST = withDomainTierCheck(async (_req: NextRequest, { params, supa
     }
 
     try {
-        await vercel.addDomain(deployment.vercel_project_id, deployment.custom_domain);
+        await vercel.addProjectDomain(deployment.vercel_project_id, deployment.custom_domain);
     } catch (err: unknown) {
         const vercelErr = err as VercelApiError;
         if (vercelErr.code === 'DOMAIN_EXISTS') {

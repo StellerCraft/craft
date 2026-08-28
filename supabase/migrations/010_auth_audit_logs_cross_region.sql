@@ -42,3 +42,14 @@ CREATE POLICY "auth_audit_logs_insert_policy" ON auth_audit_logs
 
 -- Comment for documentation
 COMMENT ON TABLE auth_audit_logs IS 'Cross-region authentication audit trail. Tracks all auth events (signin, signup, token refresh, failures) across regional deployments for security monitoring and state consistency verification.';
+
+-- rollback: DROP POLICY IF EXISTS auth_audit_logs_insert_policy ON auth_audit_logs;
+-- rollback: DROP POLICY IF EXISTS auth_audit_logs_user_policy ON auth_audit_logs;
+-- rollback: ALTER TABLE auth_audit_logs DISABLE ROW LEVEL SECURITY;
+-- rollback: DROP INDEX IF EXISTS idx_auth_audit_logs_request_id;
+-- rollback: DROP INDEX IF EXISTS idx_auth_audit_logs_user_created;
+-- rollback: DROP INDEX IF EXISTS idx_auth_audit_logs_created_at;
+-- rollback: DROP INDEX IF EXISTS idx_auth_audit_logs_event_type;
+-- rollback: DROP INDEX IF EXISTS idx_auth_audit_logs_region;
+-- rollback: DROP INDEX IF EXISTS idx_auth_audit_logs_user_id;
+-- rollback: DROP TABLE IF EXISTS auth_audit_logs;

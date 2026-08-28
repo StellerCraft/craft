@@ -1,22 +1,25 @@
--- Seed templates table with initial Stellar templates
-INSERT INTO templates (
-        name,
-        description,
-        category,
-        blockchain_type,
-        base_repository_url,
-        preview_image_url,
-        customization_schema,
-        is_active
-    )
-VALUES (
-        'Stellar DEX',
-        'A decentralized exchange for trading Stellar assets with real-time price feeds and transaction history.',
-        'dex',
-        'stellar',
-        'https://github.com/craft-templates/stellar-dex',
-        '/templates/stellar-dex-preview.png',
-        '{
+-- Seed templates table with initial Stellar templates (idempotent: skip if already seeded)
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM templates) THEN
+        INSERT INTO templates (
+                name,
+                description,
+                category,
+                blockchain_type,
+                base_repository_url,
+                preview_image_url,
+                customization_schema,
+                is_active
+            )
+        VALUES (
+                'Stellar DEX',
+                'A decentralized exchange for trading Stellar assets with real-time price feeds and transaction history.',
+                'dex',
+                'stellar',
+                'https://github.com/craft-templates/stellar-dex',
+                '/templates/stellar-dex-preview.png',
+                '{
     "branding": {
       "appName": { "type": "string", "required": true, "default": "Stellar DEX" },
       "logoUrl": { "type": "string", "required": false },
@@ -36,16 +39,16 @@ VALUES (
       "assetPairs": { "type": "array", "required": false }
     }
   }'::jsonb,
-        true
-    ),
-    (
-        'Soroban DeFi',
-        'A DeFi platform built on Stellar''s Soroban smart contract platform with liquidity pools and yield farming.',
-        'lending',
-        'stellar',
-        'https://github.com/craft-templates/soroban-defi',
-        '/templates/soroban-defi-preview.png',
-        '{
+                true
+            ),
+            (
+                'Soroban DeFi',
+                'A DeFi platform built on Stellar''s Soroban smart contract platform with liquidity pools and yield farming.',
+                'lending',
+                'stellar',
+                'https://github.com/craft-templates/soroban-defi',
+                '/templates/soroban-defi-preview.png',
+                '{
     "branding": {
       "appName": { "type": "string", "required": true, "default": "Soroban DeFi" },
       "logoUrl": { "type": "string", "required": false },
@@ -65,16 +68,16 @@ VALUES (
       "contractAddresses": { "type": "object", "required": false }
     }
   }'::jsonb,
-        true
-    ),
-    (
-        'Payment Gateway',
-        'Accept Stellar payments with multi-currency support, payment tracking, and invoice generation.',
-        'payment',
-        'stellar',
-        'https://github.com/craft-templates/payment-gateway',
-        '/templates/payment-gateway-preview.png',
-        '{
+                true
+            ),
+            (
+                'Payment Gateway',
+                'Accept Stellar payments with multi-currency support, payment tracking, and invoice generation.',
+                'payment',
+                'stellar',
+                'https://github.com/craft-templates/payment-gateway',
+                '/templates/payment-gateway-preview.png',
+                '{
     "branding": {
       "appName": { "type": "string", "required": true, "default": "Payment Gateway" },
       "logoUrl": { "type": "string", "required": false },
@@ -93,16 +96,16 @@ VALUES (
       "assetPairs": { "type": "array", "required": false }
     }
   }'::jsonb,
-        true
-    ),
-    (
-        'Asset Issuance',
-        'Create and manage custom Stellar assets with distribution management and trustline configuration.',
-        'asset-issuance',
-        'stellar',
-        'https://github.com/craft-templates/asset-issuance',
-        '/templates/asset-issuance-preview.png',
-        '{
+                true
+            ),
+            (
+                'Asset Issuance',
+                'Create and manage custom Stellar assets with distribution management and trustline configuration.',
+                'asset-issuance',
+                'stellar',
+                'https://github.com/craft-templates/asset-issuance',
+                '/templates/asset-issuance-preview.png',
+                '{
     "branding": {
       "appName": { "type": "string", "required": true, "default": "Asset Issuance" },
       "logoUrl": { "type": "string", "required": false },
@@ -119,5 +122,9 @@ VALUES (
       "horizonUrl": { "type": "string", "required": true }
     }
   }'::jsonb,
-        true
-    );
+                true
+            );
+    END IF;
+END $$;
+
+-- rollback: DELETE FROM templates;

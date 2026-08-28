@@ -1,15 +1,3 @@
-    /**
-     * Generate preview payloads for all viewport classes.
-     * Returns an object with keys 'desktop', 'tablet', 'mobile'.
-     */
-    generateAllViewports(config: CustomizationConfig): Record<ViewportClass, PreviewData> {
-        const result: Record<ViewportClass, PreviewData> = {
-            desktop: this.generatePreview(config, 'desktop') as PreviewData,
-            tablet: this.generatePreview(config, 'tablet') as PreviewData,
-            mobile: this.generatePreview(config, 'mobile') as PreviewData,
-        };
-        return result;
-    }
 import type {
     CustomizationConfig,
     DeepPartial,
@@ -193,6 +181,19 @@ export class PreviewService {
 
     setTemplateCategory(category?: TemplateCategory): void {
         this.templateCategory = category;
+    }
+
+    /**
+     * Generate preview payloads for all viewport classes.
+     * Returns an object with keys 'desktop', 'tablet', 'mobile'.
+     */
+    generateAllViewports(config: CustomizationConfig): Record<ViewportClass, PreviewData> {
+        const result: Record<ViewportClass, PreviewData> = {
+            desktop: this.generatePreview(config, 'desktop') as PreviewData,
+            tablet: this.generatePreview(config, 'tablet') as PreviewData,
+            mobile: this.generatePreview(config, 'mobile') as PreviewData,
+        };
+        return result;
     }
 
     generatePreview(

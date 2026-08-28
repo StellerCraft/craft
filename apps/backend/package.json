@@ -10,7 +10,9 @@
         "test": "vitest run",
         "test:smoke": "vitest run tests/smoke",
         "test:rate-limit": "vitest run tests/rate-limit",
-        "test:stellar": "vitest run tests/stellar"
+        "test:stellar": "vitest run tests/stellar",
+        "mutation:payment": "cd ../.. && pnpm stryker run --mutate 'apps/backend/src/services/payment.service.ts'",
+        "mutation:pipeline": "cd ../.. && pnpm stryker run --mutate 'apps/backend/src/services/deployment-pipeline.service.ts'"
     },
     "dependencies": {
         "@craft/stellar": "*",
@@ -19,6 +21,7 @@
         "@supabase/supabase-js": "^2.39.1",
         "client-only": "^0.0.1",
         "for-each": "^0.3.5",
+        "handlebars": "^4.7.8",
         "next": "14.0.4",
         "react": "^18.2.0",
         "react-dom": "^18.2.0",
@@ -44,6 +47,6 @@
         "jsdom": "^23.0.1",
         "postcss": "^8.4.32",
         "tailwindcss": "^3.4.0",
-        "vitest": "^1.1.0"
+        "vitest": "^2.1.9"
     }
 }

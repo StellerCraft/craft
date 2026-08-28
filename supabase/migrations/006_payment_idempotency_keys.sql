@@ -19,3 +19,8 @@ CREATE TABLE IF NOT EXISTS payment_idempotency_keys (
 CREATE INDEX idx_payment_idempotency_keys_user_id ON payment_idempotency_keys(user_id);
 CREATE INDEX idx_payment_idempotency_keys_key ON payment_idempotency_keys(idempotency_key);
 CREATE INDEX idx_payment_idempotency_keys_expires_at ON payment_idempotency_keys(expires_at);
+
+-- rollback: DROP INDEX IF EXISTS idx_payment_idempotency_keys_expires_at;
+-- rollback: DROP INDEX IF EXISTS idx_payment_idempotency_keys_key;
+-- rollback: DROP INDEX IF EXISTS idx_payment_idempotency_keys_user_id;
+-- rollback: DROP TABLE IF EXISTS payment_idempotency_keys;

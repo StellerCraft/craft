@@ -32,7 +32,43 @@ export interface InvoiceDeliveryResult {
     delivered: boolean;
 }
 
+export interface RetryOptions {
+    maxAttempts: number;
+    initialDelayMs: number;
+}
+
+const DEFAULT_RETRY_OPTIONS: RetryOptions = { maxAttempts: 3, initialDelayMs: 500 };
+
+/**
+ * Builds the HTML body for an invoice notification email.
+ *
+ * Extracted as a pure function so it can be unit-tested independently of
+ * the fetch call and reused by other email flows.
+ *
+ * @param invoiceNumber - The human-readable invoice identifier (e.g. "INV-0001").
+ * @param pdfUrl        - The Stripe-hosted URL from which the customer can
+ *                        download the PDF.
+ * @returns A complete HTML string suitable for use as an email body.
+ */
+export function buildInvoiceEmailHtml(invoiceNumber: string, pdfUrl: string): string {
+    return `<p>Thank you for your subscription.</p>
+<p>Your invoice <strong>${invoiceNumber}</strong> is ready.</p>
+<p><a href="${pdfUrl}">Download Invoice PDF</a></p>`;
+}
+
 export class InvoiceDeliveryService {
+    private readonly retryOptions: RetryOptions;
+
+    /**
+     * @param retryOptions - Optional retry configuration for transient email
+     *   failures. Defaults to `{ maxAttempts: 3, initialDelayMs: 500 }`.
+     *   Pass a custom value in tests or environment-specific wiring to tune
+     *   back-off behaviour without editing source.
+     */
+    constructor(retryOptions?: RetryOptions) {
+        this.retryOptions = retryOptions ?? DEFAULT_RETRY_OPTIONS;
+    }
+
     /**
      * Deliver the invoice PDF for the given Stripe invoice ID.
      * Retries transient email failures with exponential back-off.
@@ -57,7 +93,7 @@ export class InvoiceDeliveryService {
         // Send email with retry
         const result = await retryWithBackoff(
             () => this.sendInvoiceEmail(customerEmail, invoice.number ?? invoiceId, pdfUrl),
-            { maxAttempts: 3, initialDelayMs: 500 },
+            this.retryOptions,
         );
 
         if (!result.success) {
@@ -108,9 +144,7 @@ export class InvoiceDeliveryService {
                 from,
                 to,
                 subject: `Your CRAFT invoice ${invoiceNumber}`,
-                html: `<p>Thank you for your subscription.</p>
-<p>Your invoice <strong>${invoiceNumber}</strong> is ready.</p>
-<p><a href="${pdfUrl}">Download Invoice PDF</a></p>`,
+                html: buildInvoiceEmailHtml(invoiceNumber, pdfUrl),
             }),
         });
 

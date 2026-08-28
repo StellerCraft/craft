@@ -131,7 +131,8 @@ export class HealthMonitorService {
     > {
         const supabase = createClient();
 
-        // Get all active deployments
+        const startTime = Date.now();
+
         const { data: deployments } = await supabase
             .from('deployments')
             .select('id')
@@ -142,15 +143,22 @@ export class HealthMonitorService {
             return [];
         }
 
-        const results = await Promise.all(
-            deployments.map(async (deployment) => {
+        const results = await pMap(
+            deployments,
+            async (deployment) => {
                 const health = await this.checkDeploymentHealth(deployment.id);
                 return {
                     deploymentId: deployment.id,
                     isHealthy: health.isHealthy,
                     responseTime: health.responseTime,
                 };
-            })
+            },
+            parseInt(process.env.HEALTH_CHECK_CONCURRENCY || '20', 10),
+        );
+
+        const durationMs = Date.now() - startTime;
+        console.log(
+            `[health-monitor] Sweep completed: ${deployments.length} deployments checked in ${durationMs}ms`
         );
 
         return results;
@@ -373,6 +381,57 @@ export class HealthMonitorService {
             poolMetrics: metrics,
         };
     }
+}
+
+async function pMap<T, R>(
+    items: T[],
+    fn: (item: T) => Promise<R>,
+    concurrency: number,
+): Promise<R[]> {
+    const results: R[] = new Array(items.length);
+    let index = 0;
+    let activeCount = 0;
+    let resolve: (() => void) | null = null;
+
+    const errors: Error[] = [];
+
+    function done() {
+        activeCount--;
+        if (resolve && activeCount === 0) {
+            resolve();
+        }
+    }
+
+    function runNext() {
+        while (activeCount < concurrency && index < items.length) {
+            const currentIndex = index++;
+            activeCount++;
+            fn(items[currentIndex])
+                .then((result) => {
+                    results[currentIndex] = result;
+                    done();
+                    runNext();
+                })
+                .catch((err) => {
+                    errors.push(err);
+                    done();
+                    runNext();
+                });
+        }
+    }
+
+    return new Promise((res) => {
+        resolve = res;
+        runNext();
+        if (activeCount === 0 && index === items.length) {
+            res();
+        }
+    }).then(() => {
+        if (errors.length > 0) {
+            throw errors[0];
+        }
+        return results;
+    });
 }
 
 // Export singleton instance

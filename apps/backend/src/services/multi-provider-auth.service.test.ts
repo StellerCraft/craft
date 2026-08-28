@@ -14,11 +14,14 @@ vi.mock('@/lib/github/token-encryption', () => ({
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 type UpdatePayload = Record<string, unknown>;
+type RpcCall = { fn: string; args: Record<string, unknown> };
 
 function makeSupabase(rows: Record<string, unknown> = {}) {
     const updateCalls: UpdatePayload[] = [];
+    const rpcCalls: RpcCall[] = [];
     const client = {
         _updateCalls: updateCalls,
+        _rpcCalls: rpcCalls,
         from: vi.fn().mockReturnValue({
             select: vi.fn().mockReturnThis(),
             update: vi.fn().mockImplementation((payload: UpdatePayload) => {
@@ -29,6 +32,10 @@ function makeSupabase(rows: Record<string, unknown> = {}) {
             }),
             eq: vi.fn().mockReturnThis(),
             single: vi.fn().mockResolvedValue({ data: rows, error: null }),
+        }),
+        rpc: vi.fn().mockImplementation((fn: string, args: Record<string, unknown>) => {
+            rpcCalls.push({ fn, args });
+            return Promise.resolve({ error: null });
         }),
     };
     return client as any;
@@ -82,27 +89,41 @@ describe('MultiProviderAuthService', () => {
         expect(result.connected).toBe(true);
         expect(result.provider).toBe('stellar');
 
-        const payload = supabase._updateCalls[0];
-        expect(payload.provider_connections).toMatchObject({
-            stellar: { publicKey: 'GABC123' },
-        });
+        const rpcCall = supabase._rpcCalls[0];
+        expect(rpcCall.args.p_value).toMatchObject({ publicKey: 'GABC123' });
         // No private key field
-        expect(JSON.stringify(payload)).not.toContain('privateKey');
-        expect(JSON.stringify(payload)).not.toContain('secretKey');
+        expect(JSON.stringify(rpcCall.args)).not.toContain('privateKey');
+        expect(JSON.stringify(rpcCall.args)).not.toContain('secretKey');
     });
 
-    it('preserves existing provider_connections when adding Stellar', async () => {
-        const existing = { someOther: { data: 'value' } };
-        const supabase = makeSupabase({ provider_connections: existing });
+    it('merges Stellar into provider_connections atomically via RPC (no client-side read-modify-write)', async () => {
+        // Regression test: connectStellar/disconnectProvider used to read
+        // provider_connections, merge in memory, then write the whole object
+        // back — a race between two concurrent requests could silently drop
+        // one side's change. The merge now happens inside a single row-locked
+        // Postgres function (see supabase/migrations/017_provider_connections_atomic_rpc.sql),
+        // so the client only ever sends its own provider's value, never a
+        // merged snapshot of the whole column.
+        const supabase = makeSupabase({ provider_connections: { someOther: { data: 'value' } } });
         const { multiProviderAuthService } = await import('./multi-provider-auth.service');
 
         await multiProviderAuthService.connectStellar(supabase, 'user-1', 'GXYZ');
 
-        const payload = supabase._updateCalls[0];
-        expect(payload.provider_connections).toMatchObject({
-            someOther: { data: 'value' },
-            stellar: { publicKey: 'GXYZ' },
+        expect(supabase.from).not.toHaveBeenCalled();
+        expect(supabase.rpc).toHaveBeenCalledWith('set_provider_connection', {
+            p_user_id: 'user-1',
+            p_provider: 'stellar',
+            p_value: expect.objectContaining({ publicKey: 'GXYZ' }),
         });
+    });
+
+    it('throws when connecting Stellar fails through RPC', async () => {
+        const supabase = makeSupabase();
+        supabase.rpc.mockResolvedValueOnce({ error: { message: 'database unavailable' } });
+        const { multiProviderAuthService } = await import('./multi-provider-auth.service');
+
+        await expect(multiProviderAuthService.connectStellar(supabase, 'user-1', 'GXYZ'))
+            .rejects.toThrow('Failed to connect Stellar wallet: database unavailable');
     });
 
     // ── disconnectProvider ────────────────────────────────────────────────────
@@ -121,7 +142,7 @@ describe('MultiProviderAuthService', () => {
         expect(payload.github_token_encrypted).toBeNull();
     });
 
-    it('removes only the stellar key from provider_connections on disconnect', async () => {
+    it('removes only the stellar key from provider_connections on disconnect via atomic RPC', async () => {
         const supabase = makeSupabase({
             provider_connections: { stellar: { publicKey: 'G1' }, other: { x: 1 } },
         });
@@ -129,9 +150,23 @@ describe('MultiProviderAuthService', () => {
 
         await multiProviderAuthService.disconnectProvider(supabase, 'user-1', 'stellar');
 
-        const payload = supabase._updateCalls[0];
-        expect(payload.provider_connections).not.toHaveProperty('stellar');
-        expect(payload.provider_connections).toMatchObject({ other: { x: 1 } });
+        // No client-side select-then-update — the removal happens inside
+        // remove_provider_connection's row-locked UPDATE, closing the race
+        // where a concurrent connect/disconnect could clobber this change.
+        expect(supabase.from).not.toHaveBeenCalled();
+        expect(supabase.rpc).toHaveBeenCalledWith('remove_provider_connection', {
+            p_user_id: 'user-1',
+            p_provider: 'stellar',
+        });
+    });
+
+    it('throws when disconnecting Stellar fails through RPC', async () => {
+        const supabase = makeSupabase();
+        supabase.rpc.mockResolvedValueOnce({ error: { message: 'database unavailable' } });
+        const { multiProviderAuthService } = await import('./multi-provider-auth.service');
+
+        await expect(multiProviderAuthService.disconnectProvider(supabase, 'user-1', 'stellar'))
+            .rejects.toThrow('Failed to disconnect Stellar: database unavailable');
     });
 
     // ── getConnectionStatus ───────────────────────────────────────────────────
@@ -183,6 +218,20 @@ describe('MultiProviderAuthService', () => {
         expect(status.stellar).toBe(true);
     });
 
+    it('throws when the Supabase query returns an error instead of masking it as disconnected', async () => {
+        const supabase = makeSupabase();
+        supabase.from.mockReturnValue({
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            single: vi.fn().mockResolvedValue({ data: null, error: { message: 'connection dropped' } }),
+        });
+        const { multiProviderAuthService } = await import('./multi-provider-auth.service');
+
+        await expect(
+            multiProviderAuthService.getConnectionStatus(supabase, 'user-1'),
+        ).rejects.toThrow('Failed to fetch connection status: connection dropped');
+    });
+
     // ── getGitHubToken ────────────────────────────────────────────────────────
 
     it('decrypts and returns the GitHub token', async () => {
@@ -224,5 +273,20 @@ describe('MultiProviderAuthService', () => {
 
         const key = await multiProviderAuthService.getStellarPublicKey(supabase, 'user-1');
         expect(key).toBeNull();
+    });
+
+    it('executes connectStellar and disconnectProvider atomically without read-modify-write race', async () => {
+        const supabase = makeSupabase({ provider_connections: { other: { key: 'val' } } });
+        const { multiProviderAuthService } = await import('./multi-provider-auth.service');
+
+        const [connectRes, disconnectRes] = await Promise.all([
+            multiProviderAuthService.connectStellar(supabase, 'user-1', 'GCONCURRENT'),
+            multiProviderAuthService.disconnectProvider(supabase, 'user-1', 'stellar'),
+        ]);
+
+        expect(connectRes.provider).toBe('stellar');
+        expect(disconnectRes.provider).toBe('stellar');
+        expect(supabase.rpc).toHaveBeenCalledWith('set_provider_connection', expect.objectContaining({ p_user_id: 'user-1' }));
+        expect(supabase.rpc).toHaveBeenCalledWith('remove_provider_connection', expect.objectContaining({ p_user_id: 'user-1' }));
     });
 });

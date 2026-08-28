@@ -48,6 +48,52 @@ export interface CleanupJobHealth {
     maxRecordsDeleted: number | null;
 }
 
+/** A storage artifact with no corresponding deployments record. */
+export interface OrphanedArtifact {
+    /** Object path within the storage bucket. */
+    path: string;
+    /** Object size in bytes (0 when the provider does not report it). */
+    sizeBytes: number;
+    /** Age of the object in seconds at the time of cleanup. */
+    ageSeconds: number;
+}
+
+export interface OrphanCleanupResult extends CleanupResult {
+    /** Artifacts that were deleted this run. */
+    orphansDeleted: OrphanedArtifact[];
+    /** Total artifacts scanned in the bucket. */
+    scanned: number;
+    /** Orphans skipped because they were still inside the retention window. */
+    skippedWithinRetention: number;
+    /** Whether the batch limit was hit (more orphans may remain). */
+    batchLimitReached: boolean;
+}
+
+export interface PurgeOrphanedArtifactsOptions {
+    /** Storage bucket to scan (default: env DEPLOYMENT_ARTIFACT_BUCKET or 'deployment-artifacts'). */
+    bucket?: string;
+    /** Hours an orphan must survive before deletion (default: 24, debugging window). */
+    retentionHours?: number;
+    /** Maximum orphans to delete per run (default: 100). */
+    batchLimit?: number;
+    /** Override the current time (testing only). */
+    now?: Date;
+}
+
+const DEFAULT_ARTIFACT_BUCKET = 'deployment-artifacts';
+const ORPHAN_RETENTION_HOURS = 24;
+const ORPHAN_BATCH_LIMIT = 100;
+
+/**
+ * Derive the deployment id an artifact belongs to from its object path.
+ * Supports both `<deploymentId>/bundle.zip` (folder) and `<deploymentId>.zip`
+ * (flat) layouts: take the first path segment, then strip the extension suffix.
+ */
+export function deploymentIdFromArtifactPath(path: string): string {
+    const firstSegment = path.split('/')[0] ?? path;
+    return firstSegment.split('.')[0] ?? firstSegment;
+}
+
 // ── Service ───────────────────────────────────────────────────────────────────
 
 export class CleanupService {
@@ -157,6 +203,126 @@ export class CleanupService {
             recordsDeleted: data ?? 0,
             description: 'Old usage records purged',
             executedAt: new Date(),
+        };
+    }
+
+    /**
+     * Detect and remove orphaned Supabase Storage artifacts.
+     *
+     * An orphan is a storage object (generated code bundle) that has no
+     * corresponding row in the deployments table — typically left behind by a
+     * deployment that failed before its artifact was registered.
+     *
+     * Safety rules:
+     *   - Retention: orphans younger than `retentionHours` (default 24h) are
+     *     kept to preserve a debugging window.
+     *   - Batch limit: at most `batchLimit` orphans (default 100) are deleted
+     *     per run to bound cron work.
+     *   - Audit: every deleted orphan is logged to orphaned_artifact_cleanup_log
+     *     with its size and age.
+     */
+    async purgeOrphanedArtifacts(
+        options: PurgeOrphanedArtifactsOptions = {},
+    ): Promise<OrphanCleanupResult> {
+        const bucket =
+            options.bucket ?? process.env.DEPLOYMENT_ARTIFACT_BUCKET ?? DEFAULT_ARTIFACT_BUCKET;
+        const retentionHours = options.retentionHours ?? ORPHAN_RETENTION_HOURS;
+        const batchLimit = options.batchLimit ?? ORPHAN_BATCH_LIMIT;
+        const now = options.now ?? new Date();
+        const retentionMs = retentionHours * 60 * 60 * 1000;
+
+        const supabase = createClient();
+
+        // 1. Enumerate artifacts in the bucket.
+        const { data: objects, error: listError } = await supabase.storage
+            .from(bucket)
+            .list('', { limit: 1000, sortBy: { column: 'created_at', order: 'asc' } });
+
+        if (listError) {
+            throw new Error(`Failed to list storage artifacts: ${listError.message}`);
+        }
+
+        const artifacts = objects ?? [];
+
+        // 2. Cross-reference derived deployment ids against the deployments table.
+        const candidateIds = Array.from(
+            new Set(artifacts.map((o) => deploymentIdFromArtifactPath(o.name))),
+        );
+
+        const existingIds = new Set<string>();
+        if (candidateIds.length > 0) {
+            const { data: rows, error: depError } = await supabase
+                .from('deployments')
+                .select('id')
+                .in('id', candidateIds);
+
+            if (depError) {
+                throw new Error(`Failed to cross-reference deployments: ${depError.message}`);
+            }
+            for (const row of rows ?? []) existingIds.add((row as { id: string }).id);
+        }
+
+        // 3. Identify orphans, applying the retention window.
+        let skippedWithinRetention = 0;
+        const orphans: OrphanedArtifact[] = [];
+
+        for (const obj of artifacts) {
+            const deploymentId = deploymentIdFromArtifactPath(obj.name);
+            if (existingIds.has(deploymentId)) continue; // has a deployment record → not orphan
+
+            const createdAt = obj.created_at ? new Date(obj.created_at) : now;
+            const ageMs = now.getTime() - createdAt.getTime();
+            if (ageMs < retentionMs) {
+                skippedWithinRetention++;
+                continue; // still inside the debugging window
+            }
+
+            orphans.push({
+                path: obj.name,
+                sizeBytes: (obj.metadata as { size?: number } | null)?.size ?? 0,
+                ageSeconds: Math.floor(ageMs / 1000),
+            });
+        }
+
+        // 4. Apply the batch limit (oldest first, since the list is asc by age).
+        const batchLimitReached = orphans.length > batchLimit;
+        const toDelete = orphans.slice(0, batchLimit);
+
+        // 5. Delete and audit each orphan.
+        if (toDelete.length > 0) {
+            const { error: removeError } = await supabase.storage
+                .from(bucket)
+                .remove(toDelete.map((o) => o.path));
+
+            if (removeError) {
+                throw new Error(`Failed to delete orphaned artifacts: ${removeError.message}`);
+            }
+
+            const auditRows = toDelete.map((o) => ({
+                artifact_path: o.path,
+                bucket,
+                size_bytes: o.sizeBytes,
+                age_seconds: o.ageSeconds,
+            }));
+
+            const { error: auditError } = await supabase
+                .from('orphaned_artifact_cleanup_log')
+                .insert(auditRows);
+
+            if (auditError) {
+                // Audit failures are logged but must not mask a successful purge.
+                console.error('Orphan cleanup audit insert failed:', auditError.message);
+            }
+        }
+
+        return {
+            recordsDeleted: toDelete.length,
+            description: `Orphaned deployment artifacts purged from ${bucket}`,
+            executedAt: now,
+            orphansDeleted: toDelete,
+            scanned: artifacts.length,
+            skippedWithinRetention,
+            batchLimitReached,
         };
     }
 

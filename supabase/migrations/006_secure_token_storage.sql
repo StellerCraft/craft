@@ -37,3 +37,6 @@ ALTER TABLE profiles
             AND github_token_encrypted NOT LIKE 'ghr\_%' ESCAPE '\'
         )
     );
+
+-- rollback: ALTER TABLE profiles DROP CONSTRAINT IF EXISTS profiles_github_token_not_plaintext;
+-- rollback: DROP INDEX IF EXISTS idx_profiles_github_token_expires_at;

@@ -11,11 +11,13 @@
  *   - Signature stripping
  *   - Malformed tokens
  *   - Payload tampering
+ *   - Multi-tenant isolation (cross-tenant token reuse, algorithm confusion, nbf attacks)
  *
  * All adversarial inputs must result in 401 responses with no stack traces.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import * as fc from 'fast-check';
 import { ADVERSARIAL_JWT_FIXTURES, decodeJwtUnsafe } from '../tests/__fixtures__/adversarial-jwt';
 
 describe('Auth Service - Adversarial JWT Input Corpus', () => {
@@ -249,6 +251,171 @@ describe('Auth Service - Adversarial JWT Input Corpus', () => {
           }
         }).not.toThrow();
       });
+    });
+  });
+
+  describe('Multi-Tenant JWT Isolation (Property Tests, Issue #736)', () => {
+    /**
+     * Builds a tenant-scoped JWT using only test fixtures — no production keys.
+     * The "signature" is a deterministic stub; real RSA/HMAC signing is not used.
+     */
+    function makeTenantJwt(
+      tenantId: string,
+      sub: string,
+      expOffset: number,
+      nbfOffset: number,
+      alg: string = 'HS256',
+    ): string {
+      const now = Math.floor(Date.now() / 1000);
+      const header = Buffer.from(JSON.stringify({ alg, typ: 'JWT' })).toString('base64url');
+      const payload = Buffer.from(
+        JSON.stringify({ sub, tenantId, exp: now + expOffset, nbf: now + nbfOffset, iat: now }),
+      ).toString('base64url');
+      const sig = Buffer.from(`stub-sig-for-${tenantId}`).toString('base64url');
+      return `${header}.${payload}.${sig}`;
+    }
+
+    /**
+     * Simulates a tenant-aware JWT validator (test fixture — no real crypto).
+     * A production validator would verify the HMAC/RSA signature; here we focus
+     * on the structural invariants that must hold regardless of crypto backend.
+     */
+    function verifyToken(
+      token: string,
+      expectedTenantId: string,
+      expectedAlg: string = 'HS256',
+    ): { valid: boolean; reason?: string } {
+      try {
+        const decoded = decodeJwtUnsafe(token);
+
+        if (decoded.header.alg !== expectedAlg) {
+          return { valid: false, reason: 'algorithm_mismatch' };
+        }
+
+        if (decoded.header.alg === 'none') {
+          return { valid: false, reason: 'none_algorithm_rejected' };
+        }
+
+        const now = Math.floor(Date.now() / 1000);
+
+        if (decoded.payload.exp !== undefined && decoded.payload.exp < now) {
+          return { valid: false, reason: 'token_expired' };
+        }
+
+        if (decoded.payload.nbf !== undefined && decoded.payload.nbf > now) {
+          return { valid: false, reason: 'token_not_yet_valid' };
+        }
+
+        if (decoded.payload.tenantId !== expectedTenantId) {
+          return { valid: false, reason: 'tenant_mismatch' };
+        }
+
+        return { valid: true };
+      } catch {
+        return { valid: false, reason: 'decode_error' };
+      }
+    }
+
+    it('cross-tenant token reuse is always rejected: tokenA must never grant access to tenantB', async () => {
+      await fc.assert(
+        fc.asyncProperty(
+          fc.uuid(),
+          fc.uuid(),
+          fc.uuid(),
+          async (tenantA, tenantB, userId) => {
+            fc.pre(tenantA !== tenantB);
+
+            const token = makeTenantJwt(tenantA, userId, 3600, 0);
+            const result = verifyToken(token, tenantB);
+
+            expect(result.valid).toBe(false);
+            expect(result.reason).toBe('tenant_mismatch');
+          },
+        ),
+        { numRuns: 200 },
+      );
+    });
+
+    it('valid token is accepted by its own tenant validator', async () => {
+      await fc.assert(
+        fc.asyncProperty(fc.uuid(), fc.uuid(), async (tenantId, userId) => {
+          const token = makeTenantJwt(tenantId, userId, 3600, -60);
+          const result = verifyToken(token, tenantId);
+
+          expect(result.valid).toBe(true);
+        }),
+        { numRuns: 200 },
+      );
+    });
+
+    it('algorithm confusion: HS256 token is rejected by RS256 validator regardless of tenant', async () => {
+      await fc.assert(
+        fc.asyncProperty(fc.uuid(), fc.uuid(), async (tenantId, userId) => {
+          const hs256Token = makeTenantJwt(tenantId, userId, 3600, 0, 'HS256');
+          const result = verifyToken(hs256Token, tenantId, 'RS256');
+
+          expect(result.valid).toBe(false);
+          expect(result.reason).toBe('algorithm_mismatch');
+        }),
+        { numRuns: 100 },
+      );
+    });
+
+    it('expired token with future nbf is rejected even for the correct tenant', async () => {
+      await fc.assert(
+        fc.asyncProperty(fc.uuid(), fc.uuid(), async (tenantId, userId) => {
+          // exp 10 seconds ago, nbf 60 seconds in the future
+          const token = makeTenantJwt(tenantId, userId, -10, 60);
+          const result = verifyToken(token, tenantId);
+
+          expect(result.valid).toBe(false);
+        }),
+        { numRuns: 100 },
+      );
+    });
+
+    it('token with future nbf is rejected even with valid exp and correct tenant', async () => {
+      await fc.assert(
+        fc.asyncProperty(fc.uuid(), fc.uuid(), async (tenantId, userId) => {
+          // exp valid (1 hour from now), nbf 60 seconds in the future
+          const token = makeTenantJwt(tenantId, userId, 3600, 60);
+          const result = verifyToken(token, tenantId);
+
+          expect(result.valid).toBe(false);
+          expect(result.reason).toBe('token_not_yet_valid');
+        }),
+        { numRuns: 100 },
+      );
+    });
+
+    it('none-algorithm tokens are always rejected across arbitrary tenant configs', async () => {
+      await fc.assert(
+        fc.asyncProperty(fc.uuid(), fc.uuid(), async (tenantId, userId) => {
+          const token = makeTenantJwt(tenantId, userId, 3600, 0, 'none');
+          const result = verifyToken(token, tenantId);
+
+          expect(result.valid).toBe(false);
+        }),
+        { numRuns: 100 },
+      );
+    });
+
+    it('cross-tenant rejection is symmetric: if A rejects B, B also rejects A', async () => {
+      await fc.assert(
+        fc.asyncProperty(fc.uuid(), fc.uuid(), fc.uuid(), async (tenantA, tenantB, userId) => {
+          fc.pre(tenantA !== tenantB);
+
+          const tokenA = makeTenantJwt(tenantA, userId, 3600, 0);
+          const tokenB = makeTenantJwt(tenantB, userId, 3600, 0);
+
+          const aInB = verifyToken(tokenA, tenantB);
+          const bInA = verifyToken(tokenB, tenantA);
+
+          expect(aInB.valid).toBe(false);
+          expect(bInA.valid).toBe(false);
+        }),
+        { numRuns: 200 },
+      );
     });
   });
 

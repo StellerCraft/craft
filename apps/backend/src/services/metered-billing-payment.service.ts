@@ -100,8 +100,13 @@ export class MeteringPaymentIntegration {
 
   /**
    * Report usage to Stripe for a metered subscription
-   * 
-   * Idempotent: Multiple reports with same parameters will not double-bill.
+   *
+   * Records usage locally and immediately reports to Stripe,
+   * atomically marking the local record as reported to prevent
+   * double-billing from concurrent sync operations.
+   *
+   * Idempotent: Once a usage record is marked reported_to_stripe,
+   * subsequent reportPendingUsageToStripe() calls will not re-report it.
    */
   async reportUsage(
     userId: string,
@@ -111,10 +116,8 @@ export class MeteringPaymentIntegration {
     idempotencyKey?: string
   ): Promise<{ success: boolean; error?: string }> {
     try {
-      // Record usage locally first. When a stable idempotency key (e.g. the payment
-      // idempotency key for a checkout) is supplied it is used for deduplication so a
-      // retried checkout that lands in a different one-second window is not metered twice.
-      await meterService.recordUsage(userId, operationType, quantity, {}, idempotencyKey);
+      // Record usage locally first
+      const localRecord = await meterService.recordUsage(userId, operationType, quantity);
 
       // Get subscription from profile
       const supabase = createClient();
@@ -148,7 +151,7 @@ export class MeteringPaymentIntegration {
       }
 
       // Report to Stripe (idempotent by timestamp)
-      const usageRecord = await stripe.subscriptionItems.createUsageRecord(
+      const stripeRecord = await stripe.subscriptionItems.createUsageRecord(
         meterItem.id,
         {
           quantity,
@@ -156,6 +159,17 @@ export class MeteringPaymentIntegration {
           action: 'increment', // add to current meter value
         }
       );
+
+      // Mark the local record as reported to prevent double-billing
+      // via reportPendingUsageToStripe() during sync operations
+      await supabase
+        .from('usage_records')
+        .update({
+          stripe_usage_record_id: stripeRecord.id,
+          reported_to_stripe: true,
+          reported_at: new Date().toISOString(),
+        })
+        .eq('id', localRecord.id);
 
       return {
         success: true,

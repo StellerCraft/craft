@@ -14,7 +14,7 @@ import React, { useEffect, useState } from 'react';
 import { AppShell } from '@/components/app';
 import { TierUsageIndicators } from '@/components/app/TierUsageIndicators';
 import { UpgradePromptModal } from '@/components/app/UpgradePrompt';
-import { TIER_CONFIGS } from '@/lib/stripe/pricing';
+import { TIER_CONFIGS, formatTierPrice } from '@/lib/stripe/pricing';
 import type { SubscriptionTier } from '@craft/types';
 import type { SubscriptionStatus } from '@craft/types';
 import type { User, NavItem } from '@/types/navigation';
@@ -117,6 +117,7 @@ export default function BillingPage() {
   const [cancelling, setCancelling] = useState(false);
   const [upgradeModalOpen, setUpgradeModalOpen] = useState(false);
   const [cancelConfirmOpen, setCancelConfirmOpen] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
 
   // Fetch subscription on mount
   useEffect(() => {
@@ -137,6 +138,7 @@ export default function BillingPage() {
 
   async function handleCancel() {
     setCancelling(true);
+    setCancelError(null);
     try {
       const res = await fetch('/api/payments/cancel', { method: 'POST' });
       if (!res.ok) throw new Error('Failed to cancel subscription');
@@ -150,11 +152,11 @@ export default function BillingPage() {
             }
           : prev
       );
+      setCancelConfirmOpen(false);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Unknown error');
+      setCancelError(e instanceof Error ? e.message : 'Unknown error');
     } finally {
       setCancelling(false);
-      setCancelConfirmOpen(false);
     }
   }
 
@@ -255,7 +257,7 @@ export default function BillingPage() {
 
                   {tier !== 'free' && (
                     <p className="text-2xl font-bold text-on-surface">
-                      ${(tierConfig.monthlyPriceCents / 100).toFixed(0)}
+                      {formatTierPrice(tierConfig.monthlyPriceCents)}
                       <span className="text-sm font-normal text-on-surface-variant">
                         /mo
                       </span>
@@ -398,6 +400,15 @@ export default function BillingPage() {
               Your plan will remain active until the end of the current billing
               period. After that, you&apos;ll be moved to the Free tier.
             </p>
+            {cancelError && (
+              <p
+                role="alert"
+                data-testid="cancel-error"
+                className="mb-4 rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800"
+              >
+                {cancelError}
+              </p>
+            )}
             <div className="flex gap-3">
               <button
                 data-testid="confirm-cancel-btn"
@@ -409,7 +420,10 @@ export default function BillingPage() {
               </button>
               <button
                 data-testid="dismiss-cancel-btn"
-                onClick={() => setCancelConfirmOpen(false)}
+                onClick={() => {
+                  setCancelConfirmOpen(false);
+                  setCancelError(null);
+                }}
                 className="flex-1 rounded-lg border border-gray-200 py-2 text-sm text-gray-600 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-gray-300"
               >
                 Keep plan

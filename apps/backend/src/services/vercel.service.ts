@@ -74,6 +74,22 @@ export interface DomainCertificate {
     error?: string;
 }
 
+export type HttpsVerificationReason =
+    | 'cert_expired'
+    | 'cert_untrusted'
+    | 'cert_error'
+    | 'no_hsts'
+    | 'cert_pending';
+
+export interface HttpsVerificationResult {
+    /** Whether the domain passes full HTTPS verification (active cert + HSTS). */
+    verified: boolean;
+    /** Machine-readable reason when verified is false. */
+    reason?: HttpsVerificationReason;
+    /** Underlying certificate state. */
+    certState?: CertificateState;
+}
+
 export class VercelApiError extends Error {
     constructor(
         message: string,
@@ -636,8 +652,12 @@ export class VercelService {
      * added. The caller should poll `getCertificate` to track progress.
      *
      * Throws DOMAIN_EXISTS (409) if the domain is already attached.
+     *
+     * Named distinctly from the addDomain(request: AddDomainRequest) overload
+     * below — a same-named second method would silently replace this one on
+     * the class prototype, which is exactly the bug this rename fixes.
      */
-    async addDomain(projectId: string, domain: string): Promise<void> {
+    async addProjectDomain(projectId: string, domain: string): Promise<void> {
         await this.request(`/v10/projects/${projectId}/domains`, {
             method: 'POST',
             body: JSON.stringify({ name: domain }),
@@ -689,6 +709,53 @@ export class VercelService {
         }
 
         return { domain, state: 'pending' };
+    }
+
+    /**
+     * Perform a full HTTPS verification for a domain:
+     *   1. Retrieve the SSL certificate state via getCertificate.
+     *   2. Confirm the certificate is active (not expired, not self-signed).
+     *   3. Verify that the domain serves a Strict-Transport-Security header.
+     *
+     * Returns { verified: true } only when both checks pass.
+     * Returns { verified: false, reason } with a machine-readable reason code
+     * when any check fails.
+     */
+    async verifyHttpsCertificate(
+        projectId: string,
+        domain: string,
+    ): Promise<HttpsVerificationResult> {
+        const cert = await this.getCertificate(projectId, domain);
+
+        if (cert.state === 'error') {
+            const msg = (cert.error ?? '').toLowerCase();
+            const reason: HttpsVerificationReason =
+                msg.includes('expired') ? 'cert_expired' :
+                msg.includes('self-signed') || msg.includes('untrusted') || msg.includes('unknown ca') ? 'cert_untrusted' :
+                'cert_error';
+            return { verified: false, reason, certState: cert.state };
+        }
+
+        if (cert.state !== 'active') {
+            return { verified: false, reason: 'cert_pending', certState: cert.state };
+        }
+
+        const hsts = await this._checkHsts(domain);
+        if (!hsts) {
+            return { verified: false, reason: 'no_hsts', certState: cert.state };
+        }
+
+        return { verified: true, certState: cert.state };
+    }
+
+    /** Make a HEAD request to https://{domain} and check for the HSTS header. */
+    private async _checkHsts(domain: string): Promise<boolean> {
+        try {
+            const res = await this._fetch(`https://${domain}`, { method: 'HEAD' });
+            return !!res.headers.get('strict-transport-security');
+        } catch {
+            return false;
+        }
     }
 
     /**

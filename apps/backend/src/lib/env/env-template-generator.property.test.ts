@@ -4,9 +4,12 @@ import * as fc from 'fast-check';
 import {
     buildVercelEnvVars,
     buildEnvVarEntries,
+    SECRET_PLACEHOLDER,
     type VercelEnvVar,
     type VercelEnvTarget,
 } from './env-template-generator';
+
+const testSecrets = { SUPABASE_SERVICE_ROLE_KEY: 'test-resolved-secret-role-key' };
 import type { CustomizationConfig } from '@craft/types';
 import type { TemplateFamilyId } from '@/services/code-generator.service';
 
@@ -80,7 +83,7 @@ describe('Vercel Environment Variable Configuration — Property 21', () => {
         it('always includes NEXT_PUBLIC_APP_NAME for any template family', () => {
             fc.assert(
                 fc.property(arbTemplateFamily, arbCustomizationConfig, (family, cfg) => {
-                    const envVars = buildVercelEnvVars(family, cfg);
+                    const envVars = buildVercelEnvVars(family, cfg, testSecrets);
                     const keys = envVars.map((v) => v.key);
 
                     expect(keys).toContain('NEXT_PUBLIC_APP_NAME');
@@ -92,7 +95,7 @@ describe('Vercel Environment Variable Configuration — Property 21', () => {
         it('always includes NEXT_PUBLIC_STELLAR_NETWORK for any template family', () => {
             fc.assert(
                 fc.property(arbTemplateFamily, arbCustomizationConfig, (family, cfg) => {
-                    const envVars = buildVercelEnvVars(family, cfg);
+                    const envVars = buildVercelEnvVars(family, cfg, testSecrets);
                     const keys = envVars.map((v) => v.key);
 
                     expect(keys).toContain('NEXT_PUBLIC_STELLAR_NETWORK');
@@ -104,7 +107,7 @@ describe('Vercel Environment Variable Configuration — Property 21', () => {
         it('always includes NEXT_PUBLIC_HORIZON_URL for any template family', () => {
             fc.assert(
                 fc.property(arbTemplateFamily, arbCustomizationConfig, (family, cfg) => {
-                    const envVars = buildVercelEnvVars(family, cfg);
+                    const envVars = buildVercelEnvVars(family, cfg, testSecrets);
                     const keys = envVars.map((v) => v.key);
 
                     expect(keys).toContain('NEXT_PUBLIC_HORIZON_URL');
@@ -116,7 +119,7 @@ describe('Vercel Environment Variable Configuration — Property 21', () => {
         it('always includes NEXT_PUBLIC_NETWORK_PASSPHRASE for any template family', () => {
             fc.assert(
                 fc.property(arbTemplateFamily, arbCustomizationConfig, (family, cfg) => {
-                    const envVars = buildVercelEnvVars(family, cfg);
+                    const envVars = buildVercelEnvVars(family, cfg, testSecrets);
                     const keys = envVars.map((v) => v.key);
 
                     expect(keys).toContain('NEXT_PUBLIC_NETWORK_PASSPHRASE');
@@ -128,7 +131,7 @@ describe('Vercel Environment Variable Configuration — Property 21', () => {
         it('always includes NEXT_PUBLIC_SUPABASE_URL for any template family', () => {
             fc.assert(
                 fc.property(arbTemplateFamily, arbCustomizationConfig, (family, cfg) => {
-                    const envVars = buildVercelEnvVars(family, cfg);
+                    const envVars = buildVercelEnvVars(family, cfg, testSecrets);
                     const keys = envVars.map((v) => v.key);
 
                     expect(keys).toContain('NEXT_PUBLIC_SUPABASE_URL');
@@ -140,7 +143,7 @@ describe('Vercel Environment Variable Configuration — Property 21', () => {
         it('always includes NEXT_PUBLIC_SUPABASE_ANON_KEY for any template family', () => {
             fc.assert(
                 fc.property(arbTemplateFamily, arbCustomizationConfig, (family, cfg) => {
-                    const envVars = buildVercelEnvVars(family, cfg);
+                    const envVars = buildVercelEnvVars(family, cfg, testSecrets);
                     const keys = envVars.map((v) => v.key);
 
                     expect(keys).toContain('NEXT_PUBLIC_SUPABASE_ANON_KEY');
@@ -152,7 +155,7 @@ describe('Vercel Environment Variable Configuration — Property 21', () => {
         it('always includes SUPABASE_SERVICE_ROLE_KEY for any template family', () => {
             fc.assert(
                 fc.property(arbTemplateFamily, arbCustomizationConfig, (family, cfg) => {
-                    const envVars = buildVercelEnvVars(family, cfg);
+                    const envVars = buildVercelEnvVars(family, cfg, testSecrets);
                     const keys = envVars.map((v) => v.key);
 
                     expect(keys).toContain('SUPABASE_SERVICE_ROLE_KEY');
@@ -168,7 +171,7 @@ describe('Vercel Environment Variable Configuration — Property 21', () => {
         it('NEXT_PUBLIC_APP_NAME value matches branding.appName', () => {
             fc.assert(
                 fc.property(arbTemplateFamily, arbCustomizationConfig, (family, cfg) => {
-                    const envVars = buildVercelEnvVars(family, cfg);
+                    const envVars = buildVercelEnvVars(family, cfg, testSecrets);
                     const appNameVar = envVars.find((v) => v.key === 'NEXT_PUBLIC_APP_NAME');
 
                     expect(appNameVar).toBeDefined();
@@ -181,7 +184,7 @@ describe('Vercel Environment Variable Configuration — Property 21', () => {
         it('NEXT_PUBLIC_PRIMARY_COLOR value matches branding.primaryColor', () => {
             fc.assert(
                 fc.property(arbTemplateFamily, arbCustomizationConfig, (family, cfg) => {
-                    const envVars = buildVercelEnvVars(family, cfg);
+                    const envVars = buildVercelEnvVars(family, cfg, testSecrets);
                     const colorVar = envVars.find((v) => v.key === 'NEXT_PUBLIC_PRIMARY_COLOR');
 
                     expect(colorVar).toBeDefined();
@@ -194,7 +197,7 @@ describe('Vercel Environment Variable Configuration — Property 21', () => {
         it('NEXT_PUBLIC_STELLAR_NETWORK value matches stellar.network', () => {
             fc.assert(
                 fc.property(arbTemplateFamily, arbCustomizationConfig, (family, cfg) => {
-                    const envVars = buildVercelEnvVars(family, cfg);
+                    const envVars = buildVercelEnvVars(family, cfg, testSecrets);
                     const networkVar = envVars.find((v) => v.key === 'NEXT_PUBLIC_STELLAR_NETWORK');
 
                     expect(networkVar).toBeDefined();
@@ -207,7 +210,7 @@ describe('Vercel Environment Variable Configuration — Property 21', () => {
         it('NEXT_PUBLIC_ENABLE_CHARTS value matches features.enableCharts', () => {
             fc.assert(
                 fc.property(arbTemplateFamily, arbCustomizationConfig, (family, cfg) => {
-                    const envVars = buildVercelEnvVars(family, cfg);
+                    const envVars = buildVercelEnvVars(family, cfg, testSecrets);
                     const chartsVar = envVars.find((v) => v.key === 'NEXT_PUBLIC_ENABLE_CHARTS');
 
                     expect(chartsVar).toBeDefined();
@@ -224,7 +227,7 @@ describe('Vercel Environment Variable Configuration — Property 21', () => {
         it('all environment variables have valid VercelEnvTarget values', () => {
             fc.assert(
                 fc.property(arbTemplateFamily, arbCustomizationConfig, (family, cfg) => {
-                    const envVars = buildVercelEnvVars(family, cfg);
+                    const envVars = buildVercelEnvVars(family, cfg, testSecrets);
                     const validTargets: VercelEnvTarget[] = ['production', 'preview', 'development'];
 
                     for (const envVar of envVars) {
@@ -243,7 +246,7 @@ describe('Vercel Environment Variable Configuration — Property 21', () => {
         it('public variables target all environments', () => {
             fc.assert(
                 fc.property(arbTemplateFamily, arbCustomizationConfig, (family, cfg) => {
-                    const envVars = buildVercelEnvVars(family, cfg);
+                    const envVars = buildVercelEnvVars(family, cfg, testSecrets);
                     const publicVars = envVars.filter((v) => v.type === 'plain');
 
                     for (const envVar of publicVars) {
@@ -259,7 +262,7 @@ describe('Vercel Environment Variable Configuration — Property 21', () => {
         it('secret variables target production and preview only', () => {
             fc.assert(
                 fc.property(arbTemplateFamily, arbCustomizationConfig, (family, cfg) => {
-                    const envVars = buildVercelEnvVars(family, cfg);
+                    const envVars = buildVercelEnvVars(family, cfg, testSecrets);
                     const secretVars = envVars.filter((v) => v.type === 'encrypted');
 
                     for (const envVar of secretVars) {
@@ -279,7 +282,7 @@ describe('Vercel Environment Variable Configuration — Property 21', () => {
         it('all environment variables have valid type values', () => {
             fc.assert(
                 fc.property(arbTemplateFamily, arbCustomizationConfig, (family, cfg) => {
-                    const envVars = buildVercelEnvVars(family, cfg);
+                    const envVars = buildVercelEnvVars(family, cfg, testSecrets);
                     const validTypes = ['plain', 'secret', 'encrypted'];
 
                     for (const envVar of envVars) {
@@ -293,7 +296,7 @@ describe('Vercel Environment Variable Configuration — Property 21', () => {
         it('public variables are typed as plain', () => {
             fc.assert(
                 fc.property(arbTemplateFamily, arbCustomizationConfig, (family, cfg) => {
-                    const envVars = buildVercelEnvVars(family, cfg);
+                    const envVars = buildVercelEnvVars(family, cfg, testSecrets);
                     const publicVars = envVars.filter((v) =>
                         v.key.startsWith('NEXT_PUBLIC_') && v.key !== 'SUPABASE_SERVICE_ROLE_KEY'
                     );
@@ -309,7 +312,7 @@ describe('Vercel Environment Variable Configuration — Property 21', () => {
         it('secret variables are typed as encrypted', () => {
             fc.assert(
                 fc.property(arbTemplateFamily, arbCustomizationConfig, (family, cfg) => {
-                    const envVars = buildVercelEnvVars(family, cfg);
+                    const envVars = buildVercelEnvVars(family, cfg, testSecrets);
                     const secretVars = envVars.filter((v) => v.key === 'SUPABASE_SERVICE_ROLE_KEY');
 
                     for (const envVar of secretVars) {
@@ -398,7 +401,7 @@ describe('Vercel Environment Variable Configuration — Property 21', () => {
         it('all environment variables have non-empty key and value', () => {
             fc.assert(
                 fc.property(arbTemplateFamily, arbCustomizationConfig, (family, cfg) => {
-                    const envVars = buildVercelEnvVars(family, cfg);
+                    const envVars = buildVercelEnvVars(family, cfg, testSecrets);
 
                     for (const envVar of envVars) {
                         expect(envVar.key.length).toBeGreaterThan(0);
@@ -412,7 +415,7 @@ describe('Vercel Environment Variable Configuration — Property 21', () => {
         it('no duplicate environment variable keys', () => {
             fc.assert(
                 fc.property(arbTemplateFamily, arbCustomizationConfig, (family, cfg) => {
-                    const envVars = buildVercelEnvVars(family, cfg);
+                    const envVars = buildVercelEnvVars(family, cfg, testSecrets);
                     const keys = envVars.map((v) => v.key);
                     const uniqueKeys = new Set(keys);
 
@@ -426,7 +429,7 @@ describe('Vercel Environment Variable Configuration — Property 21', () => {
             fc.assert(
                 fc.property(arbTemplateFamily, arbCustomizationConfig, (family, cfg) => {
                     const entries = buildEnvVarEntries(family, cfg);
-                    const envVars = buildVercelEnvVars(family, cfg);
+                    const envVars = buildVercelEnvVars(family, cfg, testSecrets);
 
                     const entryKeys = entries.map((e) => e.key).sort();
                     const varKeys = envVars.map((v) => v.key).sort();
@@ -440,7 +443,7 @@ describe('Vercel Environment Variable Configuration — Property 21', () => {
         it('buildVercelEnvVars produces at least 7 environment variables', () => {
             fc.assert(
                 fc.property(arbTemplateFamily, arbCustomizationConfig, (family, cfg) => {
-                    const envVars = buildVercelEnvVars(family, cfg);
+                    const envVars = buildVercelEnvVars(family, cfg, testSecrets);
 
                     expect(envVars.length).toBeGreaterThanOrEqual(7);
                 }),
@@ -464,7 +467,7 @@ describe('Vercel Environment Variable Configuration — Property 21', () => {
                         },
                     })),
                     (family, cfg) => {
-                        const envVars = buildVercelEnvVars(family, cfg);
+                        const envVars = buildVercelEnvVars(family, cfg, testSecrets);
                         const appNameVar = envVars.find((v) => v.key === 'NEXT_PUBLIC_APP_NAME');
 
                         // Empty appName should still produce a value (even if empty string)
@@ -488,7 +491,7 @@ describe('Vercel Environment Variable Configuration — Property 21', () => {
                         },
                     })),
                     (family, cfg) => {
-                        const envVars = buildVercelEnvVars(family, cfg);
+                        const envVars = buildVercelEnvVars(family, cfg, testSecrets);
                         const colorVar = envVars.find((v) => v.key === 'NEXT_PUBLIC_PRIMARY_COLOR');
 
                         // Invalid color should still be passed through
@@ -526,7 +529,7 @@ describe('Vercel Environment Variable Configuration — Property 21', () => {
                         },
                     };
 
-                    const envVars = buildVercelEnvVars(family, cfg);
+                    const envVars = buildVercelEnvVars(family, cfg, testSecrets);
 
                     // Should still produce valid env vars even with undefined optional fields
                     expect(envVars.length).toBeGreaterThan(0);
@@ -534,6 +537,17 @@ describe('Vercel Environment Variable Configuration — Property 21', () => {
                     expect(envVars.every((v) => v.value.length > 0)).toBe(true);
                 }),
                 { numRuns: 100 }
+            );
+        });
+
+        it('throws an error when a secret entry equals SECRET_PLACEHOLDER and is unresolved', () => {
+            fc.assert(
+                fc.property(arbTemplateFamily, arbCustomizationConfig, (family, cfg) => {
+                    expect(() => buildVercelEnvVars(family, cfg)).toThrow(
+                        /Missing required secret value/
+                    );
+                }),
+                { numRuns: 50 }
             );
         });
     });

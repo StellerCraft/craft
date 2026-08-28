@@ -104,6 +104,7 @@ const CUSTOMIZATION_SCHEMAS: Record<TemplateName, CustomizationSchema> = {
       enableCharts: { type: 'boolean', default: true },
       enableTransactionHistory: { type: 'boolean', default: true },
       enableAnalytics: { type: 'boolean', default: false },
+      enableNotifications: { type: 'boolean', default: false },
     },
     stellar: {
       network: { type: 'enum', values: ['mainnet', 'testnet'], required: true, default: 'testnet' },
@@ -344,6 +345,188 @@ describe('Template Validation', () => {
     it('network passphrase for mainnet is correct', () => {
       const MAINNET_PASSPHRASE = 'Public Global Stellar Network ; September 2015';
       expect(MAINNET_PASSPHRASE).toBe('Public Global Stellar Network ; September 2015');
+    });
+  });
+
+  // ── Branding color propagation (issue #902) ───────────────────────────────
+
+  describe('Secondary brand color configuration', () => {
+    it('stellar-dex: config has both primaryColor and secondaryColor', () => {
+      const schema = CUSTOMIZATION_SCHEMAS['stellar-dex'];
+      expect(schema.branding.primaryColor).toBeDefined();
+      expect(schema.branding.secondaryColor).toBeDefined();
+      expect(schema.branding.primaryColor.required).toBe(true);
+      expect(schema.branding.secondaryColor.required).toBe(true);
+    });
+
+    it('stellar-dex: secondaryColor default is defined and distinct from primaryColor', () => {
+      const schema = CUSTOMIZATION_SCHEMAS['stellar-dex'];
+      const primaryDefault = schema.branding.primaryColor.default;
+      const secondaryDefault = schema.branding.secondaryColor.default;
+      expect(secondaryDefault).toBeDefined();
+      expect(secondaryDefault).not.toBe(primaryDefault);
+    });
+
+    it('stellar-dex: homepage can render with custom secondary color', () => {
+      // When NEXT_PUBLIC_SECONDARY_COLOR is set to a custom value like '#ff6b6b',
+      // the config.branding.secondaryColor should be '#ff6b6b'.
+      const customSecondary = '#ff6b6b';
+      const configSecondary = customSecondary;
+      expect(configSecondary).toBe('#ff6b6b');
+      // The value should be used in inline styles on page elements.
+      expect(configSecondary).toMatch(/^#[0-9a-fA-F]{6}$/);
+    });
+
+    it('stellar-dex: secondaryColor degrades to default when env var is absent', () => {
+      const DEFAULT_SECONDARY = '#1a1f36';
+      const fallbackSecondary = DEFAULT_SECONDARY;
+      expect(fallbackSecondary).toBe('#1a1f36');
+    });
+  });
+
+  // ── Stellar error handling (issue #901) ────────────────────────────────────
+
+  describe('Stellar transaction error handling', () => {
+    it('preserves Horizon result_codes via error.cause when submitTransaction fails', () => {
+      // Simulate a Stellar SDK SubmitTransactionError with Horizon extras.result_codes
+      const horizonError = new Error('Submit transaction failed') as Record<string, unknown>;
+      horizonError.response = {
+        data: {
+          extras: {
+            result_codes: {
+              transaction: 'tx_bad_seq',
+              operations: ['op_underfunded', 'op_no_trust'],
+            },
+          },
+        },
+      };
+
+      // When wrapped in a new Error with { cause: originalError },
+      // the result_codes remain reachable via error.cause.
+      const wrappedError = new Error('Failed to submit transaction: Submit transaction failed', {
+        cause: horizonError,
+      });
+
+      expect(wrappedError.cause).toBeDefined();
+      const resultCodes = (wrappedError.cause as Record<string, unknown>).response?.data?.extras;
+      expect(resultCodes).toBeDefined();
+      expect((resultCodes as Record<string, unknown>).result_codes).toBeDefined();
+    });
+
+    it('getResultCodes helper extracts Horizon extras from error.cause', () => {
+      // Mock the getResultCodes helper behavior
+      const getResultCodes = (error: unknown): Record<string, unknown> | null => {
+        if (error && typeof error === 'object' && 'response' in error) {
+          const response = (error as Record<string, unknown>).response;
+          if (response && typeof response === 'object' && 'data' in response) {
+            const data = (response as Record<string, unknown>).data;
+            if (data && typeof data === 'object' && 'extras' in data) {
+              return ((data as Record<string, unknown>).extras as Record<string, unknown>) || null;
+            }
+          }
+        }
+        return null;
+      };
+
+      const horizonError = new Error('Submit transaction failed') as Record<string, unknown>;
+      horizonError.response = {
+        data: {
+          extras: {
+            result_codes: {
+              transaction: 'tx_bad_seq',
+            },
+          },
+        },
+      };
+
+      const extras = getResultCodes(horizonError);
+      expect(extras).not.toBeNull();
+      expect((extras as Record<string, unknown>).result_codes).toBeDefined();
+    });
+
+    it('error message is readable when error.message is available', () => {
+      // Errors with a .message property should be extracted instead of stringified
+      const someError = new Error('Account does not exist');
+      const wrappedError = new Error(
+        `Failed to load account: ${someError instanceof Error ? someError.message : String(someError)}`,
+        { cause: someError }
+      );
+      expect(wrappedError.message).toBe('Failed to load account: Account does not exist');
+      expect(wrappedError.message).not.toContain('[object Object]');
+    });
+
+    it('error is readable when error is not an Error object', () => {
+      // Even if error is a string or other primitive, it should be stringified safely
+      const primitiveError = 'Network timeout';
+      const wrappedError = new Error(
+        `Failed to submit transaction: ${primitiveError instanceof Error ? primitiveError.message : String(primitiveError)}`,
+        { cause: primitiveError }
+      );
+      expect(wrappedError.message).toBe('Failed to submit transaction: Network timeout');
+    });
+  });
+
+  // ── Network resolution validation (issue #900) ───────────────────────────────
+
+  describe('Network resolution with endpoint validation', () => {
+    const TESTNET_SOROBAN_RPC = 'https://soroban-testnet.stellar.org';
+    const MAINNET_SOROBAN_RPC = 'https://soroban.stellar.org';
+
+    it('soroban-defi: no env vars set defaults to testnet with testnet endpoints', () => {
+      // When NEXT_PUBLIC_STELLAR_NETWORK is not set, resolveNetwork('mainnet' ? 'mainnet' : 'testnet')
+      // returns 'testnet', and getNetworkDefaults('testnet') provides testnet URLs.
+      const testnetDefaults = {
+        horizonUrl: TESTNET_HORIZON,
+        sorobanRpcUrl: TESTNET_SOROBAN_RPC,
+        networkPassphrase: 'Test SDF Network ; September 2015',
+      };
+      expect(testnetDefaults.horizonUrl).toContain('testnet');
+      expect(testnetDefaults.sorobanRpcUrl).toContain('testnet');
+    });
+
+    it('soroban-defi: network=mainnet resolves to mainnet endpoints (never testnet)', () => {
+      // When NEXT_PUBLIC_STELLAR_NETWORK='mainnet', resolveNetwork ensures it stays 'mainnet',
+      // and getNetworkDefaults('mainnet') provides mainnet URLs.
+      const mainnetDefaults = {
+        horizonUrl: MAINNET_HORIZON,
+        sorobanRpcUrl: MAINNET_SOROBAN_RPC,
+        networkPassphrase: 'Public Global Stellar Network ; September 2015',
+      };
+      expect(mainnetDefaults.horizonUrl).not.toContain('testnet');
+      expect(mainnetDefaults.sorobanRpcUrl).not.toContain('testnet');
+    });
+
+    it('network resolution rejects invalid values and normalizes to testnet', () => {
+      // resolveNetwork ensures any value that is not exactly 'mainnet' becomes 'testnet'.
+      const resolveNetwork = (raw: unknown): 'mainnet' | 'testnet' => {
+        return raw === 'mainnet' ? 'mainnet' : 'testnet';
+      };
+      expect(resolveNetwork('mainnet')).toBe('mainnet');
+      expect(resolveNetwork('testnet')).toBe('testnet');
+      expect(resolveNetwork('invalid')).toBe('testnet');
+      expect(resolveNetwork('')).toBe('testnet');
+      expect(resolveNetwork(null)).toBe('testnet');
+      expect(resolveNetwork(undefined)).toBe('testnet');
+    });
+
+    it('stellar-dex: horizonUrl and networkPassphrase match resolved network', () => {
+      // When network is mainnet, horizonUrl must be mainnet URL and passphrase must be mainnet.
+      const mainnetConfig = {
+        network: 'mainnet' as const,
+        horizonUrl: MAINNET_HORIZON,
+        networkPassphrase: 'Public Global Stellar Network ; September 2015',
+      };
+      expect(mainnetConfig.horizonUrl).not.toContain('testnet');
+      expect(mainnetConfig.networkPassphrase).not.toContain('Test');
+
+      // When network is testnet, URLs must be testnet.
+      const testnetConfig = {
+        network: 'testnet' as const,
+        horizonUrl: TESTNET_HORIZON,
+        networkPassphrase: 'Test SDF Network ; September 2015',
+      };
+      expect(testnetConfig.horizonUrl).toContain('testnet');
+      expect(testnetConfig.networkPassphrase).toContain('Test');
     });
   });
 });

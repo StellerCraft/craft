@@ -3,6 +3,7 @@ import { githubService } from './github.service';
 import { githubPushService } from './github-push.service';
 import { templateGeneratorService } from './template-generator.service';
 import { deploymentUpdateService } from './deployment-update.service';
+import { startTrace, withSpan } from '@/lib/tracing';
 import type {
     DeploymentRequest,
     DeploymentResult,
@@ -15,6 +16,13 @@ export class DeploymentService {
     async createDeployment(request: DeploymentRequest): Promise<DeploymentResult> {
         const supabase = createClient();
         const deploymentId = crypto.randomUUID();
+        const rootTrace = startTrace();
+
+        const baseAttrs = {
+            deploymentId,
+            templateId: request.templateId,
+            userId: request.userId,
+        };
 
         // 1. Initial State
         await supabase.from('deployments').insert({
@@ -32,11 +40,18 @@ export class DeploymentService {
         try {
             // 2. Generate Code
             await this.updateStatus(deploymentId, 'generating');
-            const generation = await templateGeneratorService.generate({
-                templateId: request.templateId,
-                customization: request.customization,
-                outputPath: `/tmp/craft-${deploymentId}`
-            });
+            const { result: generation } = await withSpan(
+                'deployment.generating',
+                rootTrace.traceId,
+                async (_span) => {
+                    return templateGeneratorService.generate({
+                        templateId: request.templateId,
+                        customization: request.customization,
+                        outputPath: `/tmp/craft-${deploymentId}`
+                    });
+                },
+                baseAttrs,
+            );
 
             if (!generation.success) {
                 throw new Error('Code generation failed');
@@ -44,35 +59,55 @@ export class DeploymentService {
 
             // 3. Create Repo
             await this.updateStatus(deploymentId, 'creating_repo');
-            const repoConfig = await githubService.createRepository({
-                name: request.repositoryName,
-                private: true,
-                userId: request.userId,
-                description: `Created by CRAFT platform`
-            });
+            const { result: repoConfig } = await withSpan(
+                'deployment.creating_repo',
+                rootTrace.traceId,
+                async (_span) => {
+                    return githubService.createRepository({
+                        name: request.repositoryName,
+                        private: true,
+                        userId: request.userId,
+                        description: `Created by CRAFT platform`
+                    });
+                },
+                baseAttrs,
+            );
 
             const repositoryUrl = repoConfig.repository.url;
 
             // 4. Push Code
             await this.updateStatus(deploymentId, 'pushing_code');
-            const token = process.env.GITHUB_TOKEN || 'mock-token';
-            await githubPushService.pushGeneratedCode({
-                owner: process.env.GITHUB_ORG || request.userId,
-                repo: repoConfig.resolvedName,
-                token,
-                files: generation.generatedFiles,
-                branch: 'main',
-                commitMessage: 'Initial deployment via CRAFT'
-            });
+            await withSpan(
+                'deployment.pushing_code',
+                rootTrace.traceId,
+                async (_span) => {
+                    const token = process.env.GITHUB_TOKEN || 'mock-token';
+                    return githubPushService.pushGeneratedCode({
+                        owner: process.env.GITHUB_ORG || request.userId,
+                        repo: repoConfig.resolvedName,
+                        token,
+                        files: generation.generatedFiles,
+                        branch: 'main',
+                        commitMessage: 'Initial deployment via CRAFT'
+                    });
+                },
+                baseAttrs,
+            );
 
-            // 5. Deploy to Vercel (Simulated per issue description requirements)
+            // 5. Deploy to Vercel
             await this.updateStatus(deploymentId, 'deploying');
-            const vercelUrl = `https://${repoConfig.resolvedName}.vercel.app`;
-            
-            // For property testing / mock simulation
-            if ((globalThis as any).__VERCEL_DEPLOY_SHOULD_FAIL) {
-                throw new Error('Vercel deployment failed');
-            }
+            const { result: vercelUrl } = await withSpan(
+                'deployment.deploying',
+                rootTrace.traceId,
+                async (_span) => {
+                    // For property testing / mock simulation
+                    if ((globalThis as any).__VERCEL_DEPLOY_SHOULD_FAIL) {
+                        throw new Error('Vercel deployment failed');
+                    }
+                    return `https://${repoConfig.resolvedName}.vercel.app`;
+                },
+                baseAttrs,
+            );
 
             // 6. Complete
             await supabase.from('deployments').update({
@@ -98,7 +133,7 @@ export class DeploymentService {
             }).eq('id', deploymentId);
 
             this.logProgress(deploymentId, 'failed', `Deployment failed: ${error.message}`);
-            
+
             throw error;
         }
     }
@@ -442,13 +477,13 @@ export class DeploymentService {
             // Log failure
             await this.logProgress(deploymentId, 'failed', `Redeployment failed: ${error.message}`);
 
-            // Restore previous status if it was completed
-            if (deployment.status === 'completed') {
-                await supabase.from('deployments').update({
-                    status: 'completed' as DeploymentStatusType,
-                    updated_at: new Date().toISOString(),
-                }).eq('id', deploymentId);
-            }
+            // Restore the pre-redeploy status (either 'completed' or 'failed' —
+            // both are valid entries in redeployableStatuses) so the row never
+            // gets stuck at 'deploying' with no work actually in flight.
+            await supabase.from('deployments').update({
+                status: deployment.status as DeploymentStatusType,
+                updated_at: new Date().toISOString(),
+            }).eq('id', deploymentId);
 
             return {
                 success: false,

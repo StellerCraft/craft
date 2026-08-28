@@ -25,6 +25,9 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import * as fc from 'fast-check';
 import type { CustomizationConfig } from '@craft/types';
 
+// ── Scheduler alias (fc.scheduler returns a Scheduler arbitrary) ──────────────
+type Scheduler = ReturnType<typeof fc.scheduler> extends fc.Arbitrary<infer T> ? T : never;
+
 // ── Arbitraries ───────────────────────────────────────────────────────────────
 
 const arbBranding = fc.record({
@@ -87,6 +90,43 @@ class MockCustomizationHistory {
     /** Retrieve a specific revision by index. */
     getRevision(deploymentId: string, index: number): HistoryEntry | undefined {
         return this.store.get(deploymentId)?.[index];
+    }
+}
+
+/**
+ * Async variant of MockCustomizationHistory for concurrent-edit property tests.
+ *
+ * The append uses a shared array reference so concurrent writes do not lose
+ * each other — mirroring a database APPEND that is atomic at the row level.
+ * The `await Promise.resolve()` yields execution to fc.scheduler so it can
+ * explore all possible interleavings.
+ */
+class AsyncMockCustomizationHistory {
+    private store = new Map<string, HistoryEntry[]>();
+
+    async saveDraft(deploymentId: string, config: CustomizationConfig): Promise<void> {
+        if (!this.store.has(deploymentId)) {
+            this.store.set(deploymentId, []);
+        }
+        // Yield — fc.scheduler may interleave another saveDraft here
+        await Promise.resolve();
+        // Append to the shared array reference (atomic at the JS-engine level)
+        const entries = this.store.get(deploymentId)!;
+        entries.push({
+            revisionIndex: entries.length,
+            config,
+            appliedAt: new Date(),
+        });
+    }
+
+    /** Return all history entries for a deployment, oldest first. */
+    getHistory(deploymentId: string): HistoryEntry[] {
+        return this.store.get(deploymentId) ?? [];
+    }
+
+    /** Return all history entries newest-first (for pagination tests). */
+    getHistoryNewestFirst(deploymentId: string): HistoryEntry[] {
+        return [...(this.store.get(deploymentId) ?? [])].reverse();
     }
 }
 
@@ -226,6 +266,255 @@ describe('Property 37 — Customization History Preservation', () => {
 
                         expect(history.getHistory(idA).length).toBe(editsA.length);
                         expect(history.getHistory(idB).length).toBe(editsB.length);
+                    }
+                ),
+                { numRuns: 100 }
+            );
+        });
+    });
+});
+
+// ── Concurrent edit properties (Issue #713) ───────────────────────────────────
+
+describe('Property 37 — Concurrent Edit History Preservation', () => {
+    /**
+     * Property 37.6 — Concurrent saves must not silently discard either user's changes
+     *
+     * Two users saving a draft for the same deployment concurrently must both have
+     * their changes recorded. fc.scheduler interleaves the async saves in every
+     * possible order; the property must hold for all interleavings.
+     */
+    describe('Property 37.6 — Concurrent saves preserve both users\' changes', () => {
+        it('both configs appear in history regardless of interleaving order', async () => {
+            await fc.assert(
+                fc.asyncProperty(
+                    fc.uuid(),
+                    arbConfig,
+                    arbConfig,
+                    fc.scheduler(),
+                    async (deploymentId, configA, configB, s) => {
+                        const asyncHistory = new AsyncMockCustomizationHistory();
+
+                        // Schedule both saves — scheduler controls which resumes first
+                        const saveA = s.schedule(
+                            Promise.resolve().then(() => asyncHistory.saveDraft(deploymentId, configA)),
+                        );
+                        const saveB = s.schedule(
+                            Promise.resolve().then(() => asyncHistory.saveDraft(deploymentId, configB)),
+                        );
+
+                        await s.waitAll();
+                        await Promise.all([saveA, saveB]);
+
+                        const entries = asyncHistory.getHistory(deploymentId);
+
+                        // Both saves completed — history must contain exactly 2 entries
+                        expect(entries.length).toBe(2);
+
+                        // Neither config was silently discarded
+                        const storedConfigs = entries.map((e) => e.config);
+                        expect(storedConfigs).toContainEqual(configA);
+                        expect(storedConfigs).toContainEqual(configB);
+                    }
+                ),
+                { numRuns: 100 }
+            );
+        });
+
+        it('three concurrent saves all land in history — no entry is lost', async () => {
+            await fc.assert(
+                fc.asyncProperty(
+                    fc.uuid(),
+                    arbConfig,
+                    arbConfig,
+                    arbConfig,
+                    fc.scheduler(),
+                    async (deploymentId, cfgA, cfgB, cfgC, s) => {
+                        const asyncHistory = new AsyncMockCustomizationHistory();
+
+                        const saves = [cfgA, cfgB, cfgC].map((cfg) =>
+                            s.schedule(
+                                Promise.resolve().then(() => asyncHistory.saveDraft(deploymentId, cfg)),
+                            )
+                        );
+
+                        await s.waitAll();
+                        await Promise.all(saves);
+
+                        expect(asyncHistory.getHistory(deploymentId).length).toBe(3);
+                    }
+                ),
+                { numRuns: 100 }
+            );
+        });
+    });
+
+    /**
+     * Property 37.7 — History length after N saves is exactly N
+     *
+     * No compaction must occur unless an explicit compaction call is made.
+     * This includes repeated saves of the identical config.
+     */
+    describe('Property 37.7 — History length equals N after N saves (no implicit compaction)', () => {
+        it('saving the same config N times results in exactly N history entries', async () => {
+            await fc.assert(
+                fc.asyncProperty(
+                    fc.uuid(),
+                    fc.integer({ min: 1, max: 25 }),
+                    arbConfig,
+                    async (deploymentId, n, config) => {
+                        const asyncHistory = new AsyncMockCustomizationHistory();
+
+                        for (let i = 0; i < n; i++) {
+                            await asyncHistory.saveDraft(deploymentId, config);
+                        }
+
+                        // Identical configs must not be compacted
+                        expect(asyncHistory.getHistory(deploymentId).length).toBe(n);
+                    }
+                ),
+                { numRuns: 100 }
+            );
+        });
+
+        it('interleaved saves on two deployments never compact either deployment\'s history', async () => {
+            await fc.assert(
+                fc.asyncProperty(
+                    fc.uuid(),
+                    fc.uuid(),
+                    fc.integer({ min: 1, max: 10 }),
+                    fc.integer({ min: 1, max: 10 }),
+                    arbConfig,
+                    arbConfig,
+                    async (idA, idB, nA, nB, cfgA, cfgB) => {
+                        fc.pre(idA !== idB);
+
+                        const asyncHistory = new AsyncMockCustomizationHistory();
+
+                        // Interleave saves across both deployments
+                        const ops: Promise<void>[] = [];
+                        for (let i = 0; i < Math.max(nA, nB); i++) {
+                            if (i < nA) ops.push(asyncHistory.saveDraft(idA, cfgA));
+                            if (i < nB) ops.push(asyncHistory.saveDraft(idB, cfgB));
+                        }
+                        await Promise.all(ops);
+
+                        expect(asyncHistory.getHistory(idA).length).toBe(nA);
+                        expect(asyncHistory.getHistory(idB).length).toBe(nB);
+                    }
+                ),
+                { numRuns: 100 }
+            );
+        });
+    });
+
+    /**
+     * Property 37.8 — Newest-first pagination is consistent with insertion order
+     *
+     * A reversed history (newest-first) must be the exact inverse of the
+     * insertion order. Revision indices must be strictly decreasing when
+     * iterating newest-first.
+     */
+    describe('Property 37.8 — Newest-first pagination is consistent', () => {
+        it('newest-first order is the strict inverse of insertion order', async () => {
+            await fc.assert(
+                fc.asyncProperty(
+                    fc.uuid(),
+                    arbEditSequence,
+                    async (deploymentId, edits) => {
+                        const asyncHistory = new AsyncMockCustomizationHistory();
+
+                        for (const config of edits) {
+                            await asyncHistory.saveDraft(deploymentId, config);
+                        }
+
+                        const newestFirst = asyncHistory.getHistoryNewestFirst(deploymentId);
+                        const oldestFirst = asyncHistory.getHistory(deploymentId);
+
+                        expect(newestFirst.length).toBe(edits.length);
+
+                        // Newest entry (index 0 of newestFirst) is the last insertion
+                        expect(newestFirst[0].revisionIndex).toBe(edits.length - 1);
+                        // Oldest entry is the first insertion
+                        expect(newestFirst[newestFirst.length - 1].revisionIndex).toBe(0);
+
+                        // Revision indices are strictly decreasing in newest-first order
+                        for (let i = 0; i < newestFirst.length - 1; i++) {
+                            expect(newestFirst[i].revisionIndex).toBeGreaterThan(
+                                newestFirst[i + 1].revisionIndex
+                            );
+                        }
+
+                        // Newest-first + reversed = oldest-first
+                        const roundTrip = [...newestFirst].reverse();
+                        expect(roundTrip).toEqual(oldestFirst);
+                    }
+                ),
+                { numRuns: 100 }
+            );
+        });
+
+        it('newest-first page of size K returns the K most recent entries in descending order', async () => {
+            await fc.assert(
+                fc.asyncProperty(
+                    fc.uuid(),
+                    fc.array(arbConfig, { minLength: 3, maxLength: 10 }),
+                    fc.integer({ min: 1, max: 3 }),
+                    async (deploymentId, edits, pageSize) => {
+                        const asyncHistory = new AsyncMockCustomizationHistory();
+
+                        for (const config of edits) {
+                            await asyncHistory.saveDraft(deploymentId, config);
+                        }
+
+                        const newestFirst = asyncHistory.getHistoryNewestFirst(deploymentId);
+                        const page = newestFirst.slice(0, pageSize);
+
+                        // Page contains exactly min(pageSize, total) entries
+                        expect(page.length).toBe(Math.min(pageSize, edits.length));
+
+                        // First entry in page is the most recent revision
+                        expect(page[0].revisionIndex).toBe(edits.length - 1);
+
+                        // Entries within the page are in descending revision order
+                        for (let i = 0; i < page.length - 1; i++) {
+                            expect(page[i].revisionIndex).toBeGreaterThan(page[i + 1].revisionIndex);
+                        }
+                    }
+                ),
+                { numRuns: 100 }
+            );
+        });
+
+        it('all intermediate history snapshots are preserved and individually accessible', async () => {
+            await fc.assert(
+                fc.asyncProperty(
+                    fc.uuid(),
+                    arbEditSequence,
+                    fc.scheduler(),
+                    async (deploymentId, edits, s) => {
+                        const asyncHistory = new AsyncMockCustomizationHistory();
+
+                        // Schedule all saves and let the scheduler interleave
+                        const saves = edits.map((cfg) =>
+                            s.schedule(
+                                Promise.resolve().then(() => asyncHistory.saveDraft(deploymentId, cfg)),
+                            )
+                        );
+
+                        await s.waitAll();
+                        await Promise.all(saves);
+
+                        const newestFirst = asyncHistory.getHistoryNewestFirst(deploymentId);
+
+                        // Every save produced an entry — no intermediate snapshot was lost
+                        expect(newestFirst.length).toBe(edits.length);
+
+                        // Revision indices cover the full range [0 .. n-1]
+                        const indices = newestFirst.map((e) => e.revisionIndex).sort((a, b) => a - b);
+                        for (let i = 0; i < edits.length; i++) {
+                            expect(indices[i]).toBe(i);
+                        }
                     }
                 ),
                 { numRuns: 100 }

@@ -9,6 +9,10 @@
             "schedule": "0 3 * * *"
         },
         {
+            "path": "/api/cron/rotate-encryption-keys",
+            "schedule": "0 4 * * 0"
+        },
+        {
             "path": "/api/cron/smoke-test",
             "schedule": "0 * * * *"
         },

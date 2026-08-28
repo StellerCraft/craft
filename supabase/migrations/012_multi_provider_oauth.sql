@@ -21,3 +21,5 @@ ALTER TABLE profiles
 COMMENT ON COLUMN profiles.provider_connections IS
     'Isolated per-provider connection metadata. GitHub uses dedicated columns; '
     'other providers (e.g. Stellar wallet) store { publicKey, connectedAt } here.';
+
+-- rollback: ALTER TABLE profiles DROP COLUMN IF EXISTS provider_connections;

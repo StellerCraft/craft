@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { ViewportClass, CustomizationConfig, PreviewData } from '@craft/types';
 import { previewService } from '@/services/preview.service';
 
@@ -14,6 +14,7 @@ interface UsePreviewServiceReturn {
 export function usePreviewService(): UsePreviewServiceReturn {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   const generatePreview = useCallback(
     async (customization: CustomizationConfig, viewport: ViewportClass): Promise<PreviewData> => {
@@ -36,7 +37,19 @@ export function usePreviewService(): UsePreviewServiceReturn {
 
   const refreshPreview = useCallback(
     async (customization: CustomizationConfig, viewport: ViewportClass): Promise<PreviewData> => {
-      return generatePreview(customization, viewport);
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+
+      const result = await generatePreview(customization, viewport);
+
+      if (controller.signal.aborted) {
+        const abortError = new Error('Preview refresh superseded by a newer request');
+        abortError.name = 'AbortError';
+        throw abortError;
+      }
+
+      return result;
     },
     [generatePreview]
   );

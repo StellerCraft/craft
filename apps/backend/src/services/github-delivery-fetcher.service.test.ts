@@ -105,6 +105,7 @@ describe('GitHubDeliveryFetcherService', () => {
 
             mockRequestWithInstallationAuth.mockResolvedValue({
                 ok: true,
+                headers: { get: vi.fn().mockReturnValue(null) },
                 json: vi.fn().mockResolvedValue(mockGitHubResponse),
             });
 
@@ -126,21 +127,22 @@ describe('GitHubDeliveryFetcherService', () => {
 
             const mockGitHubResponse = [
                 {
-                    id: 1,
-                    guid: 'del-old',
-                    delivered_at: '2024-01-01T00:00:00Z',
-                    event: 'push',
-                },
-                {
                     id: 2,
                     guid: 'del-new',
                     delivered_at: '2024-01-02T00:00:00Z',
+                    event: 'push',
+                },
+                {
+                    id: 1,
+                    guid: 'del-old',
+                    delivered_at: '2024-01-01T00:00:00Z',
                     event: 'push',
                 },
             ];
 
             mockRequestWithInstallationAuth.mockResolvedValue({
                 ok: true,
+                headers: { get: vi.fn().mockReturnValue(null) },
                 json: vi.fn().mockResolvedValue(mockGitHubResponse),
             });
 
@@ -149,6 +151,88 @@ describe('GitHubDeliveryFetcherService', () => {
             expect(result.success).toBe(true);
             expect(result.deliveries).toHaveLength(1);
             expect(result.deliveries?.[0].guid).toBe('del-new');
+        });
+
+        it('fetches all deliveries across multiple pages (>100 deliveries)', async () => {
+            const service = new GitHubDeliveryFetcherService();
+            const mockRequestWithInstallationAuth = getMockRequestWithInstallationAuth();
+
+            // Page 1: 3 recent deliveries + Link: rel="next" header
+            const page1Items = [
+                { id: 3, guid: 'del-p1-c', delivered_at: '2024-01-03T00:00:00Z', event: 'push' },
+                { id: 2, guid: 'del-p1-b', delivered_at: '2024-01-02T00:00:00Z', event: 'push' },
+                { id: 1, guid: 'del-p1-a', delivered_at: '2024-01-01T12:00:00Z', event: 'push' },
+            ];
+            // Page 2: 2 older deliveries — no next link
+            const page2Items = [
+                { id: -1, guid: 'del-p2-b', delivered_at: '2024-01-01T06:00:00Z', event: 'push' },
+                { id: -2, guid: 'del-p2-a', delivered_at: '2024-01-01T03:00:00Z', event: 'push' },
+            ];
+
+            const page2Url = 'https://api.github.com/app/hooks/1234/deliveries?per_page=100&cursor=abc';
+
+            mockRequestWithInstallationAuth
+                .mockResolvedValueOnce({
+                    ok: true,
+                    headers: {
+                        get: vi.fn().mockReturnValue(
+                            `<${page2Url}>; rel="next", <https://api.github.com/...>; rel="last"`
+                        ),
+                    },
+                    json: vi.fn().mockResolvedValue(page1Items),
+                })
+                .mockResolvedValueOnce({
+                    ok: true,
+                    headers: { get: vi.fn().mockReturnValue(null) },
+                    json: vi.fn().mockResolvedValue(page2Items),
+                });
+
+            const result = await service.fetchDeliveryLog(1234);
+
+            expect(result.success).toBe(true);
+            // All 5 deliveries from both pages should be accumulated
+            expect(result.deliveries).toHaveLength(5);
+            expect(result.deliveries?.map((d) => d.guid)).toEqual([
+                'del-p1-c', 'del-p1-b', 'del-p1-a', 'del-p2-b', 'del-p2-a',
+            ]);
+            // requestWithInstallationAuth must have been called exactly twice (once per page)
+            expect(mockRequestWithInstallationAuth).toHaveBeenCalledTimes(2);
+            expect(mockRequestWithInstallationAuth).toHaveBeenNthCalledWith(
+                2,
+                page2Url,
+                { method: 'GET' },
+            );
+        });
+
+        it('stops pagination at the since boundary without fetching unnecessary pages', async () => {
+            const service = new GitHubDeliveryFetcherService();
+            const mockRequestWithInstallationAuth = getMockRequestWithInstallationAuth();
+
+            const sinceTs = '2024-01-02T00:00:00Z';
+            const page2Url = 'https://api.github.com/app/hooks/1234/deliveries?per_page=100&cursor=xyz';
+
+            // Page 1: first item is within window, second is at/before the since boundary
+            const page1Items = [
+                { id: 2, guid: 'del-within', delivered_at: '2024-01-03T00:00:00Z', event: 'push' },
+                { id: 1, guid: 'del-boundary', delivered_at: '2024-01-01T00:00:00Z', event: 'push' },
+            ];
+
+            mockRequestWithInstallationAuth.mockResolvedValueOnce({
+                ok: true,
+                headers: {
+                    get: vi.fn().mockReturnValue(`<${page2Url}>; rel="next"`),
+                },
+                json: vi.fn().mockResolvedValue(page1Items),
+            });
+
+            const result = await service.fetchDeliveryLog(1234, sinceTs);
+
+            expect(result.success).toBe(true);
+            // Only the delivery within the window should be included
+            expect(result.deliveries).toHaveLength(1);
+            expect(result.deliveries?.[0].guid).toBe('del-within');
+            // Page 2 should NOT have been fetched — the since boundary was crossed on page 1
+            expect(mockRequestWithInstallationAuth).toHaveBeenCalledTimes(1);
         });
 
         it('handles GitHub API error', async () => {
@@ -179,6 +263,7 @@ describe('GitHubDeliveryFetcherService', () => {
             expect(result.error).toBe('Network error');
         });
     });
+
 
     describe('getDeliveryDetail', () => {
         it('fetches detailed delivery information', async () => {
@@ -261,6 +346,7 @@ describe('GitHubDeliveryFetcherService', () => {
 
             mockRequestWithInstallationAuth.mockResolvedValue({
                 ok: true,
+                headers: { get: vi.fn().mockReturnValue(null) },
                 json: vi.fn().mockResolvedValue(mockGitHubResponse),
             });
 
@@ -291,6 +377,7 @@ describe('GitHubDeliveryFetcherService', () => {
 
             mockRequestWithInstallationAuth.mockResolvedValue({
                 ok: true,
+                headers: { get: vi.fn().mockReturnValue(null) },
                 json: vi.fn().mockResolvedValue(mockGitHubResponse),
             });
 
@@ -328,6 +415,7 @@ describe('GitHubDeliveryFetcherService', () => {
 
             mockRequestWithInstallationAuth.mockResolvedValue({
                 ok: true,
+                headers: { get: vi.fn().mockReturnValue(null) },
                 json: vi.fn().mockResolvedValue([]),
             });
 

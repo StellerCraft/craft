@@ -96,3 +96,16 @@ CREATE TRIGGER usage_records_update_timestamp
 COMMENT ON TABLE usage_records IS 'Tracks billable API operations for Stripe metered billing integration. Each record represents usage that should be reported to Stripe for usage-based billing.';
 COMMENT ON COLUMN usage_records.idempotency_key IS 'Unique key combining operation type, user ID, and second timestamp. Ensures duplicate usage within same second is handled idempotently.';
 COMMENT ON COLUMN usage_records.reported_to_stripe IS 'Whether this usage has been reported to Stripe. Used to track pending reports and implement retry logic.';
+
+-- rollback: DROP TRIGGER IF EXISTS usage_records_update_timestamp ON usage_records;
+-- rollback: DROP FUNCTION IF EXISTS update_usage_records_timestamp;
+-- rollback: DROP POLICY IF EXISTS usage_records_update_policy ON usage_records;
+-- rollback: DROP POLICY IF EXISTS usage_records_service_policy ON usage_records;
+-- rollback: DROP POLICY IF EXISTS usage_records_user_policy ON usage_records;
+-- rollback: ALTER TABLE usage_records DISABLE ROW LEVEL SECURITY;
+-- rollback: DROP INDEX IF EXISTS idx_usage_records_idempotency;
+-- rollback: DROP INDEX IF EXISTS idx_usage_records_created_at;
+-- rollback: DROP INDEX IF EXISTS idx_usage_records_operation_type;
+-- rollback: DROP INDEX IF EXISTS idx_usage_records_unreported;
+-- rollback: DROP INDEX IF EXISTS idx_usage_records_user_period;
+-- rollback: DROP TABLE IF EXISTS usage_records;

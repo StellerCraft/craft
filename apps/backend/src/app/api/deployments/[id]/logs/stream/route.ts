@@ -8,6 +8,10 @@
  * Ownership: the authenticated user must own the deployment.
  *            Non-owners and missing deployments both return 404.
  *
+ * CORS: uses origin allow-list (see lib/api/cors.ts). Credentialed requests from
+ *       disallowed origins receive no Access-Control-Allow-Origin header, causing
+ *       the browser to block the response.
+ *
  * Query parameters:
  *   since   ISO 8601       Start streaming logs created after this timestamp (optional)
  *   level   log level      Filter by log level (optional)
@@ -36,14 +40,27 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { withAuth } from '@/lib/api/with-auth';
+import { corsHeaders } from '@/lib/api/cors';
 import {
     deploymentLogsService,
     type ExtendedLogsQueryParams,
 } from '@/services/deployment-logs.service';
+import { LogStreamBuffer } from '@/lib/sse/log-stream-buffer';
 
 const HEARTBEAT_INTERVAL = 30000; // 30 seconds
 const POLL_INTERVAL = 2000; // 2 seconds
 const MAX_STREAM_DURATION = 24 * 60 * 60 * 1000; // 24 hours
+const BUFFER_CAPACITY = 100; // max pending log lines per client before backpressure drops
+
+/**
+ * Parse a Last-Event-ID value into a starting sequence number. Returns 0 (no
+ * resume) for missing/invalid/negative values.
+ */
+export function parseLastEventId(raw: string | null | undefined): number {
+    if (!raw) return 0;
+    const n = Number.parseInt(raw, 10);
+    return Number.isInteger(n) && n >= 0 ? n : 0;
+}
 
 class SSEStreamManager {
     private encoder = new TextEncoder();
@@ -54,9 +71,11 @@ class SSEStreamManager {
     private heartbeatTimeout: NodeJS.Timeout | null = null;
     private streamStartTime: number;
     private closed = false;
+    private readonly buffer: LogStreamBuffer;
 
-    constructor() {
+    constructor(startSeq = 0) {
         this.streamStartTime = Date.now();
+        this.buffer = new LogStreamBuffer({ capacity: BUFFER_CAPACITY, startSeq });
     }
 
     async initialize(
@@ -69,8 +88,12 @@ class SSEStreamManager {
         this.controller = controller;
         this.lastTimestamp = since || new Date(Date.now() - 60000).toISOString(); // Default to last minute
 
-        // Send initial connection event
-        this.sendEvent('connected', { deploymentId, timestamp: new Date().toISOString() });
+        // Send initial connection event (resumes from the client's Last-Event-ID seq)
+        this.sendControl('connected', {
+            deploymentId,
+            timestamp: new Date().toISOString(),
+            lastEventId: this.buffer.lastSeq,
+        });
 
         // Start polling for new logs
         this.startPolling(deploymentId, supabase);
@@ -97,13 +120,16 @@ class SSEStreamManager {
                     supabase,
                 );
 
-                // Send any new logs
+                // Enqueue any new logs into the backpressure buffer (assigns seq).
                 for (const log of result.data) {
                     if (!this.lastLogId || log.id !== this.lastLogId) {
-                        this.sendEvent('log', log);
+                        this.buffer.enqueue('log', log as Record<string, unknown>);
                         this.lastLogId = log.id;
                     }
                 }
+
+                // Flush whatever the client can currently accept.
+                this.flush();
 
                 // Update last timestamp to avoid re-fetching the same logs
                 if (result.data.length > 0) {
@@ -113,7 +139,7 @@ class SSEStreamManager {
 
                 // Check if stream duration exceeded
                 if (Date.now() - this.streamStartTime > MAX_STREAM_DURATION) {
-                    this.sendEvent('end', {
+                    this.sendControl('end', {
                         reason: 'Stream duration limit reached',
                         timestamp: new Date().toISOString(),
                     });
@@ -123,7 +149,7 @@ class SSEStreamManager {
             } catch (err: unknown) {
                 const msg = err instanceof Error ? err.message : 'Polling failed';
                 console.error('[sse-stream] polling error:', err);
-                this.sendEvent('error', { error: msg });
+                this.sendControl('error', { error: msg });
                 // Don't close on error, continue polling
             }
 
@@ -140,7 +166,12 @@ class SSEStreamManager {
         const heartbeat = () => {
             if (this.closed) return;
 
-            this.sendEvent('heartbeat', { timestamp: new Date().toISOString() });
+            // A heartbeat is also a chance to flush anything the client can now accept.
+            this.flush();
+            this.sendControl('heartbeat', {
+                timestamp: new Date().toISOString(),
+                pending: this.buffer.size,
+            });
 
             if (!this.closed) {
                 this.heartbeatTimeout = setTimeout(heartbeat, HEARTBEAT_INTERVAL);
@@ -150,13 +181,46 @@ class SSEStreamManager {
         this.heartbeatTimeout = setTimeout(heartbeat, HEARTBEAT_INTERVAL);
     }
 
-    private sendEvent(eventType: string, data: Record<string, unknown>): void {
+    /**
+     * Flush pending log entries to the client, respecting backpressure. While
+     * the controller reports it cannot accept more (desiredSize <= 0), entries
+     * stay in the ring buffer and the oldest are dropped once it overflows.
+     * After flushing, any overflow drops are surfaced as a buffer_overflow event.
+     */
+    private flush(): void {
+        if (!this.controller || this.closed) return;
+
+        // Slow consumer: leave entries buffered until it drains.
+        const desired = this.controller.desiredSize;
+        if (desired !== null && desired <= 0) return;
+
+        const events = this.buffer.drain();
+        for (const entry of events) {
+            this.writeRaw(
+                `id: ${entry.seq}\nevent: ${entry.event}\ndata: ${JSON.stringify(entry.data)}\n\n`,
+            );
+        }
+
+        const dropped = this.buffer.consumeDropped();
+        if (dropped > 0) {
+            this.sendControl('buffer_overflow', {
+                dropped,
+                totalDropped: this.buffer.totalDroppedCount,
+                timestamp: new Date().toISOString(),
+            });
+        }
+    }
+
+    /** Send a control event (no sequence id, not subject to the ring buffer). */
+    private sendControl(eventType: string, data: Record<string, unknown>): void {
+        this.writeRaw(`event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`);
+    }
+
+    private writeRaw(frame: string): void {
         if (!this.controller || this.closed) return;
 
         try {
-            const eventStr = `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
-            const encoded = this.encoder.encode(eventStr);
-            this.controller.enqueue(encoded);
+            this.controller.enqueue(this.encoder.encode(frame));
         } catch (err: unknown) {
             console.error('[sse-stream] failed to send event:', err);
             this.close();
@@ -204,8 +268,19 @@ export const GET = withAuth(async (req: NextRequest, { params, user, supabase })
         }
     }
 
+    // Resume support: a reconnecting client sends the last sequence it received
+    // via the Last-Event-ID header (or a lastEventId query fallback). Event
+    // numbering continues after it so the client can detect gaps.
+    const startSeq = parseLastEventId(
+        req.headers.get('last-event-id') ??
+            req.nextUrl.searchParams.get('lastEventId'),
+    );
+
     try {
-        const manager = new SSEStreamManager();
+        const manager = new SSEStreamManager(startSeq);
+
+        // Stop producing immediately when the client disconnects.
+        req.signal?.addEventListener('abort', () => manager.close());
 
         const stream = new ReadableStream<Uint8Array>({
             start(controller) {
@@ -221,14 +296,13 @@ export const GET = withAuth(async (req: NextRequest, { params, user, supabase })
             },
         });
 
+        const origin = req.headers.get('origin');
         return new NextResponse(stream, {
             headers: {
                 'Content-Type': 'text/event-stream',
                 'Cache-Control': 'no-cache',
                 'Connection': 'keep-alive',
-                'Access-Control-Allow-Origin': '*',
-                'Access-Control-Allow-Methods': 'GET',
-                'Access-Control-Allow-Headers': 'Content-Type',
+                ...corsHeaders(origin),
             },
         });
     } catch (err: unknown) {

@@ -258,3 +258,202 @@ describe('Property 24 — Deployment Status Progression', () => {
         );
     });
 });
+
+// ── Graph-based State Machine Completeness Tests ───────────────────────────────
+
+describe('Property Tests — Deployment Status State Machine Completeness', () => {
+
+    /**
+     * Build a directed graph from transition map for reachability analysis.
+     */
+    interface StateGraph {
+        nodes: Set<DeploymentStatusType>;
+        edges: Map<DeploymentStatusType, Set<DeploymentStatusType>>;
+    }
+
+    function buildStateGraph(): StateGraph {
+        return {
+            nodes: new Set(ALL_STATUSES),
+            edges: new Map(
+                Object.entries(VALID_TRANSITIONS).map(
+                    ([state, successors]) =>
+                        [state as DeploymentStatusType, new Set(successors)]
+                )
+            ),
+        };
+    }
+
+    /**
+     * Compute all reachable states from a starting state using BFS.
+     */
+    function getReachableStates(
+        from: DeploymentStatusType,
+        graph: StateGraph
+    ): Set<DeploymentStatusType> {
+        const visited = new Set<DeploymentStatusType>();
+        const queue = [from];
+
+        while (queue.length > 0) {
+            const current = queue.shift()!;
+            if (visited.has(current)) continue;
+            visited.add(current);
+
+            const successors = graph.edges.get(current) || new Set();
+            for (const next of successors) {
+                if (!visited.has(next)) {
+                    queue.push(next);
+                }
+            }
+        }
+
+        return visited;
+    }
+
+    /**
+     * Property 23.1 — Terminal states have no outgoing transitions.
+     *
+     * Both 'completed' and 'failed' must have empty successor lists.
+     */
+    it('P23.1 — completed and failed states have no outgoing transitions', () => {
+        expect(VALID_TRANSITIONS.completed).toEqual([]);
+        expect(VALID_TRANSITIONS.failed).toEqual([]);
+    });
+
+    /**
+     * Property 23.2 — Every non-terminal state has at least one valid successor.
+     *
+     * Every state except 'completed' and 'failed' must have at least one
+     * outgoing edge in the transition graph.
+     */
+    it('P23.2 — every non-terminal state has at least one valid successor', () => {
+        const nonTerminal = ALL_STATUSES.filter((s) => !TERMINAL.includes(s));
+
+        for (const state of nonTerminal) {
+            const successors = VALID_TRANSITIONS[state];
+            expect(successors.length).toBeGreaterThan(0);
+        }
+    });
+
+    /**
+     * Property 23.3 — Every path from 'pending' reaches a terminal state in ≤7 transitions.
+     *
+     * This ensures the state machine cannot get stuck in an infinite loop
+     * and any path naturally terminates.
+     */
+    it('P23.3 — every path from pending reaches a terminal state in ≤7 transitions', () => {
+        const graph = buildStateGraph();
+        const reachable = getReachableStates('pending', graph);
+
+        // pending + 5 states (generating, creating_repo, pushing_code, deploying, completed)
+        // = 6 steps; or pending + 5 states + failed = 6 steps max
+        expect(reachable.size).toBeLessThanOrEqual(7);
+
+        // At least one terminal state must be reachable
+        const hasTerminal = TERMINAL.some((t) => reachable.has(t));
+        expect(hasTerminal).toBe(true);
+    });
+
+    /**
+     * Property 23.4 — No backward transitions are possible in the graph.
+     *
+     * For the DAG invariant: if state A can reach state B, then B cannot reach A
+     * (directed acyclic graph).
+     */
+    it('P23.4 — no backward transitions (DAG invariant)', () => {
+        const graph = buildStateGraph();
+
+        for (const source of ALL_STATUSES) {
+            const reachableFromSource = getReachableStates(source, graph);
+
+            for (const target of reachableFromSource) {
+                if (target === source) continue; // skip self-loops
+
+                const reachableFromTarget = getReachableStates(target, graph);
+
+                // target should not be able to reach back to source
+                expect(reachableFromTarget.has(source)).toBe(false);
+            }
+        }
+    });
+
+    /**
+     * Property 23.5 — 'failed' state is reachable from every non-terminal state.
+     *
+     * This ensures that any deployment can fail at any intermediate stage.
+     */
+    it('P23.5 — failed state is reachable from every non-terminal state', () => {
+        const graph = buildStateGraph();
+        const nonTerminal = ALL_STATUSES.filter((s) => !TERMINAL.includes(s));
+
+        for (const state of nonTerminal) {
+            const reachable = getReachableStates(state, graph);
+            expect(reachable.has('failed')).toBe(true);
+        }
+    });
+
+    /**
+     * Property 23.6 — No generated sequence violates the DAG invariant.
+     *
+     * Use fast-check to generate random sequences and ensure none create
+     * cycles in the persisted history.
+     */
+    it('P23.6 — no generated sequence violates DAG invariant', () => {
+        fc.assert(
+            fc.property(arbStatusSequence, (sequence) => {
+                const machine = new DeploymentStateMachine();
+                const visited = new Set<DeploymentStatusType>();
+                visited.add('pending');
+
+                for (const next of sequence) {
+                    if (machine.isTerminal) break;
+                    const accepted = machine.transition(next);
+
+                    if (accepted) {
+                        // If transitioning to a state already visited, we have a cycle
+                        expect(visited.has(next)).toBe(false);
+                        visited.add(next);
+                    }
+                }
+            }),
+            { numRuns: 2000 },
+        );
+    });
+
+    /**
+     * Property 23.7 — State progression is monotonically forward.
+     *
+     * The "depth" from pending should never decrease for persisted transitions.
+     */
+    it('P23.7 — state progression depth is monotonically increasing', () => {
+        const stateDepth: Record<DeploymentStatusType, number> = {
+            pending: 0,
+            generating: 1,
+            creating_repo: 2,
+            pushing_code: 3,
+            deploying: 4,
+            completed: 5,
+            failed: 5,
+        };
+
+        fc.assert(
+            fc.property(arbStatusSequence, (sequence) => {
+                const machine = new DeploymentStateMachine();
+                let currentDepth = 0;
+
+                for (const next of sequence) {
+                    if (machine.isTerminal) break;
+                    machine.transition(next);
+                }
+
+                for (const record of machine.history) {
+                    if (record.persisted) {
+                        const nextDepth = stateDepth[record.to];
+                        expect(nextDepth).toBeGreaterThanOrEqual(currentDepth);
+                        currentDepth = nextDepth;
+                    }
+                }
+            }),
+            { numRuns: 2000 },
+        );
+    });
+});

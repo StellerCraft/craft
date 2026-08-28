@@ -21,22 +21,28 @@ export class CircularDependencyError extends Error {
 
 export class DependencyGraph {
   private nodes = new Map<string, Set<string>>();
+  private dependents = new Map<string, Set<string>>();
 
   /** Add a node (idempotent). */
   addNode(id: string): void {
     if (!this.nodes.has(id)) this.nodes.set(id, new Set());
+    if (!this.dependents.has(id)) this.dependents.set(id, new Set());
   }
 
   /** Add a directed edge: `from` depends on `to`. */
   addEdge(from: string, to: string): void {
     this.addNode(from);
     this.addNode(to);
-    this.nodes.get(from)!.add(to);
+    if (this.nodes.get(from)!.add(to)) {
+      this.dependents.get(to)!.add(from);
+    }
   }
 
   /** Remove a directed edge. */
   removeEdge(from: string, to: string): void {
-    this.nodes.get(from)?.delete(to);
+    if (this.nodes.get(from)?.delete(to)) {
+      this.dependents.get(to)?.delete(from);
+    }
   }
 
   /** Direct dependencies of a node. */
@@ -90,15 +96,13 @@ export class DependencyGraph {
     while (queue.length) {
       const node = queue.shift()!;
       order.push(node);
-      // Reduce in-degree of every node that listed `node` as a dependency
-      for (const [id, deps] of this.nodes) {
-        if (deps.has(node)) {
-          const newDeg = (inDegree.get(id) ?? 0) - 1;
-          inDegree.set(id, newDeg);
-          if (newDeg === 0) {
-            queue.push(id);
-            queue.sort();
-          }
+      // Reduce in-degree only for nodes that list `node` as a dependency.
+      for (const id of this.dependents.get(node) ?? []) {
+        const newDeg = (inDegree.get(id) ?? 0) - 1;
+        inDegree.set(id, newDeg);
+        if (newDeg === 0) {
+          queue.push(id);
+          queue.sort();
         }
       }
     }
@@ -119,6 +123,45 @@ export class DependencyGraph {
     } catch (e) {
       return e instanceof CircularDependencyError;
     }
+  }
+
+  /**
+   * Groups nodes into execution levels. Nodes within a level have no
+   * dependencies on each other and may run concurrently. Throws
+   * CircularDependencyError if a cycle is detected.
+   */
+  executionLevels(): string[][] {
+    const inDegree = new Map<string, number>();
+    for (const [id, deps] of this.nodes) {
+      inDegree.set(id, deps.size);
+    }
+
+    const levels: string[][] = [];
+    const processed = new Set<string>();
+
+    while (processed.size < this.nodes.size) {
+      const ready = [...inDegree.entries()]
+        .filter(([id, degree]) => degree === 0 && !processed.has(id))
+        .map(([id]) => id)
+        .sort();
+
+      if (ready.length === 0) {
+        throw new CircularDependencyError(this._findCycle());
+      }
+
+      levels.push(ready);
+
+      for (const node of ready) {
+        processed.add(node);
+        for (const id of this.dependents.get(node) ?? []) {
+          if (!processed.has(id)) {
+            inDegree.set(id, (inDegree.get(id) ?? 0) - 1);
+          }
+        }
+      }
+    }
+
+    return levels;
   }
 
   private _findCycle(): string[] {
@@ -152,6 +195,49 @@ export class DependencyGraph {
     }
     return [];
   }
+}
+
+export interface AsyncExecutionResult<TResult> {
+  /** Results keyed by node id. */
+  results: Map<string, TResult>;
+  /** Stage IDs grouped by parallel execution level. */
+  levels: string[][];
+}
+
+/**
+ * Executes async stage handlers in dependency order, running each level's
+ * nodes concurrently. Cycle detection runs at graph construction time via
+ * {@link DependencyGraph.executionLevels}.
+ *
+ * Each executor receives only its node id — callers must close over immutable
+ * context so concurrent stages do not share mutable state.
+ */
+export async function executeAsync<TResult>(
+  graph: DependencyGraph,
+  executors: ReadonlyMap<string, () => Promise<TResult>>,
+): Promise<AsyncExecutionResult<TResult>> {
+  for (const id of graph.nodeIds()) {
+    if (!executors.has(id)) {
+      throw new Error(`Missing executor for pipeline stage "${id}"`);
+    }
+  }
+
+  const levels = graph.executionLevels();
+  const results = new Map<string, TResult>();
+
+  for (const level of levels) {
+    const levelResults = await Promise.all(
+      level.map(async (id) => {
+        const value = await executors.get(id)!();
+        return [id, value] as const;
+      }),
+    );
+    for (const [id, value] of levelResults) {
+      results.set(id, value);
+    }
+  }
+
+  return { results, levels };
 }
 
 /** Factory helper to build a graph from a list of nodes. Throws if a node is missing. */

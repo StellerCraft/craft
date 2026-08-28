@@ -70,3 +70,12 @@ BEGIN
             WITH CHECK (auth.uid() = user_id);
     END IF;
 END $$;
+
+-- rollback: DROP POLICY IF EXISTS "Users can manage their own deployment updates" ON deployment_updates;
+-- rollback: ALTER TABLE deployment_updates DISABLE ROW LEVEL SECURITY;
+-- rollback: DROP TRIGGER IF EXISTS update_deployment_updates_updated_at ON deployment_updates;
+-- rollback: DROP INDEX IF EXISTS idx_deployment_updates_status;
+-- rollback: DROP INDEX IF EXISTS idx_deployment_updates_deployment_id;
+-- rollback: ALTER TABLE deployment_updates DROP CONSTRAINT IF EXISTS deployment_updates_canary_percent_check;
+-- rollback: ALTER TABLE deployment_updates DROP COLUMN IF EXISTS canary_percent;
+-- rollback: DROP TABLE IF EXISTS deployment_updates;

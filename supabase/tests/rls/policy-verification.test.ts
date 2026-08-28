@@ -416,6 +416,268 @@ describe('RLS: deployment_updates — per-user ALL policy', () => {
     });
 });
 
+// ── 8a. Templates — full authorized / unauthorized coverage ───────────────────
+
+describe('RLS: templates — active-only SELECT, service_role full management', () => {
+    /**
+     * Policy: "Anyone can view active templates"
+     *   FOR SELECT USING (is_active = true)
+     * Policy: "Service role can manage templates"
+     *   FOR ALL USING (auth.jwt()->>'role' = 'service_role')
+     *
+     * Unauthorized reads return 0 rows (predicate is false), not an error.
+     */
+
+    it('authorized user can read active template (0 rows hidden)', () => {
+        expect(evaluate(policy.templates_select, { is_active: true }, auth.userA)).toBe(true);
+        expect(evaluate(policy.templates_select, { is_active: true }, auth.userB)).toBe(true);
+    });
+
+    it('unauthorized: inactive template is filtered out (returns 0 rows, not error)', () => {
+        expect(evaluate(policy.templates_select, { is_active: false }, auth.userA)).toBe(false);
+        expect(evaluate(policy.templates_select, { is_active: false }, auth.userB)).toBe(false);
+    });
+
+    it('unauthorized: anon user gets 0 rows for inactive templates', () => {
+        expect(evaluate(policy.templates_select, { is_active: false }, auth.anon)).toBe(false);
+    });
+
+    it('anon user can read active templates (no auth required for active rows)', () => {
+        expect(evaluate(policy.templates_select, { is_active: true }, auth.anon)).toBe(true);
+    });
+
+    it('service_role bypasses is_active filter and can read inactive templates', () => {
+        expect(evaluate(policy.templates_select, { is_active: false }, auth.serviceRole)).toBe(true);
+        expect(evaluate(policy.templates_select, { is_active: true }, auth.serviceRole)).toBe(true);
+    });
+
+    it('templates without is_active field (null/undefined) return 0 rows to authenticated users', () => {
+        expect(evaluate(policy.templates_select, { is_active: null }, auth.userA)).toBe(false);
+        expect(evaluate(policy.templates_select, {}, auth.userA)).toBe(false);
+    });
+});
+
+// ── 8b. deployment_logs — authorized / unauthorized with indirect-join ─────────
+
+describe('RLS: deployment_logs — per-user indirect-join SELECT', () => {
+    /**
+     * Policy: FOR SELECT USING (
+     *   deployment_id IN (SELECT id FROM deployments WHERE user_id = auth.uid())
+     * )
+     *
+     * Unauthorized reads return 0 rows (predicate is false), not an error.
+     */
+    const deploymentsTable = makeDeploymentsTable([
+        { id: DEP_A1, user_id: USER_A },
+        { id: DEP_A2, user_id: USER_A },
+        { id: DEP_B1, user_id: USER_B },
+    ]);
+    const logsSelect = policy.makeLogsSelect(deploymentsTable);
+
+    it('authorized: owner can read logs for their own deployment', () => {
+        expect(evaluate(logsSelect, { deployment_id: DEP_A1 }, auth.userA)).toBe(true);
+        expect(evaluate(logsSelect, { deployment_id: DEP_A2 }, auth.userA)).toBe(true);
+        expect(evaluate(logsSelect, { deployment_id: DEP_B1 }, auth.userB)).toBe(true);
+    });
+
+    it('unauthorized: non-owner gets 0 rows (not an error) for another user\'s logs', () => {
+        // USER_B cannot read logs for USER_A's deployments
+        expect(evaluate(logsSelect, { deployment_id: DEP_A1 }, auth.userB)).toBe(false);
+        expect(evaluate(logsSelect, { deployment_id: DEP_A2 }, auth.userB)).toBe(false);
+        // USER_A cannot read logs for USER_B's deployments
+        expect(evaluate(logsSelect, { deployment_id: DEP_B1 }, auth.userA)).toBe(false);
+    });
+
+    it('unauthorized: anon gets 0 rows for all deployment logs', () => {
+        expect(evaluate(logsSelect, { deployment_id: DEP_A1 }, auth.anon)).toBe(false);
+        expect(evaluate(logsSelect, { deployment_id: DEP_B1 }, auth.anon)).toBe(false);
+    });
+
+    it('unauthorized: user with no deployments gets 0 rows for all logs', () => {
+        expect(evaluate(logsSelect, { deployment_id: DEP_A1 }, auth.userC)).toBe(false);
+        expect(evaluate(logsSelect, { deployment_id: DEP_B1 }, auth.userC)).toBe(false);
+    });
+
+    it('service_role bypasses indirect-join and reads any log', () => {
+        expect(evaluate(logsSelect, { deployment_id: DEP_A1 }, auth.serviceRole)).toBe(true);
+        expect(evaluate(logsSelect, { deployment_id: DEP_B1 }, auth.serviceRole)).toBe(true);
+    });
+});
+
+// ── 8c. payment_events — per-user direct-identity SELECT ─────────────────────
+
+describe('RLS: payment_events — per-user direct-identity SELECT', () => {
+    /**
+     * Inferred policy (mirrors the standard per-user pattern):
+     *   FOR SELECT USING (auth.uid() = user_id)
+     *
+     * Unauthorized reads return 0 rows (predicate is false), not an error.
+     */
+    const payment_events_select = (row: Row, uid: Uid) => uid !== null && uid === row.user_id;
+
+    it('authorized: owner can read their own payment event', () => {
+        expect(evaluate(payment_events_select, { user_id: USER_A }, auth.userA)).toBe(true);
+        expect(evaluate(payment_events_select, { user_id: USER_B }, auth.userB)).toBe(true);
+    });
+
+    it('unauthorized: non-owner gets 0 rows (not an error)', () => {
+        expect(evaluate(payment_events_select, { user_id: USER_A }, auth.userB)).toBe(false);
+        expect(evaluate(payment_events_select, { user_id: USER_B }, auth.userA)).toBe(false);
+    });
+
+    it('unauthorized: anon gets 0 rows for all payment events', () => {
+        expect(evaluate(payment_events_select, { user_id: USER_A }, auth.anon)).toBe(false);
+        expect(evaluate(payment_events_select, { user_id: USER_B }, auth.anon)).toBe(false);
+    });
+
+    it('service_role bypasses and can read any payment event', () => {
+        expect(evaluate(payment_events_select, { user_id: USER_A }, auth.serviceRole)).toBe(true);
+        expect(evaluate(payment_events_select, { user_id: USER_B }, auth.serviceRole)).toBe(true);
+    });
+
+    it('unauthorized: null uid gets 0 rows (anon/unauthenticated)', () => {
+        expect(payment_events_select({ user_id: USER_A }, null)).toBe(false);
+    });
+});
+
+// ── 8d. audit_logs — per-user with premium-tier expansion ────────────────────
+
+describe('RLS: audit_logs (auth_audit_logs) — per-user SELECT with tier expansion', () => {
+    /**
+     * Policy from migration 010_auth_audit_logs_cross_region.sql:
+     *   FOR SELECT USING (
+     *     auth.uid() = user_id OR
+     *     EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid()
+     *             AND profiles.subscription_tier IN ('premium', 'enterprise'))
+     *   )
+     *
+     * Simulated in-process: we pass a `subscriptionTier` alongside the auth context.
+     * Unauthorized reads return 0 rows (predicate is false), not an error.
+     */
+    function auditLogsSelect(
+        row: Row,
+        uid: Uid,
+        tier: 'free' | 'pro' | 'premium' | 'enterprise' | null = null,
+    ): boolean {
+        if (uid === null) return false;
+        if (uid === row.user_id) return true;
+        return tier === 'premium' || tier === 'enterprise';
+    }
+
+    it('authorized: user can read their own audit log entries', () => {
+        expect(auditLogsSelect({ user_id: USER_A }, USER_A)).toBe(true);
+        expect(auditLogsSelect({ user_id: USER_B }, USER_B)).toBe(true);
+    });
+
+    it('unauthorized: non-owner on free tier gets 0 rows (not an error)', () => {
+        expect(auditLogsSelect({ user_id: USER_A }, USER_B, 'free')).toBe(false);
+        expect(auditLogsSelect({ user_id: USER_B }, USER_A, 'free')).toBe(false);
+    });
+
+    it('unauthorized: non-owner on pro tier gets 0 rows', () => {
+        expect(auditLogsSelect({ user_id: USER_A }, USER_B, 'pro')).toBe(false);
+    });
+
+    it('authorized (tier expansion): premium user can read any audit log', () => {
+        expect(auditLogsSelect({ user_id: USER_A }, USER_B, 'premium')).toBe(true);
+        expect(auditLogsSelect({ user_id: USER_B }, USER_C, 'premium')).toBe(true);
+    });
+
+    it('authorized (tier expansion): enterprise user can read any audit log', () => {
+        expect(auditLogsSelect({ user_id: USER_A }, USER_B, 'enterprise')).toBe(true);
+    });
+
+    it('unauthorized: anon gets 0 rows for all audit logs', () => {
+        expect(auditLogsSelect({ user_id: USER_A }, null)).toBe(false);
+        expect(auditLogsSelect({ user_id: USER_B }, null, 'enterprise')).toBe(false);
+    });
+
+    it('service_role bypasses all policies and reads any audit log', () => {
+        // service_role shortcut: evaluate() returns true unconditionally
+        const pred = (row: Row, uid: Uid) => auditLogsSelect(row, uid, 'free');
+        expect(evaluate(pred, { user_id: USER_A }, auth.serviceRole)).toBe(true);
+        expect(evaluate(pred, { user_id: USER_B }, auth.serviceRole)).toBe(true);
+    });
+});
+
+// ── 8e. branding_assets — path-based per-user namespace ──────────────────────
+
+describe('RLS: branding_assets (storage.objects) — path-based user namespace', () => {
+    /**
+     * Policy from migration 011_branding_asset_storage_policy.sql:
+     *   INSERT WITH CHECK: bucket_id = 'branding_assets' AND foldername(name)[1] = auth.uid()
+     *   SELECT USING:      bucket_id = 'branding_assets' AND foldername(name)[1] = auth.uid()
+     *
+     * foldername(name)[1] is the first path segment (the user_id directory).
+     * Simulated in-process by extracting the leading segment of `name`.
+     *
+     * Unauthorized reads return 0 rows (predicate is false), not an error.
+     */
+    function folderOwner(name: string): string {
+        return name.split('/')[0] ?? '';
+    }
+
+    const brandingSelect = (row: Row, uid: Uid): boolean =>
+        uid !== null &&
+        row.bucket_id === 'branding_assets' &&
+        folderOwner(row.name as string) === uid;
+
+    const brandingInsert = (row: Row, uid: Uid): boolean =>
+        uid !== null &&
+        row.bucket_id === 'branding_assets' &&
+        folderOwner(row.name as string) === uid;
+
+    it('authorized: user can SELECT their own branding asset', () => {
+        const row = { bucket_id: 'branding_assets', name: `${USER_A}/logo.png` };
+        expect(evaluate(brandingSelect, row, auth.userA)).toBe(true);
+    });
+
+    it('authorized: user can INSERT into their own namespace', () => {
+        const row = { bucket_id: 'branding_assets', name: `${USER_B}/banner.svg` };
+        expect(evaluate(brandingInsert, row, auth.userB)).toBe(true);
+    });
+
+    it('unauthorized: user cannot SELECT assets in another user\'s namespace (0 rows, not error)', () => {
+        const rowA = { bucket_id: 'branding_assets', name: `${USER_A}/logo.png` };
+        expect(evaluate(brandingSelect, rowA, auth.userB)).toBe(false);
+        expect(evaluate(brandingSelect, rowA, auth.userC)).toBe(false);
+    });
+
+    it('unauthorized: user cannot INSERT into another user\'s namespace', () => {
+        const row = { bucket_id: 'branding_assets', name: `${USER_A}/injected.png` };
+        expect(evaluate(brandingInsert, row, auth.userB)).toBe(false);
+    });
+
+    it('unauthorized: anon gets 0 rows for all branding assets', () => {
+        const row = { bucket_id: 'branding_assets', name: `${USER_A}/logo.png` };
+        expect(evaluate(brandingSelect, row, auth.anon)).toBe(false);
+        expect(evaluate(brandingInsert, row, auth.anon)).toBe(false);
+    });
+
+    it('unauthorized: wrong bucket_id returns 0 rows even with matching path', () => {
+        const row = { bucket_id: 'public_assets', name: `${USER_A}/logo.png` };
+        expect(evaluate(brandingSelect, row, auth.userA)).toBe(false);
+    });
+
+    it('service_role bypasses path-based policy and reads any asset', () => {
+        const rowA = { bucket_id: 'branding_assets', name: `${USER_A}/logo.png` };
+        const rowB = { bucket_id: 'branding_assets', name: `${USER_B}/banner.svg` };
+        expect(evaluate(brandingSelect, rowA, auth.serviceRole)).toBe(true);
+        expect(evaluate(brandingSelect, rowB, auth.serviceRole)).toBe(true);
+    });
+
+    it('cross-user isolation: USER_B cannot read USER_A\'s assets at any path depth', () => {
+        const assets = [
+            { bucket_id: 'branding_assets', name: `${USER_A}/logo.png` },
+            { bucket_id: 'branding_assets', name: `${USER_A}/icons/favicon.ico` },
+            { bucket_id: 'branding_assets', name: `${USER_A}/fonts/inter.woff2` },
+        ];
+        for (const row of assets) {
+            expect(evaluate(brandingSelect, row, auth.userB)).toBe(false);
+        }
+    });
+});
+
 // ── 8. Anonymous denial — all protected tables ────────────────────────────────
 
 describe('RLS: anonymous denial across all protected tables', () => {

@@ -5,7 +5,10 @@
  * updates to subscribers. This is the platform's "WebSocket" layer: Supabase
  * Realtime uses WebSocket transport under the hood, and this utility provides
  * the connection lifecycle, message ordering, reconnection with exponential
- * backoff, and authentication that the issue requires.
+ * backoff with jitter, and authentication that the issue requires.
+ *
+ * Reconnection backoff uses exponential delay (baseDelayMs * 2^(attempt))
+ * with ±10% jitter to prevent thundering herd during mass reconnections.
  *
  * Architecture note:
  *   There is no custom WebSocket server in this codebase. Real-time updates
@@ -14,6 +17,7 @@
  */
 
 import type { SupabaseClient, RealtimeChannel } from '@supabase/supabase-js';
+import { calculateBackoffDelay } from '@/lib/retry/exponential-backoff';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -35,6 +39,8 @@ export interface PollerOptions {
   baseDelayMs?: number;
   /** Maximum backoff delay in ms. Default: 30_000 */
   maxDelayMs?: number;
+  /** Injectable random function for testing. Default: Math.random */
+  randomFn?: () => number;
 }
 
 // ── RealtimeStatusPoller ──────────────────────────────────────────────────────
@@ -46,7 +52,7 @@ export class RealtimeStatusPoller {
   private retryCount = 0;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private sequenceCounter = 0;
-  private readonly opts: Required<PollerOptions>;
+  private readonly opts: Required<Omit<PollerOptions, 'randomFn'>> & { randomFn: () => number };
 
   constructor(
     private readonly supabase: SupabaseClient,
@@ -58,6 +64,7 @@ export class RealtimeStatusPoller {
       maxRetries: opts.maxRetries ?? 5,
       baseDelayMs: opts.baseDelayMs ?? 500,
       maxDelayMs: opts.maxDelayMs ?? 30_000,
+      randomFn: opts.randomFn ?? Math.random,
     };
   }
 
@@ -103,6 +110,7 @@ export class RealtimeStatusPoller {
    * Disconnect and clean up the channel.
    */
   async disconnect(): Promise<void> {
+    this.generation += 1;
     this.clearRetryTimer();
     if (this.channel) {
       await this.supabase.removeChannel(this.channel);
@@ -114,11 +122,14 @@ export class RealtimeStatusPoller {
   // ── Internal ────────────────────────────────────────────────────────────────
 
   private openChannel(): void {
+    this.generation += 1;
+    const currentGen = this.generation;
     const channelName = `deployment:${this.deploymentId}`;
 
-    this.channel = this.supabase
-      .channel(channelName)
-      .on(
+    const ch = this.supabase.channel(channelName);
+    this.channel = ch;
+
+    ch.on(
         'postgres_changes' as any,
         {
           event: 'UPDATE',
@@ -127,6 +138,9 @@ export class RealtimeStatusPoller {
           filter: `id=eq.${this.deploymentId}`,
         },
         (payload: any) => {
+          if (this.state === 'closed' || this.channel !== ch || this.generation !== currentGen) {
+            return;
+          }
           this.sequenceCounter += 1;
           const msg: DeploymentStatusPayload = {
             deploymentId: this.deploymentId,
@@ -138,21 +152,26 @@ export class RealtimeStatusPoller {
         },
       )
       .subscribe((status: string) => {
+        if (this.state === 'closed' || this.channel !== ch || this.generation !== currentGen) {
+          return;
+        }
         if (status === 'SUBSCRIBED') {
           this.setState('connected');
           this.retryCount = 0;
         } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-          this.handleDisconnect();
+          this.handleDisconnect(ch, currentGen);
         } else if (status === 'CLOSED') {
           if (this.state !== 'closed') {
-            this.handleDisconnect();
+            this.handleDisconnect(ch, currentGen);
           }
         }
       });
   }
 
-  private handleDisconnect(): void {
+  private handleDisconnect(ch?: RealtimeChannel, gen?: number): void {
     if (this.state === 'closed') return;
+    if (ch && this.channel !== ch) return;
+    if (gen !== undefined && this.generation !== gen) return;
 
     if (this.retryCount >= this.opts.maxRetries) {
       this.setState('closed');
@@ -162,12 +181,17 @@ export class RealtimeStatusPoller {
     this.setState('reconnecting');
     this.retryCount += 1;
 
-    const delay = Math.min(
-      this.opts.baseDelayMs * 2 ** (this.retryCount - 1),
+    const delay = calculateBackoffDelay(
+      this.retryCount - 1,
+      this.opts.baseDelayMs,
       this.opts.maxDelayMs,
+      2,
+      this.opts.randomFn,
     );
 
+    const currentGen = this.generation;
     this.retryTimer = setTimeout(() => {
+      if (this.state === 'closed' || this.generation !== currentGen) return;
       if (this.channel) {
         this.supabase.removeChannel(this.channel);
         this.channel = null;

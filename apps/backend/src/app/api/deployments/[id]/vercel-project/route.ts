@@ -110,7 +110,9 @@ export const POST = withDeploymentAuth(async (req: NextRequest, { params, supaba
 
         if (tmpl?.category) {
             const family = mapCategoryToFamily(tmpl.category as TemplateCategory);
-            envVars = buildVercelEnvVars(family, deployment.customization_config as never);
+            envVars = buildVercelEnvVars(family, deployment.customization_config as never, {
+                SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY || 'resolved-supabase-service-role-key',
+            });
         }
     } catch {
         // Non-fatal — deploy without env vars rather than blocking

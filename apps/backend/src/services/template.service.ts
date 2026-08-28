@@ -1,3 +1,19 @@
+/**
+ * TemplateService
+ *
+ * Handles template listing, lookup, and full-text search.
+ *
+ * Full-text search (searchTemplates / listTemplates with `q` filter):
+ *   - Backed by a Postgres tsvector column on name (weight A), tags (weight B),
+ *     and description (weight C) — see migration 016_template_fulltext_search.sql.
+ *   - Results are ranked by ts_rank (most relevant first).
+ *   - Supports: keyword search, phrase search ("liquidity pool"),
+ *     prefix search (decentral:*), and category filter combined with text search.
+ *   - Falls back to ilike when the `search` legacy filter is used and `q` is absent.
+ *
+ * Issue: feat/template-full-text-search-index
+ */
+
 import { createClient } from '@/lib/supabase/server';
 import type {
     Template,
@@ -6,11 +22,68 @@ import type {
     TemplateCategory,
 } from '@craft/types';
 
+// ── Search result ─────────────────────────────────────────────────────────────
+
+export interface TemplateSearchResult extends Template {
+    relevanceScore: number;
+}
+
+// ── Service ───────────────────────────────────────────────────────────────────
+
 export class TemplateService {
     /**
-     * List all templates with optional filtering
+     * Full-text search across template name, description, and tags.
+     *
+     * Uses the `search_templates` Postgres RPC which:
+     *   - Converts the raw query via websearch_to_tsquery (handles phrases + prefixes)
+     *   - Filters by category when provided
+     *   - Ranks results by ts_rank descending (name hits > tag hits > description hits)
+     *
+     * Examples:
+     *   searchTemplates('decentralized exchange')      → keyword AND search
+     *   searchTemplates('"liquidity pool"')             → phrase search
+     *   searchTemplates('decentral:*')                  → prefix search
+     *   searchTemplates('soroban', 'lending')           → text + category filter
+     */
+    async searchTemplates(
+        query: string,
+        category?: TemplateCategory,
+        limit = 20,
+        offset = 0,
+    ): Promise<TemplateSearchResult[]> {
+        const supabase = createClient();
+
+        const { data, error } = await supabase.rpc('search_templates', {
+            p_query:    query,
+            p_category: category ?? null,
+            p_limit:    limit,
+            p_offset:   offset,
+        });
+
+        if (error) {
+            throw new Error(`Failed to search templates: ${error.message}`);
+        }
+
+        return (data ?? []).map((row: any) =>
+            this.mapDatabaseToTemplate(row) as TemplateSearchResult,
+        );
+    }
+
+    /**
+     * List all templates with optional filtering.
+     *
+     * When `filters.q` is provided, delegates to `searchTemplates()` for
+     * relevance-ranked full-text results.
+     *
+     * When only `filters.search` is provided, falls back to the legacy
+     * ilike path for backward compatibility.
      */
     async listTemplates(filters?: TemplateFilters): Promise<Template[]> {
+        // Delegate to full-text search when the `q` filter is present
+        if (filters?.q) {
+            return this.searchTemplates(filters.q, filters.category);
+        }
+
         const supabase = createClient();
 
         let query = supabase
@@ -29,7 +102,7 @@ export class TemplateService {
             query = query.eq('blockchain_type', filters.blockchainType);
         }
 
-        // Apply search filter
+        // Apply legacy ilike search filter
         if (filters?.search) {
             query = query.or(
                 `name.ilike.%${filters.search}%,description.ilike.%${filters.search}%`
@@ -101,6 +174,8 @@ export class TemplateService {
         };
     }
 
+    // ── Private helpers ───────────────────────────────────────────────────────
+
     /**
      * Map database row to Template type
      */
@@ -115,6 +190,7 @@ export class TemplateService {
             blockchainType: 'stellar',
             baseRepositoryUrl: data.base_repository_url,
             previewImageUrl: data.preview_image_url || '',
+            tags: Array.isArray(data.tags) ? data.tags : [],
             features: this.extractFeatures(schema),
             customizationSchema: schema,
             isActive: data.is_active,
@@ -134,7 +210,7 @@ export class TemplateService {
     }> {
         const features: any[] = [];
 
-        if (schema.features) {
+        if (schema?.features) {
             Object.entries(schema.features).forEach(([key, value]: [string, any]) => {
                 features.push({
                     id: key,

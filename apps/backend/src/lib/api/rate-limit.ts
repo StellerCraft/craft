@@ -21,6 +21,9 @@
  * ─────────────────
  * Set RATE_LIMIT_DISABLED=true in .env.local to bypass all checks.
  * Thresholds are intentionally generous in dev to avoid friction.
+ *
+ * See "Rate Limiting, Idempotency, and Tier Enforcement" in CONTRIBUTING.md
+ * for the full env-var reference.
  */
 
 export interface RateLimitConfig {
@@ -81,8 +84,47 @@ export const CRON_RATE_LIMIT: RateLimitConfig = {
 
 // ── Store ────────────────────────────────────────────────────────────────────
 
-// Map<key, timestamps[]> — each entry is a sorted list of request timestamps.
-const store = new Map<string, number[]>();
+interface RateLimitEntry {
+  /** Sorted list of request timestamps (ms) within the window. */
+  timestamps: number[];
+  /** Rolling window length (ms) — retained so expired entries can be swept. */
+  windowMs: number;
+}
+
+// Map<key, entry> — each entry tracks its own window so a low-frequency sweep
+// can evict fully-expired entries independent of fresh traffic on that key.
+const store = new Map<string, RateLimitEntry>();
+
+// ── Bounded growth ───────────────────────────────────────────────────────────
+
+// Lazily-triggered sweep that evicts fully-expired entries. This bounds memory
+// growth from one-off clients (scanners, bots, rotating CDN/proxy IPs) that make
+// a single request and never return — their entry would otherwise linger until
+// the next request on that key, which may never come.
+const SWEEP_INTERVAL_CALLS = parseInt(
+  process.env.RATE_LIMIT_SWEEP_INTERVAL ?? '1000',
+  10,
+);
+const SWEEP_EVERY =
+  Number.isFinite(SWEEP_INTERVAL_CALLS) && SWEEP_INTERVAL_CALLS > 0
+    ? SWEEP_INTERVAL_CALLS
+    : 1000;
+
+let callCount = 0;
+
+function sweepStore(): void {
+  const now = Date.now();
+  for (const [key, entry] of store) {
+    const windowStart = now - entry.windowMs;
+    entry.timestamps = entry.timestamps.filter((t) => t > windowStart);
+    if (entry.timestamps.length === 0) store.delete(key);
+  }
+}
+
+function maybeSweep(): void {
+  callCount += 1;
+  if (callCount % SWEEP_EVERY === 0) sweepStore();
+}
 
 // ── Core logic ───────────────────────────────────────────────────────────────
 
@@ -95,17 +137,24 @@ export function checkRateLimit(key: string, config: RateLimitConfig): RateLimitR
   const windowStart = now - config.windowMs;
 
   // Retrieve and prune timestamps outside the current window.
-  const timestamps = (store.get(key) ?? []).filter((t) => t > windowStart);
+  const existing = store.get(key);
+  const timestamps = (existing?.timestamps ?? []).filter((t) => t > windowStart);
 
   const allowed = timestamps.length < config.limit;
 
   if (allowed) {
     timestamps.push(now);
-    store.set(key, timestamps);
+    store.set(key, { timestamps, windowMs: config.windowMs });
+  } else if (timestamps.length === 0) {
+    // Pruning left nothing and the request was not allowed to extend the
+    // window — drop the stale empty entry rather than leaving it behind.
+    store.delete(key);
   }
 
   const oldest = timestamps[0] ?? now;
   const resetAt = oldest + config.windowMs;
+
+  maybeSweep();
 
   return {
     allowed,
@@ -129,4 +178,14 @@ export function getRateLimitKey(req: { headers: { get(name: string): string | nu
 /** Clears the in-memory store — intended for use in tests only. */
 export function _resetStore(): void {
   store.clear();
+}
+
+/** Returns the number of keys currently held in the store — for tests/observability. */
+export function _storeSize(): number {
+  return store.size;
+}
+
+/** Force an immediate sweep of fully-expired entries — exposed for tests. */
+export function _sweepStore(): void {
+  sweepStore();
 }

@@ -41,3 +41,8 @@ CREATE POLICY "Deny cross-user branding access"
     AND (storage.foldername(name))[1] != auth.uid()::text
   )
   WITH CHECK (false);
+
+-- rollback: DROP POLICY IF EXISTS "Deny cross-user branding access" ON storage.objects;
+-- rollback: DROP POLICY IF EXISTS "Users can read own branding assets" ON storage.objects;
+-- rollback: DROP POLICY IF EXISTS "Users can upload to own branding namespace" ON storage.objects;
+-- rollback: DELETE FROM storage.buckets WHERE id = 'branding_assets';

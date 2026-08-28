@@ -6,3 +6,6 @@
 ALTER TABLE profiles
     ADD COLUMN IF NOT EXISTS github_token_expires_at    TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS github_token_refreshed_at  TIMESTAMPTZ;
+
+-- rollback: ALTER TABLE profiles DROP COLUMN IF EXISTS github_token_refreshed_at;
+-- rollback: ALTER TABLE profiles DROP COLUMN IF EXISTS github_token_expires_at;

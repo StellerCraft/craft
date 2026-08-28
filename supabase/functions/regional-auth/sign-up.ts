@@ -17,6 +17,7 @@ import {
   type RegionalAuthContext,
   type AuthResponse,
 } from './auth-utils.ts';
+import { repairUserStateConsistency } from './consistency-validators.ts';
 
 interface SignUpRequest {
   email: string;
@@ -182,12 +183,37 @@ async function handleSignUp(req: Request): Promise<Response> {
     );
 
     if (!syncResult.synced) {
-      console.warn(`Profile sync incomplete for user ${userId}:`, syncResult.errors);
+      // #977 fix: a failed cross-region profile sync must not be silently
+      // dropped.  We:
+      //   1. Write a durable audit record so operators can query partial-sync
+      //      failures and the follow-up repair job has a discoverable trace.
+      //   2. Attempt an inline repair via repairUserStateConsistency() so the
+      //      state is corrected as soon as possible without blocking the caller.
+      // The 201 response contract is unchanged — sign-up succeeds from the
+      // user's perspective regardless of cross-region replication status.
+
+      // Step 1: durable audit log with needsRepair flag
+      await logAuthEvent(userId, 'failure', region, `${requestId}-sync-failure`, {
+        reason: 'cross-region profile sync incomplete',
+        failedRegions: Object.keys(syncResult.errors),
+        errors: syncResult.errors,
+        needsRepair: true,
+      });
+
+      // Step 2: attempt inline repair (best-effort; errors are logged, not thrown)
+      try {
+        await repairUserStateConsistency(userId, region);
+      } catch (repairError) {
+        console.error(`Inline repair failed for user ${userId}:`, repairError);
+      }
     }
 
-    // Log successful signup
+    // Log successful signup (includes sync outcome so operators have full picture)
     await logAuthEvent(userId, 'signup', region, requestId, {
       email: body.email,
+      syncRegionTimings: syncResult.regionTimings,
+      syncSucceeded: syncResult.synced,
+      ...(syncResult.synced ? {} : { syncErrors: syncResult.errors }),
     });
 
     // Create session

@@ -33,16 +33,29 @@ describe('getErrorGuidance', () => {
     expect(g.template.retryable).toBe(true);
   });
 
-  it('falls back to general:UNKNOWN for an unrecognised code', () => {
+  it('falls back to domain:UNKNOWN for an unmapped code within a known domain', () => {
     const g = getErrorGuidance('github', 'TOTALLY_UNKNOWN_CODE');
-    expect(g.template.title).toBe('An unexpected error occurred');
+    expect(g.template.title).toBe('GitHub integration error');
     expect(g.template.retryable).toBe(true);
+    expect(g.steps.length).toBeGreaterThan(0);
+    expect(g.links.length).toBeGreaterThan(0);
   });
 
   it('falls back to general:UNKNOWN for an unrecognised domain', () => {
     // @ts-expect-error — intentionally passing an invalid domain
     const g = getErrorGuidance('unknown_domain', 'SOME_CODE');
     expect(g.template.title).toBe('An unexpected error occurred');
+  });
+
+  it('every domain has a fallback UNKNOWN entry', () => {
+    const domains = ['github', 'vercel', 'stripe', 'stellar', 'auth'] as const;
+
+    for (const domain of domains) {
+      const g = getErrorGuidance(domain, 'UNMAPPED_ERROR_CODE');
+      expect(g.template.title, `${domain}:UNKNOWN title`).not.toBe('An unexpected error occurred');
+      expect(g.steps.length, `${domain}:UNKNOWN steps`).toBeGreaterThan(0);
+      expect(g.links.length, `${domain}:UNKNOWN links`).toBeGreaterThan(0);
+    }
   });
 
   it('every guidance entry has at least one step and one link', () => {

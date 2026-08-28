@@ -36,12 +36,14 @@ vi.mock('@/lib/supabase/server', () => ({
     createClient: () => mockSupabase,
 }));
 
+const mockLoggerInstance = {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+};
+
 vi.mock('@/lib/api/logger', () => ({
-    createLogger: () => ({
-        info: vi.fn(),
-        warn: vi.fn(),
-        error: vi.fn(),
-    }),
+    createLogger: vi.fn(() => mockLoggerInstance),
 }));
 
 // ── Test setup ─────────────────────────────────────────────────────────────────
@@ -49,6 +51,12 @@ vi.mock('@/lib/api/logger', () => ({
 beforeEach(() => {
     vi.clearAllMocks();
     process.env.VERCEL_PROJECT_ID = 'test-project-id';
+    // Re-configure each fresh logger instance returned by createLogger
+    Object.assign(mockLoggerInstance, {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+    });
 });
 
 describe('GitHubToVercelDeploymentService', () => {
@@ -142,7 +150,7 @@ describe('GitHubToVercelDeploymentService', () => {
             );
         });
 
-        it('handles database insert failure gracefully', async () => {
+        it('returns failure when database insert fails (deployment triggered but metadata lost)', async () => {
             mockVercelService.triggerDeployment.mockResolvedValue({
                 deploymentId: 'dpl_abc123',
                 deploymentUrl: 'https://test.vercel.app',
@@ -151,14 +159,18 @@ describe('GitHubToVercelDeploymentService', () => {
 
             mockSupabase.from.mockReturnValue({
                 insert: vi.fn().mockReturnValue({
-                    error: new Error('Database error'),
+                    error: { message: 'Database error' },
                 }),
             });
 
             const result = await service.triggerDeployment(request);
 
-            // Should still succeed even if database insert fails
-            expect(result.success).toBe(true);
+            // Must NOT report success when metadata could not be persisted
+            expect(result.success).toBe(false);
+            expect(result.metadataPersisted).toBe(false);
+            expect(result.errorMessage).toContain('metadata could not be persisted');
+            expect(result.errorMessage).toContain('Database error');
+            // The Vercel deployment URL is still surfaced so callers can link to it
             expect(result.deploymentUrl).toBe('https://test.vercel.app');
         });
 
@@ -311,6 +323,47 @@ describe('GitHubToVercelDeploymentService', () => {
 
             expect(result).toBeNull();
         });
+
+        it('logs a distinct error when the deployment row is missing (metadata was never persisted)', async () => {
+            // Reset the spy logger for this test
+            mockLoggerInstance.error = vi.fn();
+
+            const freshService = new GitHubToVercelDeploymentService(mockVercelService as any);
+
+            // Vercel API succeeds
+            mockVercelService.getDeploymentStatus.mockResolvedValue({
+                status: 'ready',
+                url: 'https://test.vercel.app',
+                deploymentId: 'dpl_orphaned',
+                createdAt: new Date(),
+            });
+
+            // Supabase returns no data AND no error — row simply doesn't exist
+            mockSupabase.from.mockReturnValue({
+                update: vi.fn().mockReturnValue({
+                    eq: vi.fn().mockReturnValue({
+                        select: vi.fn().mockReturnValue({
+                            single: vi.fn().mockResolvedValue({
+                                data: null,
+                                error: null,
+                            }),
+                        }),
+                    }),
+                }),
+            });
+
+            const result = await freshService.syncDeploymentStatus('dpl_orphaned');
+
+            // Still returns null (sync fails gracefully)
+            expect(result).toBeNull();
+            // The distinct orphaned-row message must have been logged at error level
+            expect(mockLoggerInstance.error).toHaveBeenCalledWith(
+                expect.stringContaining('metadata was never persisted'),
+                undefined,
+                expect.objectContaining({ vercelDeploymentId: 'dpl_orphaned' }),
+            );
+        });
+
     });
 
     describe('getDeploymentByVercelId', () => {

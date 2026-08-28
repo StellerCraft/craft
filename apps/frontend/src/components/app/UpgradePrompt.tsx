@@ -10,7 +10,7 @@
 
 import React from 'react';
 import type { SubscriptionTier } from '@craft/types';
-import { TIER_CONFIGS } from '@/lib/stripe/pricing';
+import { TIER_CONFIGS, formatTierPrice } from '@/lib/stripe/pricing';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -136,7 +136,7 @@ export function UpgradePromptModal({
           className="block w-full rounded-lg bg-indigo-600 py-2 text-center font-medium text-white hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-400"
           aria-label={`Upgrade to ${config.displayName}`}
         >
-          Upgrade to {config.displayName} — ${(config.monthlyPriceCents / 100).toFixed(0)}/mo
+          Upgrade to {config.displayName} — {formatTierPrice(config.monthlyPriceCents)}/mo
         </a>
 
         <button

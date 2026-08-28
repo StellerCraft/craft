@@ -18,6 +18,8 @@
  *   - disconnected: Permanently disconnected
  */
 
+import { retryWithBackoff } from '@/lib/retry/exponential-backoff';
+
 export type ConnectionState = 'connected' | 'reconnecting' | 'polling' | 'disconnected';
 
 export interface DeploymentStatusUpdate {
@@ -51,6 +53,7 @@ export class SupabaseRealtimeSubscriptionService {
     private connectionState: ConnectionState = 'disconnected';
     private reconnectAttempts = 0;
     private pollingHandle: NodeJS.Timeout | null = null;
+    private reconnectTimeout: NodeJS.Timeout | null = null;
 
     constructor(
         private readonly realtime: RealtimeClient,
@@ -78,31 +81,51 @@ export class SupabaseRealtimeSubscriptionService {
         this.connectionState = 'reconnecting';
         this.reconnectAttempts = 0;
 
-        const attemptConnect = async () => {
-            try {
-                await this.realtime.subscribe('deployments', userId);
-                this.connectionState = 'connected';
-                this.reconnectAttempts = 0;
-            } catch (error) {
-                this.reconnectAttempts++;
-                if (this.reconnectAttempts >= this.reconnectAttemptsMax) {
-                    // Switch to polling
-                    this.connectionState = 'polling';
-                    this.startPolling(userId, onUpdate);
-                } else {
-                    // Retry with exponential backoff
-                    this.connectionState = 'reconnecting';
-                    const delayMs = this.reconnectDelayMs * Math.pow(2, this.reconnectAttempts - 1);
-                    setTimeout(attemptConnect, delayMs);
-                }
+        try {
+            this.reconnectAttempts++;
+            await this.realtime.subscribe('deployments', userId);
+            this.connectionState = 'connected';
+            this.reconnectAttempts = 0;
+        } catch {
+            if (this.reconnectAttempts >= this.reconnectAttemptsMax) {
+                this.connectionState = 'polling';
+                this.startPolling(userId, onUpdate);
+            } else {
+                void retryWithBackoff(
+                    async () => {
+                        this.reconnectAttempts++;
+                        this.connectionState = 'reconnecting';
+                        try {
+                            await this.realtime.subscribe('deployments', userId);
+                        } catch (error) {
+                            throw new Error(
+                                `Realtime subscription failed: ${error instanceof Error ? error.message : String(error)}`,
+                            );
+                        }
+                    },
+                    {
+                        maxAttempts: this.reconnectAttemptsMax - 1,
+                        initialDelayMs: this.reconnectDelayMs,
+                    },
+                ).then((result) => {
+                    if (result.success) {
+                        this.connectionState = 'connected';
+                        this.reconnectAttempts = 0;
+                    } else {
+                        this.connectionState = 'polling';
+                        this.startPolling(userId, onUpdate);
+                    }
+                });
             }
-        };
-
-        await attemptConnect();
+        }
 
         // Return unsubscribe function
         return () => {
             this.connectionState = 'disconnected';
+            if (this.reconnectTimeout) {
+                clearTimeout(this.reconnectTimeout);
+                this.reconnectTimeout = null;
+            }
             this.realtime.unsubscribe().catch(() => {
                 /* ignore */
             });

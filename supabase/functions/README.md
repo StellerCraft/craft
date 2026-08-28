@@ -205,15 +205,35 @@ Monitors regional Supabase instance health and availability.
 
 ### Regional Router (`regional-router/index.ts`)
 
-Intelligently routes auth requests to the nearest healthy region.
+Intelligently routes requests to the nearest healthy region.
 
-**Endpoint**: `POST /router/auth/{operation}`
+**Endpoint**: `POST /router/{service}/{path}`
 
-**Operations**:
-- `/router/auth/sign-in`
-- `/router/auth/sign-up`
-- `/router/auth/token-refresh`
-- `/router/auth?info=true` (get routing decision without forwarding)
+`handleRouting()` treats `pathSegments[1]` (the first segment after `/router`) as the **literal deployed edge function name** and forwards to `/functions/v1/{service}/{path}` — it does not split a generic `auth` service from an operation name. `{service}` must therefore equal a real deployed function such as `regional-auth-sign-in`, not `auth`.
+
+**Worked example** — routing to the `regional-auth-sign-in` function:
+
+Request:
+```
+POST /router/regional-auth-sign-in
+```
+
+`pathSegments` = `['router', 'regional-auth-sign-in']`, so `service = 'regional-auth-sign-in'` and `servicePathSegments = []`. This resolves to the forwarded URL:
+```
+https://<selected-region>.functions.supabase.co/functions/v1/regional-auth-sign-in/
+```
+(the trailing slash comes from joining an empty `servicePathSegments` array; it's harmless since the `regional-auth-*` functions don't expect additional path segments.)
+
+**Operations** — the deployed function names to route to, since there is no generic `auth` service:
+- `POST /router/regional-auth-sign-in`
+- `POST /router/regional-auth-sign-up`
+- `POST /router/regional-auth-token-refresh`
+
+**Info endpoint** (get the routing decision without forwarding): triggered when `pathSegments[2] === 'info'` (i.e. a third path segment after `/router/{service}`) or when the query string includes `?info=true`, e.g.:
+```
+GET /router/regional-auth-sign-in/info
+GET /router/regional-auth-sign-in?info=true
+```
 
 **Request Headers**:
 - `cf-ipcountry`: Cloudflare country code (auto-detected)
@@ -310,6 +330,9 @@ EDGE_FUNCTION_URL_AP_SOUTHEAST=https://project-ap-southeast.functions.supabase.c
 
 # CORS configuration
 ALLOWED_ORIGINS=https://app.example.com,https://staging.example.com
+
+# Regional Router health probe timeout (milliseconds, default: 2000)
+REGION_HEALTH_PROBE_TIMEOUT_MS=2000
 ```
 
 ### Database Schema

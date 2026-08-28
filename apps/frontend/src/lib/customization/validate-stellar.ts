@@ -15,6 +15,22 @@ const ACCOUNT_ID_RE = /^G[A-Z2-7]{55}$/;
 const TESTNET_HORIZON = 'https://horizon-testnet.stellar.org';
 const MAINNET_HORIZON = 'https://horizon.stellar.org';
 
+const TESTNET_HORIZON_HOST = 'horizon-testnet.stellar.org';
+const MAINNET_HORIZON_HOST = 'horizon.stellar.org';
+
+/**
+ * Extracts the lowercased hostname from a Horizon URL for comparison.
+ * Returns null for unparseable URLs so callers can skip the check
+ * (format is already validated upstream by `.url()`).
+ */
+function getHorizonHost(horizonUrl: string): string | null {
+    try {
+        return new URL(horizonUrl).hostname.toLowerCase();
+    } catch {
+        return null;
+    }
+}
+
 // ── Sub-schemas ───────────────────────────────────────────────────────────────
 
 /**
@@ -80,15 +96,16 @@ export const stellarConfigSchema = z
             .optional(),
     })
     .superRefine((cfg, ctx) => {
-        // Horizon URL / network mismatch
-        if (cfg.network === 'mainnet' && cfg.horizonUrl === TESTNET_HORIZON) {
+        // Horizon URL / network mismatch (compared by normalized host, not raw string)
+        const horizonHost = getHorizonHost(cfg.horizonUrl);
+        if (cfg.network === 'mainnet' && horizonHost === TESTNET_HORIZON_HOST) {
             ctx.addIssue({
                 code: z.ZodIssueCode.custom,
                 message: 'Horizon URL points to testnet but network is set to mainnet',
                 path: ['horizonUrl'],
             });
         }
-        if (cfg.network === 'testnet' && cfg.horizonUrl === MAINNET_HORIZON) {
+        if (cfg.network === 'testnet' && horizonHost === MAINNET_HORIZON_HOST) {
             ctx.addIssue({
                 code: z.ZodIssueCode.custom,
                 message: 'Horizon URL points to mainnet but network is set to testnet',

@@ -524,5 +524,37 @@ describe('Stellar Error Handling', () => {
         true
       );
     });
+
+    it('should classify network timeout mentioning contract as retryable (#960)', () => {
+      const networkTimeoutWithContract = new Error(
+        'ETIMEDOUT while reaching contract endpoint'
+      );
+
+      const parsed = parseStellarError(networkTimeoutWithContract);
+      expect(parsed.code).toBe('CONNECTION_TIMEOUT');
+      expect(parsed.retryable).toBe(true);
+      expect(parsed.title).toBe('Connection Timeout');
+    });
+
+    it('should still classify genuine Soroban errors correctly', () => {
+      const sorobanError = new Error(
+        'Soroban execution failed: scvContractPanic'
+      );
+
+      const parsed = parseStellarError(sorobanError);
+      expect(parsed.code).toBe('SOROBAN_CONTRACT_PANIC');
+      expect(parsed.retryable).toBe(false);
+    });
+
+    it('should classify network error with contract mention as retryable', () => {
+      const connResetWithContract = new Error(
+        'ECONNRESET while calling contract method'
+      );
+
+      const parsed = parseStellarError(connResetWithContract);
+      expect(parsed.code).toBe('CONNECTION_TIMEOUT');
+      expect(parsed.retryable).toBe(true);
+      expect(isRetryableError(connResetWithContract)).toBe(true);
+    });
   });
 });

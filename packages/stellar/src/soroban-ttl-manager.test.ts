@@ -109,8 +109,21 @@ describe('getLedgerEntryTtl', () => {
         expect(info.isNearExpiration).toBe(false);
     });
 
-    it('sets isExpired when liveUntilLedger <= currentLedger', async () => {
+    it('sets isExpired only when liveUntilLedger < currentLedger', async () => {
         const currentLedger = 2000;
+        const liveUntil = 2000;
+        const client = makeTtlClient(liveUntil, currentLedger);
+        const key = makeKey();
+
+        const [info] = await getLedgerEntryTtl([key], {}, client);
+
+        expect(info.isExpired).toBe(false);
+        expect(info.remainingLedgers).toBe(0);
+        expect(info.isNearExpiration).toBe(true);
+    });
+
+    it('sets isExpired=true when currentLedger exceeds liveUntilLedger', async () => {
+        const currentLedger = 2001;
         const liveUntil = 2000;
         const client = makeTtlClient(liveUntil, currentLedger);
         const key = makeKey();
@@ -119,6 +132,17 @@ describe('getLedgerEntryTtl', () => {
 
         expect(info.isExpired).toBe(true);
         expect(info.isNearExpiration).toBe(false);
+    });
+
+    it('boundary: entry is live through liveUntilLedger, expired after', async () => {
+        const liveUntil = 1000;
+        const key = makeKey();
+
+        const atLiveUntil = await getLedgerEntryTtl([key], {}, makeTtlClient(liveUntil, liveUntil));
+        const afterLiveUntil = await getLedgerEntryTtl([key], {}, makeTtlClient(liveUntil, liveUntil + 1));
+
+        expect(atLiveUntil[0].isExpired).toBe(false);
+        expect(afterLiveUntil[0].isExpired).toBe(true);
     });
 
     it('handles missing entry (entry not returned by node)', async () => {
@@ -282,5 +306,45 @@ describe('TTL constants', () => {
 
     it('DEFAULT_EXTEND_TO_LEDGERS exceeds DEFAULT_WARNING_LEDGERS', () => {
         expect(DEFAULT_EXTEND_TO_LEDGERS).toBeGreaterThan(DEFAULT_WARNING_LEDGERS);
+    });
+});
+
+// ── Regression: #1099 – Networks import ──────────────────────────────────────
+
+describe('regression #1099 – buildTtlExtensionTransaction does not throw ReferenceError', () => {
+    it('resolves without ReferenceError when using a mocked client (mainnet config)', async () => {
+        const client = makeTxClient();
+        const key = makeKey();
+
+        // If Networks was not imported, getNetworkPassphrase() would throw
+        // "ReferenceError: Networks is not defined" at transaction-build time.
+        await expect(
+            buildTtlExtensionTransaction([key], SOURCE_KEY, {}, client),
+        ).resolves.not.toThrow();
+    });
+
+    it('returns a string XDR result (not a ReferenceError rejection)', async () => {
+        const client = makeTxClient();
+        const key = makeKey();
+
+        const result = await buildTtlExtensionTransaction([key], SOURCE_KEY, {}, client);
+
+        expect(typeof result).toBe('string');
+        expect(result.length).toBeGreaterThan(0);
+    });
+
+    it('checkContractTtl does not surface a ReferenceError when TTL is near expiry', async () => {
+        const currentLedger = 1000;
+        const liveUntil = 1000 + DEFAULT_WARNING_LEDGERS - 1;
+        const ttlClient = makeTtlClient(liveUntil, currentLedger);
+        const txClient = makeTxClient();
+
+        // If Networks is missing, the ok:false branch would contain "Networks is not defined"
+        const result = await checkContractTtl(CONTRACT_ID, SOURCE_KEY, {}, ttlClient, txClient);
+
+        expect(result.ok).toBe(true);
+        if (!result.ok) {
+            expect(result.error).not.toMatch(/Networks is not defined/);
+        }
     });
 });

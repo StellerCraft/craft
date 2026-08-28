@@ -9,13 +9,12 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: ['./vitest.setup.ts'],
-    // Shard safety: no mutable module-level singletons; each vi.mock is
-    // reset in beforeEach. Safe to run with --shard=<index>/<total>.
     sequence: { shuffle: false },
   },
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+      '@craft/types': path.resolve(__dirname, '../../packages/types/src'),
     },
   },
 });

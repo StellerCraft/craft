@@ -466,6 +466,257 @@ describe('PaymentService.handleWebhook – unhandled event type', () => {
     });
 });
 
+// ── Mutation targets: comparison operators + boundary conditions ───────────────
+
+describe('PaymentService — billing calculation edge cases (mutation targets)', () => {
+    beforeEach(() => vi.clearAllMocks());
+
+    // Kills mutants on the stripe_subscription_id null-check:
+    //   mutant: `if (profile?.stripe_subscription_id)` (missing !)
+    //   mutant: `if (true)` / `if (false)`
+    describe('getSubscriptionStatus — stripe_subscription_id boundary', () => {
+        it('empty-string subscription ID is treated the same as null (no Stripe call)', async () => {
+            const query = makeQuery({
+                data: { subscription_tier: 'free', subscription_status: 'active', stripe_subscription_id: '' },
+            });
+            mockFrom.mockReturnValue(query);
+
+            const result = await service.getSubscriptionStatus('user-1');
+
+            // Empty string is falsy — the `if (!profile?.stripe_subscription_id)` branch fires
+            expect(mockSubscriptionsRetrieve).not.toHaveBeenCalled();
+            expect(result.tier).toBe('free');
+        });
+
+        it('a truthy subscription ID always triggers a Stripe retrieve call', async () => {
+            const periodEnd = Math.floor(Date.now() / 1000) + 3600;
+            const query = makeQuery({
+                data: { subscription_tier: 'enterprise', subscription_status: 'active', stripe_subscription_id: 'sub_ent_1' },
+            });
+            mockFrom.mockReturnValue(query);
+            mockSubscriptionsRetrieve.mockResolvedValue({
+                status: 'active',
+                current_period_end: periodEnd,
+                cancel_at_period_end: false,
+            });
+
+            await service.getSubscriptionStatus('user-1');
+
+            // Kills mutant that removes the Stripe retrieve call entirely
+            expect(mockSubscriptionsRetrieve).toHaveBeenCalledOnce();
+            expect(mockSubscriptionsRetrieve).toHaveBeenCalledWith('sub_ent_1');
+        });
+    });
+
+    // Kills mutants on cancel_at_period_end: true (mutation → false)
+    describe('cancelSubscription — cancel_at_period_end must be exactly true', () => {
+        it('passes cancel_at_period_end: true — not false or undefined', async () => {
+            mockSubscriptionsUpdate.mockResolvedValue({
+                id: 'sub_cancel',
+                cancel_at_period_end: true,
+            });
+
+            await service.cancelSubscription('user-1', 'sub_cancel');
+
+            const [, updateBody] = mockSubscriptionsUpdate.mock.calls[0];
+            expect(updateBody).toEqual({ cancel_at_period_end: true });
+            // Explicit assertion that the value is boolean true, not a truthy non-boolean
+            expect(updateBody.cancel_at_period_end).toBe(true);
+        });
+    });
+
+    // Kills mutants on tier assignments in customer.subscription.deleted
+    //   mutant: `subscription_tier: 'pro'` instead of `'free'`
+    //   mutant: `subscription_status: 'active'` instead of `'canceled'`
+    //   mutant: `stripe_subscription_id: ''` instead of `null`
+    describe('handleWebhook — customer.subscription.deleted tier/status assignments', () => {
+        it('sets subscription_tier to exactly "free" (not any other tier)', async () => {
+            const selectQuery = makeQuery({ data: { id: 'user-del' } });
+            const updateEq = vi.fn().mockResolvedValue({ error: null });
+            const updateFn = vi.fn().mockReturnValue({ eq: updateEq });
+            mockFrom
+                .mockReturnValueOnce(selectQuery)
+                .mockReturnValueOnce({ update: updateFn });
+
+            await service.handleWebhook({
+                id: 'evt_del_1',
+                type: 'customer.subscription.deleted',
+                data: { object: { customer: 'cus_del' } },
+            } as any);
+
+            const [updatePayload] = updateFn.mock.calls[0];
+            expect(updatePayload.subscription_tier).toBe('free');
+            expect(updatePayload.subscription_tier).not.toBe('pro');
+            expect(updatePayload.subscription_tier).not.toBe('enterprise');
+        });
+
+        it('sets subscription_status to exactly "canceled" (not "active" or "past_due")', async () => {
+            const selectQuery = makeQuery({ data: { id: 'user-del' } });
+            const updateEq = vi.fn().mockResolvedValue({ error: null });
+            const updateFn = vi.fn().mockReturnValue({ eq: updateEq });
+            mockFrom
+                .mockReturnValueOnce(selectQuery)
+                .mockReturnValueOnce({ update: updateFn });
+
+            await service.handleWebhook({
+                id: 'evt_del_2',
+                type: 'customer.subscription.deleted',
+                data: { object: { customer: 'cus_del' } },
+            } as any);
+
+            const [updatePayload] = updateFn.mock.calls[0];
+            expect(updatePayload.subscription_status).toBe('canceled');
+            expect(updatePayload.subscription_status).not.toBe('active');
+            expect(updatePayload.subscription_status).not.toBe('past_due');
+        });
+
+        it('sets stripe_subscription_id to null — not an empty string or undefined', async () => {
+            const selectQuery = makeQuery({ data: { id: 'user-del' } });
+            const updateEq = vi.fn().mockResolvedValue({ error: null });
+            const updateFn = vi.fn().mockReturnValue({ eq: updateEq });
+            mockFrom
+                .mockReturnValueOnce(selectQuery)
+                .mockReturnValueOnce({ update: updateFn });
+
+            await service.handleWebhook({
+                id: 'evt_del_3',
+                type: 'customer.subscription.deleted',
+                data: { object: { customer: 'cus_del' } },
+            } as any);
+
+            const [updatePayload] = updateFn.mock.calls[0];
+            expect(updatePayload.stripe_subscription_id).toBeNull();
+        });
+    });
+
+    // Kills mutants on tier-check comparisons in handleWebhook checkout handler
+    describe('handleWebhook — tier upgrade: mid-cycle subscription changes', () => {
+        const makeCheckoutEvent = (priceId: string, subscriptionId = 'sub_mc') => ({
+            id: `evt_mc_${priceId}`,
+            type: 'checkout.session.completed',
+            data: {
+                object: {
+                    metadata: { user_id: 'user-mc' },
+                    subscription: subscriptionId,
+                },
+            },
+        });
+
+        it('upgrade from free to pro: sets subscription_tier to "pro" and status to "active"', async () => {
+            mockGetTierFromPriceId.mockReturnValue('pro');
+            mockSubscriptionsRetrieve.mockResolvedValue({
+                id: 'sub_mc',
+                items: { data: [{ price: { id: 'price_pro_monthly' } }] },
+            });
+            const updateEq = vi.fn().mockResolvedValue({ error: null });
+            const updateFn = vi.fn().mockReturnValue({ eq: updateEq });
+            mockFrom.mockReturnValue({ update: updateFn });
+
+            await service.handleWebhook(makeCheckoutEvent('price_pro_monthly') as any);
+
+            const [updatePayload] = updateFn.mock.calls[0];
+            expect(updatePayload.subscription_tier).toBe('pro');
+            expect(updatePayload.subscription_status).toBe('active');
+            expect(updatePayload.stripe_subscription_id).toBe('sub_mc');
+        });
+
+        it('upgrade to enterprise mid-cycle: sets subscription_tier to "enterprise"', async () => {
+            mockGetTierFromPriceId.mockReturnValue('enterprise');
+            mockSubscriptionsRetrieve.mockResolvedValue({
+                id: 'sub_ent_mc',
+                items: { data: [{ price: { id: 'price_ent_annual' } }] },
+            });
+            const updateEq = vi.fn().mockResolvedValue({ error: null });
+            const updateFn = vi.fn().mockReturnValue({ eq: updateEq });
+            mockFrom.mockReturnValue({ update: updateFn });
+
+            await service.handleWebhook(makeCheckoutEvent('price_ent_annual', 'sub_ent_mc') as any);
+
+            const [updatePayload] = updateFn.mock.calls[0];
+            expect(updatePayload.subscription_tier).toBe('enterprise');
+            expect(updatePayload.subscription_status).toBe('active');
+            // Kills mutant that omits the subscription ID update
+            expect(updatePayload.stripe_subscription_id).toBe('sub_ent_mc');
+        });
+
+        it('downgrade signalled via subscription.updated sets only subscription_status', async () => {
+            const selectQuery = makeQuery({ data: { id: 'user-dg' } });
+            const updateEq = vi.fn().mockResolvedValue({ error: null });
+            const updateFn = vi.fn().mockReturnValue({ eq: updateEq });
+            mockFrom
+                .mockReturnValueOnce(selectQuery)
+                .mockReturnValueOnce({ update: updateFn });
+
+            await service.handleWebhook({
+                id: 'evt_dg',
+                type: 'customer.subscription.updated',
+                data: { object: { customer: 'cus_dg', status: 'canceled' } },
+            } as any);
+
+            const [updatePayload] = updateFn.mock.calls[0];
+            // Only status is updated — tier is not touched (kills mutant that adds tier change)
+            expect(updatePayload).toEqual({ subscription_status: 'canceled' });
+            expect(updatePayload.subscription_tier).toBeUndefined();
+        });
+
+        it('subscription.updated with past_due status: sets status to "past_due" exactly', async () => {
+            const selectQuery = makeQuery({ data: { id: 'user-pd' } });
+            const updateEq = vi.fn().mockResolvedValue({ error: null });
+            const updateFn = vi.fn().mockReturnValue({ eq: updateEq });
+            mockFrom
+                .mockReturnValueOnce(selectQuery)
+                .mockReturnValueOnce({ update: updateFn });
+
+            await service.handleWebhook({
+                id: 'evt_pd',
+                type: 'customer.subscription.updated',
+                data: { object: { customer: 'cus_pd', status: 'past_due' } },
+            } as any);
+
+            const [updatePayload] = updateFn.mock.calls[0];
+            expect(updatePayload.subscription_status).toBe('past_due');
+            expect(updatePayload.subscription_status).not.toBe('active');
+        });
+    });
+
+    // Kills mutants on the stripe_customer_id null-check in createCustomerPortalSession
+    describe('createCustomerPortalSession — stripe_customer_id boundary', () => {
+        it('throws when stripe_customer_id is an empty string (falsy)', async () => {
+            const query = makeQuery({ data: { stripe_customer_id: '' } });
+            mockFrom.mockReturnValue(query);
+
+            await expect(
+                service.createCustomerPortalSession('user-empty', 'https://example.com/billing')
+            ).rejects.toThrow('does not have a Stripe customer record');
+            // Kills mutant that changes the guard from `!customerId` to `customerId`
+            expect(mockBillingPortalSessionsCreate).not.toHaveBeenCalled();
+        });
+    });
+
+    // Kills mutants on invoice.payment_failed — status assignment
+    describe('handleWebhook — invoice.payment_failed status assignment', () => {
+        it('sets subscription_status to exactly "past_due" (not "failed" or "canceled")', async () => {
+            const selectQuery = makeQuery({ data: { id: 'user-pf' } });
+            const updateEq = vi.fn().mockResolvedValue({ error: null });
+            const updateFn = vi.fn().mockReturnValue({ eq: updateEq });
+            mockFrom
+                .mockReturnValueOnce(selectQuery)
+                .mockReturnValueOnce({ update: updateFn });
+
+            await service.handleWebhook({
+                id: 'evt_pf',
+                type: 'invoice.payment_failed',
+                data: { object: { customer: 'cus_pf' } },
+            } as any);
+
+            const [updatePayload] = updateFn.mock.calls[0];
+            expect(updatePayload.subscription_status).toBe('past_due');
+            expect(updatePayload.subscription_status).not.toBe('failed');
+            expect(updatePayload.subscription_status).not.toBe('canceled');
+        });
+    });
+});
+
 describe('PaymentService.createCustomerPortalSession', () => {
     beforeEach(() => vi.clearAllMocks());
 

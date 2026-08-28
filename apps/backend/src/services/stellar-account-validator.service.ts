@@ -103,7 +103,10 @@ export interface FetchLike {
 }
 
 export class StellarAccountValidator {
-    constructor(private readonly _fetch: FetchLike = fetch) {}
+    constructor(
+        private readonly _fetch: FetchLike = fetch,
+        private readonly timeoutMs: number = 5000
+    ) {}
 
     /**
      * Validate account address format only (no network call).
@@ -115,6 +118,7 @@ export class StellarAccountValidator {
     /**
      * Check if an account exists on the Stellar network via Horizon.
      * Returns funded: true if the account has a non-zero XLM balance.
+     * Request times out after timeoutMs (default 5000ms).
      */
     async checkExistence(address: string, horizonUrl: string): Promise<AccountExistenceResult> {
         const formatResult = validateAccountAddress(address);
@@ -124,29 +128,46 @@ export class StellarAccountValidator {
 
         try {
             const url = `${horizonUrl.replace(/\/$/, '')}/accounts/${address}`;
-            const response = await this._fetch(url, {
-                headers: { Accept: 'application/json' },
-            });
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), this.timeoutMs);
 
-            if (response.status === 404) {
-                return { exists: false, address, funded: false };
+            try {
+                const response = await this._fetch(url, {
+                    headers: { Accept: 'application/json' },
+                    signal: controller.signal,
+                });
+
+                if (response.status === 404) {
+                    return { exists: false, address, funded: false };
+                }
+
+                if (!response.ok) {
+                    return {
+                        exists: false,
+                        address,
+                        funded: false,
+                        error: `Horizon returned HTTP ${response.status}`,
+                    };
+                }
+
+                const data = await response.json() as { balances?: Array<{ asset_type: string; balance: string }> };
+                const xlmBalance = data.balances?.find((b) => b.asset_type === 'native');
+                const funded = xlmBalance ? parseFloat(xlmBalance.balance) > 0 : false;
+
+                return { exists: true, address, funded };
+            } finally {
+                clearTimeout(timer);
             }
-
-            if (!response.ok) {
+        } catch (err: unknown) {
+            if (err instanceof Error && err.name === 'AbortError') {
                 return {
                     exists: false,
                     address,
                     funded: false,
-                    error: `Horizon returned HTTP ${response.status}`,
+                    error: `Horizon request timed out after ${this.timeoutMs}ms`,
                 };
             }
 
-            const data = await response.json() as { balances?: Array<{ asset_type: string; balance: string }> };
-            const xlmBalance = data.balances?.find((b) => b.asset_type === 'native');
-            const funded = xlmBalance ? parseFloat(xlmBalance.balance) > 0 : false;
-
-            return { exists: true, address, funded };
-        } catch (err: unknown) {
             return {
                 exists: false,
                 address,

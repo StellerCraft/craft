@@ -45,9 +45,9 @@
         "low": 60
       },
       "apps/backend/src/services/payment.service.ts": {
-        "high": 80,
-        "medium": 70,
-        "low": 60
+        "high": 85,
+        "medium": 75,
+        "low": 65
       },
       "apps/backend/src/services/deployment-pipeline.service.ts": {
         "high": 80,

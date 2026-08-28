@@ -30,6 +30,7 @@
  * Validates: Design doc section 5 (Deployment Engine - redeployWithUpdates)
  */
 
+import { describe, it, expect, beforeEach } from 'vitest';
 import * as fc from 'fast-check';
 import type { CustomizationConfig } from '@craft/types';
 
@@ -496,6 +497,283 @@ describe('Property 38 — Rollback on Failed Deployment Updates (Contract Test)'
                     }
                 ),
                 { numRuns: 50 }
+            );
+        });
+    });
+});
+
+// ── Idempotency Property Tests (Issue #740) ───────────────────────────────────
+
+/**
+ * Extended mock that tracks write operations for idempotency verification.
+ * Records every DB write so tests can assert call counts.
+ */
+class IdempotentMockDeploymentUpdateService {
+    private state: Map<string, DeploymentState> = new Map();
+    writeCount = 0;
+    private idempotencyKeys: Map<string, DeploymentUpdateResult> = new Map();
+
+    setInitialDeployment(state: DeploymentState) {
+        this.state.set(state.id, { ...state });
+    }
+
+    async redeployWithUpdates(
+        deploymentId: string,
+        updates: CustomizationConfig,
+        idempotencyKey?: string,
+    ): Promise<DeploymentUpdateResult> {
+        const currentState = this.state.get(deploymentId);
+
+        if (!currentState) {
+            return { deploymentId, success: false, rolledBack: false, errorMessage: 'Deployment not found' };
+        }
+
+        // Return cached result for duplicate requests (idempotency)
+        if (idempotencyKey) {
+            const cached = this.idempotencyKeys.get(idempotencyKey);
+            if (cached) return cached;
+        }
+
+        // Count the DB write
+        this.writeCount++;
+
+        const newState: DeploymentState = { ...currentState, customizationConfig: updates };
+        this.state.set(deploymentId, newState);
+
+        const result: DeploymentUpdateResult = {
+            deploymentId,
+            success: true,
+            rolledBack: false,
+            deploymentUrl: currentState.deploymentUrl ?? undefined,
+        };
+
+        if (idempotencyKey) {
+            this.idempotencyKeys.set(idempotencyKey, result);
+        }
+
+        return result;
+    }
+
+    getCurrentState(deploymentId: string): DeploymentState | undefined {
+        return this.state.get(deploymentId);
+    }
+}
+
+interface DeploymentUpdateResult {
+    deploymentId: string;
+    success: boolean;
+    rolledBack: boolean;
+    deploymentUrl?: string;
+    errorMessage?: string;
+}
+
+describe('Property 39 — Deployment Update Idempotency (Issue #740)', () => {
+    let service: IdempotentMockDeploymentUpdateService;
+
+    beforeEach(() => {
+        service = new IdempotentMockDeploymentUpdateService();
+    });
+
+    /**
+     * Property 39.1: Identical requests produce identical responses
+     *
+     * INVARIANT: Sending the same update request twice must return the same result.
+     */
+    describe('Property 39.1 — Identical requests produce identical responses', () => {
+        it('for any deployment and config, two identical calls return the same result', async () => {
+            await fc.assert(
+                fc.asyncProperty(
+                    arbDeploymentState,
+                    arbCustomizationConfig,
+                    fc.uuid(),
+                    async (initialState, newConfig, idempotencyKey) => {
+                        service = new IdempotentMockDeploymentUpdateService();
+                        service.setInitialDeployment(initialState);
+
+                        const result1 = await service.redeployWithUpdates(
+                            initialState.id,
+                            newConfig,
+                            idempotencyKey,
+                        );
+                        const result2 = await service.redeployWithUpdates(
+                            initialState.id,
+                            newConfig,
+                            idempotencyKey,
+                        );
+
+                        expect(result1.success).toBe(result2.success);
+                        expect(result1.rolledBack).toBe(result2.rolledBack);
+                        expect(result1.deploymentUrl).toBe(result2.deploymentUrl);
+                        expect(result1.errorMessage).toBe(result2.errorMessage);
+                    },
+                ),
+                { numRuns: 100 },
+            );
+        });
+    });
+
+    /**
+     * Property 39.2: Duplicate requests do not increment the write counter
+     *
+     * INVARIANT: The second identical call must not trigger an additional DB write.
+     */
+    describe('Property 39.2 — Second identical call must not produce an additional DB write', () => {
+        it('for any deployment and config, the write counter increments exactly once', async () => {
+            await fc.assert(
+                fc.asyncProperty(
+                    arbDeploymentState,
+                    arbCustomizationConfig,
+                    fc.uuid(),
+                    async (initialState, newConfig, idempotencyKey) => {
+                        service = new IdempotentMockDeploymentUpdateService();
+                        service.setInitialDeployment(initialState);
+
+                        await service.redeployWithUpdates(initialState.id, newConfig, idempotencyKey);
+                        await service.redeployWithUpdates(initialState.id, newConfig, idempotencyKey);
+
+                        // Exactly one DB write must have occurred
+                        expect(service.writeCount).toBe(1);
+                    },
+                ),
+                { numRuns: 500 },
+            );
+        });
+    });
+
+    /**
+     * Property 39.3: Concurrent identical requests result in exactly one DB write
+     *
+     * INVARIANT: Parallel duplicate requests must not produce multiple writes.
+     */
+    describe('Property 39.3 — Concurrent identical updates: only one DB write occurs', () => {
+        it('for any deployment and config, concurrent identical calls produce exactly one write', async () => {
+            await fc.assert(
+                fc.asyncProperty(
+                    arbDeploymentState,
+                    arbCustomizationConfig,
+                    fc.uuid(),
+                    async (initialState, newConfig, idempotencyKey) => {
+                        service = new IdempotentMockDeploymentUpdateService();
+                        service.setInitialDeployment(initialState);
+
+                        const [result1, result2] = await Promise.all([
+                            service.redeployWithUpdates(initialState.id, newConfig, idempotencyKey),
+                            service.redeployWithUpdates(initialState.id, newConfig, idempotencyKey),
+                        ]);
+
+                        // Both calls must succeed
+                        expect(result1.success).toBe(true);
+                        expect(result2.success).toBe(true);
+
+                        // Only one DB write must have occurred
+                        expect(service.writeCount).toBe(1);
+                    },
+                ),
+                { numRuns: 100 },
+            );
+        });
+    });
+
+    /**
+     * Property 39.4: Partial updates do not clobber unrelated fields
+     *
+     * INVARIANT: Updating branding config must not affect stellar or features config.
+     */
+    describe('Property 39.4 — Partial updates must not clobber unrelated fields', () => {
+        it('updating branding leaves stellar and features unchanged', async () => {
+            await fc.assert(
+                fc.asyncProperty(
+                    arbDeploymentState,
+                    arbBrandingConfig,
+                    async (initialState, newBranding) => {
+                        service = new IdempotentMockDeploymentUpdateService();
+                        service.setInitialDeployment(initialState);
+
+                        const partialUpdate: CustomizationConfig = {
+                            ...initialState.customizationConfig,
+                            branding: newBranding,
+                        };
+
+                        await service.redeployWithUpdates(initialState.id, partialUpdate);
+
+                        const finalState = service.getCurrentState(initialState.id);
+
+                        // Branding must reflect the update
+                        expect(finalState?.customizationConfig.branding).toEqual(newBranding);
+
+                        // Stellar and features must be unchanged
+                        expect(finalState?.customizationConfig.stellar).toEqual(
+                            initialState.customizationConfig.stellar,
+                        );
+                        expect(finalState?.customizationConfig.features).toEqual(
+                            initialState.customizationConfig.features,
+                        );
+                    },
+                ),
+                { numRuns: 100 },
+            );
+        });
+
+        it('updating features leaves branding and stellar unchanged', async () => {
+            await fc.assert(
+                fc.asyncProperty(
+                    arbDeploymentState,
+                    arbFeatureConfig,
+                    async (initialState, newFeatures) => {
+                        service = new IdempotentMockDeploymentUpdateService();
+                        service.setInitialDeployment(initialState);
+
+                        const partialUpdate: CustomizationConfig = {
+                            ...initialState.customizationConfig,
+                            features: newFeatures,
+                        };
+
+                        await service.redeployWithUpdates(initialState.id, partialUpdate);
+
+                        const finalState = service.getCurrentState(initialState.id);
+
+                        expect(finalState?.customizationConfig.features).toEqual(newFeatures);
+                        expect(finalState?.customizationConfig.branding).toEqual(
+                            initialState.customizationConfig.branding,
+                        );
+                        expect(finalState?.customizationConfig.stellar).toEqual(
+                            initialState.customizationConfig.stellar,
+                        );
+                    },
+                ),
+                { numRuns: 100 },
+            );
+        });
+    });
+
+    /**
+     * Property 39.5: Different idempotency keys produce independent writes
+     *
+     * INVARIANT: Two requests with different keys are not deduplicated.
+     */
+    describe('Property 39.5 — Different idempotency keys produce independent writes', () => {
+        it('for two distinct keys, the write counter is exactly 2', async () => {
+            await fc.assert(
+                fc.asyncProperty(
+                    arbDeploymentState,
+                    arbCustomizationConfig,
+                    arbCustomizationConfig,
+                    fc.uuid(),
+                    fc.uuid(),
+                    async (initialState, configA, configB, keyA, keyB) => {
+                        fc.pre(keyA !== keyB);
+
+                        service = new IdempotentMockDeploymentUpdateService();
+                        service.setInitialDeployment(initialState);
+
+                        await service.redeployWithUpdates(initialState.id, configA, keyA);
+                        await service.redeployWithUpdates(initialState.id, configB, keyB);
+
+                        // Two distinct operations → two writes
+                        expect(service.writeCount).toBe(2);
+                    },
+                ),
+                { numRuns: 50 },
             );
         });
     });

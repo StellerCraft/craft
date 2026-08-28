@@ -1,4 +1,7 @@
 import type { GeneratedFile } from '@craft/types';
+import { createLogger } from '@/lib/api/logger';
+
+const log = createLogger({ service: 'github-push' });
 
 const GITHUB_API_BASE = 'https://api.github.com';
 const MAX_FILE_COUNT = 5000;
@@ -38,6 +41,8 @@ export interface GitHubPushRequest {
     commitMessage: string;
     authorName?: string;
     authorEmail?: string;
+    /** Correlation ID from an existing trace (e.g. GitHubToVercelDeploymentService). Generated when absent. */
+    traceId?: string;
 }
 
 export interface GitHubCommitReference {
@@ -84,18 +89,23 @@ export class GitHubPushService {
     constructor(private readonly _fetch: FetchLike = fetch) {}
 
     async pushGeneratedCode(request: GitHubPushRequest): Promise<GitHubCommitReference> {
+        const traceId = request.traceId ?? crypto.randomUUID();
         const owner = request.owner.trim();
         const repo = request.repo.trim();
         const branch = request.branch.trim();
         const baseBranch = (request.baseBranch ?? 'main').trim();
         const commitMessage = request.commitMessage.trim();
 
+        log.info('Stage: validate-request', { traceId, owner, repo, branch, baseBranch });
+
         if (!owner || !repo || !branch || !baseBranch || !commitMessage) {
+            log.error('Validation failed: missing required fields', undefined, { traceId, owner, repo, branch, baseBranch });
             throw new GitHubPushValidationError('owner, repo, branch, baseBranch, and commitMessage are required');
         }
 
         const token = request.token.trim();
         if (!token) {
+            log.error('Validation failed: missing GitHub token', undefined, { traceId, owner, repo });
             throw new GitHubPushAuthError('GitHub token is required for repository updates');
         }
 
@@ -108,104 +118,119 @@ export class GitHubPushService {
 
         const files = this.prepareFiles(request.files);
 
-        let createdBranch = false;
-        let currentHeadSha: string;
+        try {
+            let createdBranch = false;
+            let currentHeadSha: string;
 
-        const branchRef = await this.getRef(owner, repo, branch, headers);
-        if (branchRef) {
-            currentHeadSha = branchRef.object.sha;
-        } else {
-            const baseRef = await this.getRef(owner, repo, baseBranch, headers);
-            if (!baseRef) {
-                throw new GitHubPushApiError(`Base branch not found: ${baseBranch}`, 404);
+            log.info('Stage: resolve-ref start', { traceId, owner, repo, branch });
+            const branchRef = await this.getRef(owner, repo, branch, headers);
+            if (branchRef) {
+                currentHeadSha = branchRef.object.sha;
+            } else {
+                const baseRef = await this.getRef(owner, repo, baseBranch, headers);
+                if (!baseRef) {
+                    throw new GitHubPushApiError(`Base branch not found: ${baseBranch}`, 404);
+                }
+
+                currentHeadSha = baseRef.object.sha;
+                await this.requestJson(
+                    `${GITHUB_API_BASE}/repos/${owner}/${repo}/git/refs`,
+                    {
+                        method: 'POST',
+                        headers,
+                        body: JSON.stringify({
+                            ref: `refs/heads/${branch}`,
+                            sha: currentHeadSha,
+                        }),
+                    },
+                    'Failed to create branch',
+                    true
+                );
+                createdBranch = true;
             }
+            log.info('Stage: resolve-ref done', { traceId, owner, repo, branch, currentHeadSha, createdBranch });
 
-            currentHeadSha = baseRef.object.sha;
-            await this.requestJson(
-                `${GITHUB_API_BASE}/repos/${owner}/${repo}/git/refs`,
+            log.info('Stage: read-base-commit start', { traceId, owner, repo, currentHeadSha });
+            const baseCommit = await this.requestJson<GitHubCommitResponse>(
+                `${GITHUB_API_BASE}/repos/${owner}/${repo}/git/commits/${currentHeadSha}`,
+                { method: 'GET', headers },
+                'Failed to load base commit'
+            );
+            log.info('Stage: read-base-commit done', { traceId, owner, repo, baseTreeSha: baseCommit.tree.sha });
+
+            const treeItems = await this.createTreeItems(owner, repo, files, headers, traceId);
+
+            log.info('Stage: create-tree start', { traceId, owner, repo, itemCount: treeItems.length });
+            const tree = await this.requestJson<GitHubTreeResponse>(
+                `${GITHUB_API_BASE}/repos/${owner}/${repo}/git/trees`,
                 {
                     method: 'POST',
                     headers,
                     body: JSON.stringify({
-                        ref: `refs/heads/${branch}`,
-                        sha: currentHeadSha,
+                        base_tree: baseCommit.tree.sha,
+                        tree: treeItems,
                     }),
                 },
-                'Failed to create branch',
+                'Failed to create git tree'
+            );
+            log.info('Stage: create-tree done', { traceId, owner, repo, treeSha: tree.sha });
+
+            const commitPayload: Record<string, unknown> = {
+                message: commitMessage,
+                tree: tree.sha,
+                parents: [currentHeadSha],
+            };
+
+            if (request.authorName && request.authorEmail) {
+                commitPayload.author = {
+                    name: request.authorName,
+                    email: request.authorEmail,
+                };
+            }
+
+            log.info('Stage: create-commit start', { traceId, owner, repo, treeSha: tree.sha });
+            const commit = await this.requestJson<GitHubCreateCommitResponse>(
+                `${GITHUB_API_BASE}/repos/${owner}/${repo}/git/commits`,
+                {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify(commitPayload),
+                },
+                'Failed to create commit'
+            );
+            log.info('Stage: create-commit done', { traceId, owner, repo, commitSha: commit.sha });
+
+            log.info('Stage: update-branch-ref start', { traceId, owner, repo, branch, commitSha: commit.sha });
+            await this.requestJson(
+                `${GITHUB_API_BASE}/repos/${owner}/${repo}/git/refs/heads/${branch}`,
+                {
+                    method: 'PATCH',
+                    headers,
+                    body: JSON.stringify({
+                        sha: commit.sha,
+                        force: false,
+                    }),
+                },
+                'Failed to update branch ref',
                 true
             );
-            createdBranch = true;
-        }
+            log.info('Stage: update-branch-ref done', { traceId, owner, repo, branch, commitSha: commit.sha });
 
-        const baseCommit = await this.requestJson<GitHubCommitResponse>(
-            `${GITHUB_API_BASE}/repos/${owner}/${repo}/git/commits/${currentHeadSha}`,
-            { method: 'GET', headers },
-            'Failed to load base commit'
-        );
-
-        const treeItems = await this.createTreeItems(owner, repo, files, headers);
-
-        const tree = await this.requestJson<GitHubTreeResponse>(
-            `${GITHUB_API_BASE}/repos/${owner}/${repo}/git/trees`,
-            {
-                method: 'POST',
-                headers,
-                body: JSON.stringify({
-                    base_tree: baseCommit.tree.sha,
-                    tree: treeItems,
-                }),
-            },
-            'Failed to create git tree'
-        );
-
-        const commitPayload: Record<string, unknown> = {
-            message: commitMessage,
-            tree: tree.sha,
-            parents: [currentHeadSha],
-        };
-
-        if (request.authorName && request.authorEmail) {
-            commitPayload.author = {
-                name: request.authorName,
-                email: request.authorEmail,
+            return {
+                owner,
+                repo,
+                branch,
+                commitSha: commit.sha,
+                treeSha: commit.tree.sha,
+                commitUrl: `https://github.com/${owner}/${repo}/commit/${commit.sha}`,
+                previousCommitSha: currentHeadSha,
+                createdBranch,
+                fileCount: files.length,
             };
+        } catch (error) {
+            log.error('Pipeline failed', error, { traceId, owner, repo, branch });
+            throw error;
         }
-
-        const commit = await this.requestJson<GitHubCreateCommitResponse>(
-            `${GITHUB_API_BASE}/repos/${owner}/${repo}/git/commits`,
-            {
-                method: 'POST',
-                headers,
-                body: JSON.stringify(commitPayload),
-            },
-            'Failed to create commit'
-        );
-
-        await this.requestJson(
-            `${GITHUB_API_BASE}/repos/${owner}/${repo}/git/refs/heads/${branch}`,
-            {
-                method: 'PATCH',
-                headers,
-                body: JSON.stringify({
-                    sha: commit.sha,
-                    force: false,
-                }),
-            },
-            'Failed to update branch ref',
-            true
-        );
-
-        return {
-            owner,
-            repo,
-            branch,
-            commitSha: commit.sha,
-            treeSha: commit.tree.sha,
-            commitUrl: `https://github.com/${owner}/${repo}/commit/${commit.sha}`,
-            previousCommitSha: currentHeadSha,
-            createdBranch,
-            fileCount: files.length,
-        };
     }
 
     private prepareFiles(files: GeneratedFile[]): PreparedFile[] {
@@ -288,12 +313,24 @@ export class GitHubPushService {
         owner: string,
         repo: string,
         files: PreparedFile[],
-        headers: HeadersInit
+        headers: HeadersInit,
+        traceId: string
     ): Promise<Array<{ path: string; mode: '100644'; type: 'blob'; sha: string }>> {
         const items: Array<{ path: string; mode: '100644'; type: 'blob'; sha: string }> = [];
+        const totalBatches = Math.ceil(files.length / BLOB_BATCH_SIZE);
 
         for (let i = 0; i < files.length; i += BLOB_BATCH_SIZE) {
             const batch = files.slice(i, i + BLOB_BATCH_SIZE);
+            const batchIndex = i / BLOB_BATCH_SIZE + 1;
+            log.info('Stage: blob-batch start', {
+                traceId,
+                owner,
+                repo,
+                batchIndex,
+                totalBatches,
+                fileCount: files.length,
+                batchFileCount: batch.length,
+            });
             const batchItems = await Promise.all(
                 batch.map(async (file) => {
                     const blob = await this.requestJson<GitHubBlobResponse>(
@@ -319,6 +356,7 @@ export class GitHubPushService {
             );
 
             items.push(...batchItems);
+            log.info('Stage: blob-batch done', { traceId, owner, repo, batchIndex, totalBatches });
         }
 
         return items;

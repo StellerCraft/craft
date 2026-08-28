@@ -8,7 +8,7 @@
  * Issue: #540
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { getNetworkConfig, NETWORK_PASSPHRASES, HORIZON_URLS, SOROBAN_RPC_URLS } from './config';
 
 describe('Stellar Config — Snapshot Regression Tests (#540)', () => {
@@ -192,4 +192,131 @@ describe('Stellar Config — Snapshot Regression Tests (#540)', () => {
             expect(uniquePassphrases.size).toBe(passphrases.length);
         });
     });
+
+    describe('resolveNetwork — unrecognized value handling (#958)', () => {
+        beforeEach(() => {
+            delete process.env.STELLAR_NETWORK;
+            delete process.env.NEXT_PUBLIC_STELLAR_NETWORK;
+            vi.spyOn(console, 'warn').mockImplementation(() => {});
+        });
+
+        afterEach(() => {
+            vi.restoreAllMocks();
+        });
+
+        it('should silently default to testnet when STELLAR_NETWORK is unset', () => {
+            delete process.env.STELLAR_NETWORK;
+            delete process.env.NEXT_PUBLIC_STELLAR_NETWORK;
+            const config = getNetworkConfig();
+            expect(config.network).toBe('testnet');
+            expect(console.warn).not.toHaveBeenCalled();
+        });
+
+        it('should resolve mainnet when STELLAR_NETWORK=mainnet', () => {
+            process.env.STELLAR_NETWORK = 'mainnet';
+            const config = getNetworkConfig();
+            expect(config.network).toBe('mainnet');
+            expect(console.warn).not.toHaveBeenCalled();
+        });
+
+        it('should resolve testnet when STELLAR_NETWORK=testnet', () => {
+            process.env.STELLAR_NETWORK = 'testnet';
+            const config = getNetworkConfig();
+            expect(config.network).toBe('testnet');
+            expect(console.warn).not.toHaveBeenCalled();
+        });
+
+        it('should warn and default to testnet for unrecognized STELLAR_NETWORK', () => {
+            process.env.STELLAR_NETWORK = 'production';
+            const config = getNetworkConfig();
+            expect(config.network).toBe('testnet');
+            expect(console.warn).toHaveBeenCalled();
+            expect(console.warn).toHaveBeenCalledWith(
+                expect.stringContaining('Unrecognized STELLAR_NETWORK value')
+            );
+        });
+
+        it('should warn for capitalization typos like Mainnet', () => {
+            process.env.STELLAR_NETWORK = 'Mainnet';
+            const config = getNetworkConfig();
+            expect(config.network).toBe('testnet');
+            expect(console.warn).toHaveBeenCalled();
+        });
+
+        it('should trim whitespace before validation', () => {
+            process.env.STELLAR_NETWORK = '  mainnet  ';
+            const config = getNetworkConfig();
+            expect(config.network).toBe('mainnet');
+            expect(console.warn).not.toHaveBeenCalled();
+        });
+
+        it('should trim whitespace and still warn for unrecognized values', () => {
+            process.env.STELLAR_NETWORK = '  production  ';
+            const config = getNetworkConfig();
+            expect(config.network).toBe('testnet');
+            expect(console.warn).toHaveBeenCalled();
+        });
+    });
 });
+
+// ---------------------------------------------------------------------------
+// Regression #1106 – config.stellar must re-resolve on env change
+// ---------------------------------------------------------------------------
+
+describe('config.stellar live getter (regression #1106)', () => {
+    let originalNetwork: string | undefined;
+
+    beforeEach(() => {
+        originalNetwork = process.env.STELLAR_NETWORK;
+    });
+
+    afterEach(() => {
+        if (originalNetwork === undefined) {
+            delete process.env.STELLAR_NETWORK;
+        } else {
+            process.env.STELLAR_NETWORK = originalNetwork;
+        }
+    });
+
+    it('reflects a change to STELLAR_NETWORK made after module load', async () => {
+        // Dynamically import so the getter is exercised at call-time, not frozen
+        const { config } = await import('./config');
+
+        process.env.STELLAR_NETWORK = 'testnet';
+        const first = config.stellar.network;
+
+        process.env.STELLAR_NETWORK = 'mainnet';
+        const second = config.stellar.network;
+
+        expect(first).toBe('testnet');
+        expect(second).toBe('mainnet');
+        // The critical assertion: the two reads must differ
+        expect(first).not.toBe(second);
+    });
+
+    it('returns testnet after switching back from mainnet', async () => {
+        const { config } = await import('./config');
+
+        process.env.STELLAR_NETWORK = 'mainnet';
+        expect(config.stellar.network).toBe('mainnet');
+
+        process.env.STELLAR_NETWORK = 'testnet';
+        expect(config.stellar.network).toBe('testnet');
+    });
+
+    it('config.stellar always returns the same shape as getNetworkConfig()', async () => {
+        const { config, getNetworkConfig: getConfig } = await import('./config');
+
+        process.env.STELLAR_NETWORK = 'mainnet';
+        const live = config.stellar;
+        const snapshot = getConfig();
+
+        expect(live.network).toBe(snapshot.network);
+        expect(live.horizonUrl).toBe(snapshot.horizonUrl);
+        expect(live.networkPassphrase).toBe(snapshot.networkPassphrase);
+        expect(live.sorobanRpcUrl).toBe(snapshot.sorobanRpcUrl);
+    });
+});
+// ---------------------------------------------------------------------------
+// End regression #1106
+// ---------------------------------------------------------------------------

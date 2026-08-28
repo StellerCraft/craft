@@ -17,3 +17,7 @@ CREATE INDEX IF NOT EXISTS idx_deployments_user_active
 CREATE INDEX IF NOT EXISTS idx_deployments_deleted_at
     ON deployments(deleted_at)
     WHERE deleted_at IS NOT NULL;
+
+-- rollback: DROP INDEX IF EXISTS idx_deployments_deleted_at;
+-- rollback: DROP INDEX IF EXISTS idx_deployments_user_active;
+-- rollback: ALTER TABLE deployments DROP COLUMN IF EXISTS deleted_at;

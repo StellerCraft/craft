@@ -184,12 +184,13 @@ export class GitHubCredentialService {
      *
      * Workflow:
      *   1. Load the profile row to check the expiry timestamp.
-     *   2. If expiry is within the lead window, call `refreshFn` to get a new token.
-     *   3. Revoke the old token on GitHub (best-effort).
-     *   4. Store the new encrypted token + rotation metadata atomically.
+     *   2. If expiry is within the lead window, call `refreshFn` once to get a new token.
+     *   3. Rotate the token atomically (step completes or fails as one unit).
+     *   4. With retries only for non-critical audit metadata and revocation.
      *
      * Returns `true` if rotation was performed, `false` if not needed.
-     * Retries up to MAX_ROTATION_RETRIES times on transient failures.
+     * Retries up to MAX_ROTATION_RETRIES times only for metadata write and revocation;
+     * the token-changing steps (refreshFn + rotateToken) are not retried after success.
      *
      * @param userId - The profile row to check.
      * @param refreshFn - Caller-supplied function that obtains a fresh token from GitHub OAuth.
@@ -211,22 +212,35 @@ export class GitHubCredentialService {
         const expiresAt = new Date(data.github_token_expires_at).getTime();
         if (Date.now() < expiresAt - ROTATION_LEAD_MS) return false;
 
-        // Within the rotation lead window — attempt rotation with retries.
+        // Within the rotation lead window — obtain new token and rotate.
+        // This phase is NOT retried: either it succeeds or the whole rotation fails.
+        let newToken: string;
+        let newExpiry: Date | undefined;
+        let oldPlaintext: string | undefined;
+
+        try {
+            const refreshResult = await refreshFn();
+            newToken = refreshResult.token;
+            newExpiry = refreshResult.expiresAt;
+
+            // Decrypt old token for revocation and audit (plaintext never logged).
+            try {
+                oldPlaintext = decryptToken(data.github_token_encrypted);
+            } catch {
+                // If we can't decrypt, continue; revocation will be skipped.
+            }
+
+            // Rotate the token atomically. If this fails, abort.
+            await this.rotateToken(userId, newToken, newExpiry);
+        } catch {
+            // Token refresh or rotation failed; abort without retry.
+            return false;
+        }
+
+        // Rotation succeeded. Now retry audit metadata and revocation (non-critical).
         let attempt = 0;
         while (attempt < MAX_ROTATION_RETRIES) {
             try {
-                const { token: newToken, expiresAt: newExpiry } = await refreshFn();
-
-                // Decrypt old token for revocation (plaintext never logged).
-                let oldPlaintext: string | undefined;
-                try {
-                    oldPlaintext = decryptToken(data.github_token_encrypted);
-                } catch {
-                    // If we can't decrypt, skip revocation — don't block rotation.
-                }
-
-                await this.rotateToken(userId, newToken, newExpiry);
-
                 // Record rotation metadata for audit trail.
                 await this._supabase
                     .from('profiles')
@@ -253,7 +267,9 @@ export class GitHubCredentialService {
             }
         }
 
-        return false;
+        // Metadata write failed after retries, but token was rotated.
+        // Log this but still return true since the critical rotation succeeded.
+        return true;
     }
 
     /**

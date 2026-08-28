@@ -27,12 +27,38 @@ export interface TraceContext {
     traceparent: string;
 }
 
+export interface SpanAttributes {
+    deploymentId?: string;
+    templateId?: string;
+    userId?: string;
+    [key: string]: string | number | boolean | undefined;
+}
+
+export interface SpanEvent {
+    name: string;
+    timestampMs: number;
+    attributes: Record<string, string>;
+}
+
+export interface SpanRecord {
+    traceId: string;
+    spanId: string;
+    name: string;
+    startTimeMs: number;
+    endTimeMs: number;
+    durationMs: number;
+    attributes: SpanAttributes;
+    events: SpanEvent[];
+    status: 'ok' | 'error';
+}
+
 export interface SpanResult<T> {
     result: T;
     /** Wall-clock duration in milliseconds. */
     durationMs: number;
     traceId: string;
     spanId: string;
+    span: SpanRecord;
 }
 
 // ── Core functions ────────────────────────────────────────────────────────────
@@ -64,16 +90,64 @@ export function parseTraceparent(header: string | null | undefined): TraceContex
 }
 
 /**
- * Run an async operation as a named span.
- * Records wall-clock duration and returns it alongside the result.
+ * Run an async operation as a named child span.
+ *
+ * On success the span is recorded with status "ok".
+ * On error the span records an "exception" event with the error details,
+ * sets status to "error", and re-throws so callers can still catch it.
+ *
+ * Attributes (deploymentId, templateId, userId, …) are attached to the span
+ * and propagated through the traceparent context passed to `fn`.
  */
 export async function withSpan<T>(
-    _name: string,
+    name: string,
     traceId: string,
     fn: (span: TraceContext) => Promise<T>,
+    attributes: SpanAttributes = {},
 ): Promise<SpanResult<T>> {
-    const span = newSpan(traceId);
-    const start = Date.now();
-    const result = await fn(span);
-    return { result, durationMs: Date.now() - start, traceId, spanId: span.spanId };
+    const ctx = newSpan(traceId);
+    const startTimeMs = Date.now();
+
+    try {
+        const result = await fn(ctx);
+        const endTimeMs = Date.now();
+        const span: SpanRecord = {
+            traceId,
+            spanId: ctx.spanId,
+            name,
+            startTimeMs,
+            endTimeMs,
+            durationMs: endTimeMs - startTimeMs,
+            attributes,
+            events: [],
+            status: 'ok',
+        };
+        return { result, durationMs: span.durationMs, traceId, spanId: ctx.spanId, span };
+    } catch (error: any) {
+        const endTimeMs = Date.now();
+        const span: SpanRecord = {
+            traceId,
+            spanId: ctx.spanId,
+            name,
+            startTimeMs,
+            endTimeMs,
+            durationMs: endTimeMs - startTimeMs,
+            attributes,
+            events: [
+                {
+                    name: 'exception',
+                    timestampMs: endTimeMs,
+                    attributes: {
+                        'exception.type': error?.name ?? 'Error',
+                        'exception.message': error?.message ?? 'Unknown error',
+                        'exception.stacktrace': error?.stack ?? '',
+                    },
+                },
+            ],
+            status: 'error',
+        };
+        // Attach span to the error so callers can inspect it without re-running
+        (error as any).__span = span;
+        throw error;
+    }
 }

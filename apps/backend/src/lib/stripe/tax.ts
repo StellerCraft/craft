@@ -18,8 +18,18 @@
  * exempt   : Tax-exempt organisations (e.g. non-profits, governments).
  * reverse  : B2B customers in eligible regions (VAT reverse charge).
  *
+ * Asymmetry: Nullable on read, non-nullable on write
+ * ──────────────────────────────────────────────────
+ * When reading from Stripe's API, the tax_exempt field can be null (for customers
+ * predating tax configuration or created outside this code path). Always route raw
+ * Stripe API responses through parseTaxExemptStatus() before passing to isTaxExempt()
+ * or buildTaxExemptUpdate().
+ *
+ * When writing, buildTaxExemptUpdate() only accepts the three valid TaxExemptStatus
+ * values — the type system enforces that invariant.
+ *
  * Feature: stripe-tax-rate-configuration
- * Issue: #655
+ * Issue: #655, #937
  */
 
 export type TaxExemptStatus = 'none' | 'exempt' | 'reverse';
@@ -61,6 +71,20 @@ export function buildCheckoutTaxParams(config: TaxConfiguration): {
  */
 export function buildTaxExemptUpdate(status: TaxExemptStatus): { tax_exempt: TaxExemptStatus } {
     return { tax_exempt: status };
+}
+
+/**
+ * Parse a raw Stripe tax_exempt value (which may be null) into a safe TaxExemptStatus.
+ * Handles nulls, undefineds, and unrecognized values by defaulting to 'none'.
+ *
+ * @param raw - The value from Stripe's Customer.tax_exempt field
+ * @returns A valid TaxExemptStatus, never null or undefined
+ */
+export function parseTaxExemptStatus(raw: string | null | undefined): TaxExemptStatus {
+    if (raw === 'exempt' || raw === 'reverse' || raw === 'none') {
+        return raw;
+    }
+    return 'none';
 }
 
 /**

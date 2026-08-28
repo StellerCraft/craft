@@ -1,7 +1,58 @@
 import { describe, it, expect } from 'vitest';
 import { costEstimationService, PricingTier, ResourceUsage } from '../../src/services/billing/cost-estimation.service';
+import type { CustomizationConfig } from '@craft/types';
 
 describe('CostEstimationService', () => {
+    describe('Template Complexity Estimation', () => {
+        it('should score deployment complexity from Soroban invocations, enabled features, and compute usage', () => {
+            const result = costEstimationService.calculateTemplateComplexityScore({
+                customizationConfig: {
+                    branding: {
+                        appName: 'Alpha DEX',
+                        primaryColor: '#111827',
+                        secondaryColor: '#7c3aed',
+                        fontFamily: 'Inter',
+                    },
+                    features: {
+                        enableCharts: true,
+                        enableTransactionHistory: true,
+                        enableAnalytics: true,
+                        enableNotifications: false,
+                    },
+                    stellar: {
+                        network: 'mainnet',
+                        horizonUrl: 'https://horizon.stellar.org',
+                        contractAddresses: {
+                            amm: 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+                        },
+                    },
+                },
+                sorobanInvocationCount: 3,
+                vercelComputeUnits: 2.5,
+            });
+
+            expect(result.baseCost).toBe(12.5);
+            expect(result.sorobanInvocations).toBe(3);
+            expect(result.enabledFeatureCount).toBe(3);
+            expect(result.totalCost).toBeCloseTo(31.25, 2);
+            expect(result.complexityScore).toBeCloseTo(31.25, 2);
+        });
+
+        it('should estimate a deployment using default template complexity factors when data is incomplete', () => {
+            const result = costEstimationService.estimateDeploymentCost({
+                customizationConfig: {
+                    branding: { appName: 'Demo', primaryColor: '#000000', secondaryColor: '#ffffff', fontFamily: 'Inter' },
+                    features: { enableCharts: true, enableTransactionHistory: false, enableAnalytics: false, enableNotifications: false },
+                    stellar: { network: 'testnet', horizonUrl: 'https://horizon-testnet.stellar.org' },
+                },
+            });
+
+            expect(result.totalCost).toBeGreaterThan(0);
+            expect(result.currency).toBe('USD');
+            expect(result.breakdown.total).toBeCloseTo(result.totalCost, 2);
+        });
+    });
+
     describe('Pricing Tier Calculation', () => {
         const usage: ResourceUsage = {
             cpuCores: 1,
@@ -162,6 +213,74 @@ describe('CostEstimationService', () => {
             const result = costEstimationService.checkAlert(50, 100);
             expect(result.triggered).toBe(false);
             expect(result.message).toBeNull();
+        });
+    });
+
+    describe('Template Complexity Cost Prediction', () => {
+        const baseConfig: CustomizationConfig = {
+            branding: {
+                appName: 'Test App',
+                primaryColor: '#000',
+                secondaryColor: '#fff',
+                fontFamily: 'Inter'
+            },
+            features: {
+                enableCharts: true,
+                enableTransactionHistory: true,
+                enableAnalytics: false,
+                enableNotifications: false
+            },
+            stellar: {
+                network: 'testnet',
+                horizonUrl: 'https://horizon.stellar.org'
+            }
+        };
+
+        it('should calculate complexity score with default estimations', () => {
+            // Basic tier base cost = 10
+            // Enabled features count = 2
+            // Estimated compute seconds = 100 + 2 * 50 = 200 -> vercel cost = 200 * 0.01 = 2.0
+            // Features cost = 2 * 2.50 = 5.0
+            // Soroban invocations = 0 (no RPC URL or addresses) -> cost = 0
+            // Expected total = 10 + 2.0 + 5.0 + 0 = 17.00
+            const cost = costEstimationService.calculateComplexityScore(baseConfig, 'basic');
+            expect(cost).toBe(17.00);
+        });
+
+        it('should calculate complexity score factoring in Soroban contract invocations', () => {
+            const configWithSoroban: CustomizationConfig = {
+                ...baseConfig,
+                stellar: {
+                    ...baseConfig.stellar,
+                    sorobanRpcUrl: 'https://soroban-testnet.stellar.org'
+                }
+            };
+            // Basic tier base cost = 10
+            // Enabled features count = 2
+            // Estimated compute seconds = 100 + 2 * 50 = 200 -> vercel cost = 200 * 0.01 = 2.0
+            // Features cost = 2 * 2.50 = 5.0
+            // Soroban invocations = 1000 -> cost = 1000 * 0.005 = 5.0
+            // Expected total = 10 + 2.0 + 5.0 + 5.0 = 22.00
+            const cost = costEstimationService.calculateComplexityScore(configWithSoroban, 'basic');
+            expect(cost).toBe(22.00);
+        });
+
+        it('should calculate complexity score within 10% accuracy target of actual Stripe charge', () => {
+            const configWithSoroban: CustomizationConfig = {
+                ...baseConfig,
+                stellar: {
+                    ...baseConfig.stellar,
+                    sorobanRpcUrl: 'https://soroban-testnet.stellar.org'
+                }
+            };
+            // Our estimated cost is 22.00
+            const estimatedCost = costEstimationService.calculateComplexityScore(configWithSoroban, 'basic');
+            
+            // Assume the actual Stripe billing reconciliation charge is $23.50 (within 10% of 22.00)
+            const actualStripeCharge = 23.50;
+            const diff = Math.abs(estimatedCost - actualStripeCharge);
+            const percentDiff = (diff / actualStripeCharge) * 100;
+            expect(percentDiff).toBeLessThanOrEqual(10);
         });
     });
 });

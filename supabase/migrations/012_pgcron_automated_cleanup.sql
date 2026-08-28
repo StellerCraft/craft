@@ -328,3 +328,22 @@ COMMENT ON TABLE cleanup_job_executions IS
 
 COMMENT ON VIEW cleanup_job_health IS
     'Monitoring view showing cleanup job health metrics over the last 30 days';
+
+-- rollback: DROP VIEW IF EXISTS cleanup_job_health;
+-- rollback: DROP POLICY IF EXISTS "Authenticated users can read cleanup_job_executions" ON cleanup_job_executions;
+-- rollback: DROP POLICY IF EXISTS "Service role can manage cleanup_job_executions" ON cleanup_job_executions;
+-- rollback: ALTER TABLE cleanup_job_executions DISABLE ROW LEVEL SECURITY;
+-- rollback: DROP INDEX IF EXISTS idx_cleanup_job_executions_status;
+-- rollback: DROP INDEX IF EXISTS idx_cleanup_job_executions_job_name_started;
+-- rollback: DROP TABLE IF EXISTS cleanup_job_executions;
+-- rollback: SELECT cron.unschedule('cleanup-old-usage-records');
+-- rollback: SELECT cron.unschedule('cleanup-orphaned-logs');
+-- rollback: SELECT cron.unschedule('cleanup-old-analytics');
+-- rollback: SELECT cron.unschedule('cleanup-stale-github-deployments');
+-- rollback: SELECT cron.unschedule('cleanup-tombstoned-deployments');
+-- rollback: DROP FUNCTION IF EXISTS cleanup_old_usage_records;
+-- rollback: DROP FUNCTION IF EXISTS cleanup_orphaned_logs;
+-- rollback: DROP FUNCTION IF EXISTS cleanup_old_analytics;
+-- rollback: DROP FUNCTION IF EXISTS cleanup_stale_github_deployments;
+-- rollback: DROP FUNCTION IF EXISTS cleanup_tombstoned_deployments;
+-- rollback: DROP EXTENSION IF EXISTS pg_cron;

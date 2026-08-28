@@ -92,6 +92,23 @@ const GUIDANCE_MAP: Record<GuidanceKey, ErrorGuidance> = {
     ],
   },
 
+  'github:UNKNOWN': {
+    template: {
+      title: 'GitHub integration error',
+      message: 'An error occurred while interacting with GitHub. Check the error details and try again.',
+      retryable: true,
+    },
+    steps: [
+      'Verify your GitHub token or App installation is still valid.',
+      'Check the GitHub status page for any ongoing incidents.',
+      'Retry the operation.',
+    ],
+    links: [
+      { label: 'GitHub status', url: 'https://www.githubstatus.com' },
+      { label: 'CRAFT GitHub integration', url: `${DOCS_BASE}/integrations/github` },
+    ],
+  },
+
   // ── Vercel ───────────────────────────────────────────────────────────────
   'vercel:AUTH_FAILED': {
     template: {
@@ -156,6 +173,23 @@ const GUIDANCE_MAP: Record<GuidanceKey, ErrorGuidance> = {
     ],
   },
 
+  'vercel:UNKNOWN': {
+    template: {
+      title: 'Vercel integration error',
+      message: 'An error occurred while interacting with Vercel. Check the error details and try again.',
+      retryable: true,
+    },
+    steps: [
+      'Verify your Vercel API token is valid and has the required permissions.',
+      'Check the Vercel status page for any ongoing incidents.',
+      'Retry the operation.',
+    ],
+    links: [
+      { label: 'Vercel status', url: 'https://www.vercel-status.com' },
+      { label: 'CRAFT Vercel integration', url: `${DOCS_BASE}/integrations/vercel` },
+    ],
+  },
+
   // ── Stripe ───────────────────────────────────────────────────────────────
   'stripe:CARD_DECLINED': {
     template: {
@@ -204,6 +238,23 @@ const GUIDANCE_MAP: Record<GuidanceKey, ErrorGuidance> = {
     ],
     links: [
       { label: 'CRAFT pricing', url: 'https://craft.app/pricing' },
+      { label: 'Contact support', url: SUPPORT_URL },
+    ],
+  },
+
+  'stripe:UNKNOWN': {
+    template: {
+      title: 'Stripe integration error',
+      message: 'An error occurred while processing your payment or interacting with Stripe.',
+      retryable: true,
+    },
+    steps: [
+      'Verify your Stripe API key is correct.',
+      'Check the Stripe status page for any ongoing incidents.',
+      'Retry the operation or contact support if the problem persists.',
+    ],
+    links: [
+      { label: 'Stripe status', url: 'https://status.stripe.com' },
       { label: 'Contact support', url: SUPPORT_URL },
     ],
   },
@@ -369,6 +420,42 @@ const GUIDANCE_MAP: Record<GuidanceKey, ErrorGuidance> = {
     ],
   },
 
+  'stellar:CONTRACT_ADDRESS_INVALID_VERSION_BYTE': {
+    template: {
+      title: 'Contract address has invalid version byte',
+      message: 'The contract address does not have the correct Soroban CONTRACT strkey version byte.',
+      retryable: false,
+    },
+    steps: [
+      'Verify you are using a Soroban contract address (starts with "C").',
+      'Double-check the address against Stellar Expert or the deployment output.',
+      'Do not mix different types of Stellar addresses (accounts, contracts, etc).',
+    ],
+    links: [
+      { label: 'Stellar Expert', url: 'https://stellar.expert' },
+      { label: 'Stellar strkey spec (SEP-0023)', url: 'https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0023.md' },
+      { label: 'Soroban contract addresses', url: 'https://developers.stellar.org/docs/learn/encyclopedia/contract-development/contract-interactions/stellar-transaction' },
+    ],
+  },
+
+  'stellar:UNKNOWN': {
+    template: {
+      title: 'Stellar integration error',
+      message: 'An error occurred while interacting with Stellar or Soroban.',
+      retryable: true,
+    },
+    steps: [
+      'Verify your Stellar network configuration is correct.',
+      'Check that the Horizon or Soroban RPC endpoint is reachable.',
+      'Check the Stellar network status dashboard.',
+      'Retry the operation.',
+    ],
+    links: [
+      { label: 'Stellar status', url: 'https://dashboard.stellar.org' },
+      { label: 'CRAFT Stellar configuration', url: `${DOCS_BASE}/configuration/stellar` },
+    ],
+  },
+
   // ── Auth ─────────────────────────────────────────────────────────────────
   'auth:INVALID_CREDENTIALS': {
     template: {
@@ -397,6 +484,23 @@ const GUIDANCE_MAP: Record<GuidanceKey, ErrorGuidance> = {
     ],
     links: [
       { label: 'Sign in', url: '/signin' },
+    ],
+  },
+
+  'auth:UNKNOWN': {
+    template: {
+      title: 'Authentication error',
+      message: 'An authentication error occurred. Please try again.',
+      retryable: true,
+    },
+    steps: [
+      'Try refreshing the page and signing in again.',
+      'Clear your browser cookies and try again.',
+      'If the problem persists, contact support.',
+    ],
+    links: [
+      { label: 'Sign in', url: '/signin' },
+      { label: 'Contact support', url: SUPPORT_URL },
     ],
   },
 

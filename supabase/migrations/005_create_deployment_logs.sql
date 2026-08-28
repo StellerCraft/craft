@@ -37,3 +37,10 @@ FOR INSERT WITH CHECK (
         WHERE user_id = auth.uid()
     )
 );
+
+-- rollback: DROP POLICY IF EXISTS deployment_logs_insert ON deployment_logs;
+-- rollback: DROP POLICY IF EXISTS deployment_logs_select ON deployment_logs;
+-- rollback: ALTER TABLE deployment_logs DISABLE ROW LEVEL SECURITY;
+-- rollback: DROP INDEX IF EXISTS deployment_logs_level_idx;
+-- rollback: DROP INDEX IF EXISTS deployment_logs_deployment_id_created_at_idx;
+-- rollback: DROP TABLE IF EXISTS deployment_logs;

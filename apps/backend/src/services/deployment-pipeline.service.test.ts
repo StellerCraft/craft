@@ -20,7 +20,7 @@ vi.mock('./template-generator.service', () => ({
     mapCategoryToFamily: vi.fn().mockReturnValue('stellar-dex'),
 }));
 
-import { DeploymentPipelineService } from './deployment-pipeline.service';
+import { DeploymentPipelineService, buildPipelineGraph } from './deployment-pipeline.service';
 import type { DeploymentPipelineRequest } from './deployment-pipeline.service';
 import type { CustomizationConfig } from '@craft/types';
 import type { DeploymentNode } from './dependency-graph';
@@ -353,6 +353,123 @@ describe('DeploymentPipelineService', () => {
         expect(result.success).toBe(false);
         expect(result.failedStage).toBe('pending');
         expect(result.errorMessage).toContain('depends on missing node "ghost"');
+    });
+});
+
+// ── Issue #754 — DAG-based parallel stage execution ───────────────────────────
+
+describe('DeploymentPipelineService — parallel stage execution (#754)', () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+        mockInsert.mockResolvedValue({ error: null });
+        mockUpdate.mockReturnValue({
+            eq: vi.fn().mockResolvedValue({ error: null }),
+        });
+    });
+
+    it('pipeline graph places sync_env_vars and create_repo in the same parallel level', () => {
+        const levels = buildPipelineGraph().executionLevels();
+        const signLevel = levels.findIndex((level) => level.includes('sign'));
+        const parallelLevel = levels[signLevel + 1]?.sort();
+
+        expect(parallelLevel).toEqual(['create_repo', 'sync_env_vars']);
+    });
+
+    it('pipeline graph resolves diamond dependency before deploy stage', () => {
+        const levels = buildPipelineGraph().executionLevels();
+        const deployLevelIndex = levels.findIndex((level) => level.includes('deploy'));
+        const pushLevelIndex = levels.findIndex((level) => level.includes('push_code'));
+        const syncLevelIndex = levels.findIndex((level) =>
+            level.includes('sync_env_vars'),
+        );
+
+        expect(pushLevelIndex).toBeGreaterThan(-1);
+        expect(syncLevelIndex).toBeGreaterThan(-1);
+        expect(deployLevelIndex).toBeGreaterThan(pushLevelIndex);
+        expect(deployLevelIndex).toBeGreaterThan(syncLevelIndex);
+    });
+
+    it('runs create_repo and sync_env_vars concurrently after signing', async () => {
+        let createRepoRunning = false;
+        let syncEnvRunning = false;
+        let overlapped = false;
+
+        const githubMock = {
+            createRepository: vi.fn().mockImplementation(async () => {
+                createRepoRunning = true;
+                await new Promise((r) => setTimeout(r, 40));
+                overlapped = overlapped || syncEnvRunning;
+                createRepoRunning = false;
+                return {
+                    repository: {
+                        id: 1,
+                        url: 'https://github.com/org/my-dex-app',
+                        cloneUrl: 'https://github.com/org/my-dex-app.git',
+                        sshUrl: 'git@github.com:org/my-dex-app.git',
+                        fullName: 'org/my-dex-app',
+                        defaultBranch: 'main',
+                        private: true,
+                    },
+                    resolvedName: 'my-dex-app',
+                };
+            }),
+        };
+
+        const originalFrom = mockInsert.getMockImplementation();
+        mockInsert.mockImplementation(async (payload: any) => {
+            if (payload?.stage === 'sync_env_vars') {
+                syncEnvRunning = true;
+                await new Promise((r) => setTimeout(r, 40));
+                overlapped = overlapped || createRepoRunning;
+                syncEnvRunning = false;
+            }
+            return { error: null };
+        });
+
+        const svc = new DeploymentPipelineService(
+            makeGeneratorMock(),
+            githubMock,
+            makeGithubPushMock(),
+            makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
+        );
+
+        const result = await svc.deploy(request);
+
+        if (originalFrom) {
+            mockInsert.mockImplementation(originalFrom);
+        }
+
+        expect(result.success).toBe(true);
+        expect(overlapped).toBe(true);
+    });
+
+    it('fails at pending stage with cycle path when customization graph has a cycle', async () => {
+        const svc = new DeploymentPipelineService(
+            makeGeneratorMock(),
+            makeGithubMock(),
+            makeGithubPushMock(),
+            makeVercelMock(),
+            makeSyntaxValidatorMock(),
+            makeArtifactSigningMock(),
+        );
+
+        const nodes: DeploymentNode[] = [
+            { id: 'a', dependsOn: ['b'] },
+            { id: 'b', dependsOn: ['c'] },
+            { id: 'c', dependsOn: ['a'] },
+        ];
+
+        const result = await svc.deploy({
+            ...request,
+            customization: { ...customization, nodes } as any,
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.failedStage).toBe('pending');
+        expect(result.errorMessage).toMatch(/Circular dependency detected/);
+        expect(result.errorMessage).toMatch(/→/);
     });
 });
 

@@ -39,20 +39,31 @@ v<version>.<iv_base64url>.<ciphertext_base64url>.<tag_base64url>
 
 ## Key rotation procedure
 
-1. Generate a new key and set it as `FIELD_ENCRYPTION_KEY_<N>` (e.g. `FIELD_ENCRYPTION_KEY_2`).
-2. Update `KEY_VERSION` in `lib/crypto/field-encryption.ts` to `N`.
-3. Deploy — new writes use the new key; old rows are still readable via the versioned key lookup.
-4. Re-encrypt existing rows:
+### Automated rotation (recommended)
+
+Profile encryption keys are rotated automatically every Sunday at 04:00 UTC via a scheduled cron job (`/api/cron/rotate-encryption-keys`). The job uses the active `FIELD_ENCRYPTION_KEY` (or `FIELD_ENCRYPTION_KEY_<N>` if `KEY_VERSION > 1`) to re-encrypt all rows in the `profiles` table that have encrypted Stripe fields.
+
+**To trigger a rotation:**
+
+1. Generate a new key: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`
+2. Set it as `FIELD_ENCRYPTION_KEY_<N>` in production (e.g. `FIELD_ENCRYPTION_KEY_2`).
+3. Update `KEY_VERSION` in `lib/crypto/field-encryption.ts` to `N`.
+4. Deploy — the next scheduled rotation will automatically re-encrypt all rows with the new key.
+5. Once all rows are confirmed re-encrypted, remove the old key env var from production.
+
+The cron job is idempotent and safe to run multiple times: rows already encrypted with the current `KEY_VERSION` are skipped.
+
+### Manual rotation
+
+To manually rotate keys (e.g., for testing or in development):
 
 ```bash
 FIELD_ENCRYPTION_KEY=<old-key> \
 FIELD_ENCRYPTION_KEY_2=<new-key> \
 NEXT_PUBLIC_SUPABASE_URL=<url> \
 SUPABASE_SERVICE_ROLE_KEY=<key> \
-npx tsx apps/web/src/lib/crypto/key-rotation.ts
+npx tsx apps/backend/src/lib/crypto/key-rotation.ts
 ```
-
-5. Once all rows are re-encrypted, remove the old key env var.
 
 ## Assumptions
 

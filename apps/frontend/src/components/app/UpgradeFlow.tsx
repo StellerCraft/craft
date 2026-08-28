@@ -15,7 +15,7 @@
 
 import React from 'react';
 import Link from 'next/link';
-import { TIER_CONFIGS } from '@/lib/stripe/pricing';
+import { TIER_CONFIGS, formatTierPrice } from '@/lib/stripe/pricing';
 import { MATRIX_FEATURES, MatrixCell } from '@/components/marketing/FeatureMatrix';
 import type { SubscriptionTier } from '@craft/types';
 
@@ -37,7 +37,7 @@ export function UpgradeFlow({ currentTier, targetTier, onConfirm, loading, error
   const currentConfig = TIER_CONFIGS[currentTier];
   const targetConfig = TIER_CONFIGS[targetTier];
   const upgrade = isUpgrade(currentTier, targetTier);
-  const priceDisplay = `$${targetConfig.monthlyPriceCents / 100}/month`;
+  const priceDisplay = `${formatTierPrice(targetConfig.monthlyPriceCents)}/month`;
 
   return (
     <section

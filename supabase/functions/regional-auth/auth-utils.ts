@@ -1,11 +1,15 @@
 /**
  * Regional Auth Utilities
- * 
+ *
  * Provides shared authentication utilities for cross-region auth edge functions.
  * Handles JWT token generation, validation, and region-aware session management.
  */
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { SUPPORTED_REGIONS, getRegionalEndpointConfig, detectRegionFromRequest } from '../_shared/regions.ts';
+
+// Re-export detectRegionFromRequest for backwards compatibility
+export { detectRegionFromRequest };
 
 export interface RegionalAuthContext {
   region: string;
@@ -32,25 +36,8 @@ export interface AuthResponse<T> {
  * Each region maintains its own database connection pool
  */
 export function getRegionalSupabaseClient(region: string) {
-  // Region URLs should be stored in environment variables
-  const regionUrls: Record<string, { url: string; key: string }> = {
-    'us-east': {
-      url: Deno.env.get('SUPABASE_URL_US_EAST') || Deno.env.get('SUPABASE_URL'),
-      key: Deno.env.get('SUPABASE_ANON_KEY_US_EAST') || Deno.env.get('SUPABASE_ANON_KEY'),
-    },
-    'eu-west': {
-      url: Deno.env.get('SUPABASE_URL_EU_WEST') || Deno.env.get('SUPABASE_URL'),
-      key: Deno.env.get('SUPABASE_ANON_KEY_EU_WEST') || Deno.env.get('SUPABASE_ANON_KEY'),
-    },
-    'ap-southeast': {
-      url: Deno.env.get('SUPABASE_URL_AP_SOUTHEAST') || Deno.env.get('SUPABASE_URL'),
-      key: Deno.env.get('SUPABASE_ANON_KEY_AP_SOUTHEAST') || Deno.env.get('SUPABASE_ANON_KEY'),
-    },
-  };
-
-  const regionConfig = regionUrls[region] || regionUrls['us-east'];
-  
-  return createClient(regionConfig.url, regionConfig.key);
+  const config = getRegionalEndpointConfig(region);
+  return createClient(config.supabaseUrl, config.anonKey);
 }
 
 /**
@@ -58,51 +45,8 @@ export function getRegionalSupabaseClient(region: string) {
  * Used for operations that require admin privileges (like profile creation)
  */
 export function getRegionalSupabaseAdmin(region: string) {
-  const regionUrls: Record<string, { url: string; key: string }> = {
-    'us-east': {
-      url: Deno.env.get('SUPABASE_URL_US_EAST') || Deno.env.get('SUPABASE_URL'),
-      key: Deno.env.get('SUPABASE_SERVICE_ROLE_KEY_US_EAST') || Deno.env.get('SUPABASE_SERVICE_ROLE_KEY'),
-    },
-    'eu-west': {
-      url: Deno.env.get('SUPABASE_URL_EU_WEST') || Deno.env.get('SUPABASE_URL'),
-      key: Deno.env.get('SUPABASE_SERVICE_ROLE_KEY_EU_WEST') || Deno.env.get('SUPABASE_SERVICE_ROLE_KEY'),
-    },
-    'ap-southeast': {
-      url: Deno.env.get('SUPABASE_URL_AP_SOUTHEAST') || Deno.env.get('SUPABASE_URL'),
-      key: Deno.env.get('SUPABASE_SERVICE_ROLE_KEY_AP_SOUTHEAST') || Deno.env.get('SUPABASE_SERVICE_ROLE_KEY'),
-    },
-  };
-
-  const regionConfig = regionUrls[region] || regionUrls['us-east'];
-
-  return createClient(regionConfig.url, regionConfig.key);
-}
-
-/**
- * Extract region from request headers or request origin
- */
-export function detectRegionFromRequest(req: Request): string {
-  const origin = req.headers.get('origin') || '';
-  const cfCountry = req.headers.get('cf-ipcountry') || '';
-  const region = req.headers.get('x-region-override');
-
-  // If region is explicitly specified, use it
-  if (region && ['us-east', 'eu-west', 'ap-southeast'].includes(region)) {
-    return region;
-  }
-
-  // Detect region from country code
-  if (cfCountry) {
-    if (['GB', 'FR', 'DE', 'IE', 'NL', 'BE'].includes(cfCountry)) {
-      return 'eu-west';
-    }
-    if (['SG', 'AU', 'JP', 'KR', 'IN'].includes(cfCountry)) {
-      return 'ap-southeast';
-    }
-  }
-
-  // Default to us-east
-  return 'us-east';
+  const config = getRegionalEndpointConfig(region);
+  return createClient(config.supabaseUrl, config.serviceRoleKey);
 }
 
 /**
@@ -163,50 +107,52 @@ export async function syncUserProfileAcrossRegions(
   email: string,
   sourceRegion: string,
   profile: Record<string, unknown>
-): Promise<{ synced: boolean; errors: Record<string, string> }> {
-  const regions = ['us-east', 'eu-west', 'ap-southeast'];
+): Promise<{ synced: boolean; errors: Record<string, string>; regionTimings: Record<string, number> }> {
   const errors: Record<string, string> = {};
+  const regionTimings: Record<string, number> = {};
 
-  for (const region of regions) {
-    if (region === sourceRegion) continue; // Skip source region
+  const syncOps = SUPPORTED_REGIONS
+    .filter((region) => region !== sourceRegion)
+    .map(async (region) => {
+      const start = Date.now();
+      try {
+        const admin = getRegionalSupabaseAdmin(region);
 
-    try {
-      const admin = getRegionalSupabaseAdmin(region);
-
-      // Check if profile exists
-      const { data: existingProfile } = await admin
-        .from('profiles')
-        .select('id')
-        .eq('id', userId)
-        .single();
-
-      if (!existingProfile) {
-        // Create profile in this region
-        const { error } = await admin.from('profiles').insert({
-          id: userId,
-          ...profile,
-        });
-
-        if (error) {
-          errors[region] = error.message;
-        }
-      } else {
-        // Update profile with latest data
-        const { error } = await admin
+        const { data: existingProfile } = await admin
           .from('profiles')
-          .update(profile)
-          .eq('id', userId);
+          .select('id')
+          .eq('id', userId)
+          .single();
 
-        if (error) {
-          errors[region] = error.message;
+        if (!existingProfile) {
+          const { error } = await admin.from('profiles').insert({
+            id: userId,
+            ...profile,
+          });
+
+          if (error) {
+            errors[region] = error.message;
+          }
+        } else {
+          const { error } = await admin
+            .from('profiles')
+            .update(profile)
+            .eq('id', userId);
+
+          if (error) {
+            errors[region] = error.message;
+          }
         }
+      } catch (error) {
+        errors[region] = String(error);
+      } finally {
+        regionTimings[region] = Date.now() - start;
       }
-    } catch (error) {
-      errors[region] = String(error);
-    }
-  }
+    });
 
-  return { synced: Object.keys(errors).length === 0, errors };
+  await Promise.allSettled(syncOps);
+
+  return { synced: Object.keys(errors).length === 0, errors, regionTimings };
 }
 
 /**

@@ -8,3 +8,4 @@ export * from './payment';
 export * from './preview';
 export * from './github';
 export * from './errors';
+export * from './github-error-mapping';

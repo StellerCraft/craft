@@ -7,7 +7,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { SorobanRpc, xdr } from 'stellar-sdk';
-import { performContractDryRun, simulateContractCall } from './soroban';
+import { performContractDryRun, simulateContractCall, dryRunWithForecast, clearForecastCache } from './soroban';
 
 describe('Soroban Contract Simulation Dry-Run', () => {
   const mockContractId = 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM';
@@ -195,5 +195,115 @@ describe('Soroban Contract Simulation Dry-Run', () => {
       expect(dryRunResult).toHaveProperty('success');
       expect(dryRunResult).toHaveProperty('result');
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// dryRunWithForecast – resource consumption forecasting (#782)
+// ---------------------------------------------------------------------------
+
+function makeSuccessSimulation(overrides: Record<string, any> = {}): SorobanRpc.Api.SimulateTransactionResponse {
+  return {
+    cost: { cpuInsns: '5000000', memBytes: '2097152' },
+    minResourceFee: '500',
+    events: [],
+    ...overrides,
+  } as unknown as SorobanRpc.Api.SimulateTransactionResponse;
+}
+
+function makeErrorSimulation(): SorobanRpc.Api.SimulateTransactionResponse {
+  return { error: 'contract trap' } as unknown as SorobanRpc.Api.SimulateTransactionResponse;
+}
+
+describe('dryRunWithForecast', () => {
+  const CONTRACT = 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM';
+  const SOURCE = 'GCEZWKCA5VLDNRLN3RPRJMRZOX3Z6G5CHCGSNFHEYVXM3XOJMDS674JZ';
+  const ARGS: xdr.ScVal[] = [];
+
+  beforeEach(() => {
+    clearForecastCache();
+  });
+
+  it('returns all forecast fields for a successful simulation', async () => {
+    const mockSim = vi.fn().mockResolvedValue(makeSuccessSimulation());
+    const result = await dryRunWithForecast(CONTRACT, 'transfer', ARGS, SOURCE, mockSim);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.forecast.estimatedFee).toBe('500');
+    expect(result.forecast.cpuInstructions).toBe('5000000');
+    expect(result.forecast.memoryBytes).toBe('2097152');
+    expect(typeof result.forecast.ledgerEntriesRead).toBe('number');
+    expect(typeof result.forecast.ledgerEntriesWritten).toBe('number');
+    expect(typeof result.forecast.eventsEmitted).toBe('number');
+    expect(Array.isArray(result.forecast.warnings)).toBe(true);
+  });
+
+  it('returns ok:false for a simulation error', async () => {
+    const mockSim = vi.fn().mockResolvedValue(makeErrorSimulation());
+    const result = await dryRunWithForecast(CONTRACT, 'transfer', ARGS, SOURCE, mockSim);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBeTruthy();
+  });
+
+  it('populates warnings when CPU instructions exceed 80% of limit', async () => {
+    // 100_000_000 * 0.85 = 85_000_000
+    const mockSim = vi.fn().mockResolvedValue(
+      makeSuccessSimulation({ cost: { cpuInsns: '85000000', memBytes: '0' } }),
+    );
+    const result = await dryRunWithForecast(CONTRACT, 'heavy', ARGS, SOURCE, mockSim);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.forecast.warnings.some((w) => w.includes('CPU instructions'))).toBe(true);
+  });
+
+  it('populates warnings when memory bytes exceed 80% of limit', async () => {
+    // 41_943_040 * 0.85 ≈ 35_651_584
+    const mockSim = vi.fn().mockResolvedValue(
+      makeSuccessSimulation({ cost: { cpuInsns: '0', memBytes: '35651584' } }),
+    );
+    const result = await dryRunWithForecast(CONTRACT, 'bigAlloc', ARGS, SOURCE, mockSim);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.forecast.warnings.some((w) => w.includes('Memory bytes'))).toBe(true);
+  });
+
+  it('counts events emitted from the simulation events array', async () => {
+    const fakeEvents = [{}, {}, {}] as any[];
+    const mockSim = vi.fn().mockResolvedValue(makeSuccessSimulation({ events: fakeEvents }));
+    const result = await dryRunWithForecast(CONTRACT, 'emit', ARGS, SOURCE, mockSim);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.forecast.eventsEmitted).toBe(3);
+  });
+
+  it('caches results for identical calls within 60 seconds', async () => {
+    const mockSim = vi.fn().mockResolvedValue(makeSuccessSimulation());
+    await dryRunWithForecast(CONTRACT, 'transfer', ARGS, SOURCE, mockSim);
+    await dryRunWithForecast(CONTRACT, 'transfer', ARGS, SOURCE, mockSim);
+
+    expect(mockSim).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not emit warnings when resources are below 80% of limits', async () => {
+    const mockSim = vi.fn().mockResolvedValue(makeSuccessSimulation());
+    const result = await dryRunWithForecast(CONTRACT, 'cheap', ARGS, SOURCE, mockSim);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.forecast.warnings).toHaveLength(0);
+  });
+
+  it('returns ok:false when simulate throws', async () => {
+    const mockSim = vi.fn().mockRejectedValue(new Error('RPC timeout'));
+    const result = await dryRunWithForecast(CONTRACT, 'crash', ARGS, SOURCE, mockSim);
+
+    expect(result.ok).toBe(false);
   });
 });

@@ -699,4 +699,102 @@ describe('AuthService - Mutation Testing (Boundary Conditions)', () => {
             expect(result.user?.githubUsername).toBe('');
         });
     });
+
+    // ===== CREDENTIAL VALIDATION EDGE CASES (Issue #732) =====
+    // Kill surviving mutants in empty-string checks, error code mapping, and
+    // the INVALID_CREDENTIALS vs USER_NOT_FOUND distinction.
+    describe('Credential Validation Edge Cases', () => {
+        it('signIn with empty email returns an error, not a success (MUTATION: missing empty-string guard)', async () => {
+            mockSignInWithPassword.mockResolvedValue({
+                data: { user: null, session: null },
+                error: { code: 'validation_failed', message: 'email is required' },
+            });
+
+            const result = await service.signIn('', 'password123');
+
+            expect(result.user).toBeNull();
+            expect(result.session).toBeNull();
+            expect(result.error).not.toBeNull();
+            expect(result.error?.code).toBe('validation_failed');
+        });
+
+        it('signIn with empty email and no error code falls back to SIGNIN_ERROR (MUTATION: remove fallback)', async () => {
+            mockSignInWithPassword.mockResolvedValue({
+                data: { user: null, session: null },
+                error: { message: 'Invalid input' },
+            });
+
+            const result = await service.signIn('', 'password');
+
+            expect(result.error?.code).toBe('SIGNIN_ERROR');
+            expect(result.user).toBeNull();
+        });
+
+        it('signUp with password under minimum length returns error with exact code (MUTATION: swallow short-password error)', async () => {
+            mockSignUp.mockResolvedValue({
+                data: { user: null, session: null },
+                error: { code: 'weak_password', message: 'Password should be at least 6 characters.' },
+            });
+
+            const result = await service.signUp('user@example.com', 'abc');
+
+            expect(result.user).toBeNull();
+            expect(result.session).toBeNull();
+            expect(result.error).not.toBeNull();
+            expect(result.error?.code).toBe('weak_password');
+            expect(result.error?.message).toContain('6 characters');
+        });
+
+        it('signUp error message is passed through verbatim, not transformed (MUTATION: apply getReadableErrorMessage to signUp)', async () => {
+            const rawMessage = 'Password should be at least 6 characters.';
+            mockSignUp.mockResolvedValue({
+                data: { user: null, session: null },
+                error: { code: 'weak_password', message: rawMessage },
+            });
+
+            const result = await service.signUp('user@example.com', 'abc');
+
+            // signUp must NOT apply getReadableErrorMessage — message is unchanged
+            expect(result.error?.message).toBe(rawMessage);
+            expect(result.error?.message).not.toBe('Invalid email or password. Please try again.');
+        });
+
+        it('non-existent user returns INVALID_CREDENTIALS, not USER_NOT_FOUND (MUTATION: wrong error code)', async () => {
+            mockSignInWithPassword.mockResolvedValue({
+                data: { user: null, session: null },
+                error: { code: 'invalid_credentials', message: 'Invalid login credentials' },
+            });
+
+            const result = await service.signIn('valid-but-missing@example.com', 'somepassword');
+
+            expect(result.error?.code).toBe('invalid_credentials');
+            expect(result.error?.code).not.toBe('USER_NOT_FOUND');
+            expect(result.error?.code).not.toBe('user_not_found');
+            expect(result.error?.message).toBe('Invalid email or password. Please try again.');
+        });
+
+        it('non-existent user error message is transformed to friendly text (MUTATION: skip getReadableErrorMessage)', async () => {
+            mockSignInWithPassword.mockResolvedValue({
+                data: { user: null, session: null },
+                error: { code: 'invalid_credentials', message: 'Invalid login credentials' },
+            });
+
+            const result = await service.signIn('ghost@example.com', 'pass');
+
+            expect(result.error?.message).not.toBe('Invalid login credentials');
+            expect(result.error?.message).toBe('Invalid email or password. Please try again.');
+        });
+
+        it('signUp with empty password falls back to SIGNUP_ERROR when code is absent (MUTATION: remove fallback)', async () => {
+            mockSignUp.mockResolvedValue({
+                data: { user: null, session: null },
+                error: { message: 'Password is required' },
+            });
+
+            const result = await service.signUp('test@example.com', '');
+
+            expect(result.error?.code).toBe('SIGNUP_ERROR');
+            expect(result.user).toBeNull();
+        });
+    });
 });

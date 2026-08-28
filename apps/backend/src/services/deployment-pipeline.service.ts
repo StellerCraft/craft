@@ -47,6 +47,9 @@
  *
  * Issue: #651
  * Branch: feat/issue-115-github-commit-status-reporting
+ *
+ * Issue: #754
+ * Branch: feat/deployment-parallel-stage-execution
  */
 
 import { createClient } from '@/lib/supabase/server';
@@ -57,7 +60,13 @@ import { templateGeneratorService, type TemplateGeneratorService } from './templ
 import { githubService, type GitHubService } from './github.service';
 import { githubPushService, type GitHubPushService } from './github-push.service';
 import { vercelService, type VercelService } from './vercel.service';
-import { buildGraph, CircularDependencyError, DeploymentNode } from './dependency-graph';
+import {
+    buildGraph,
+    CircularDependencyError,
+    DependencyGraph,
+    DeploymentNode,
+    executeAsync,
+} from './dependency-graph';
 import { buildVercelEnvVars } from '@/lib/env/env-template-generator';
 import { mapCategoryToFamily } from './template-generator.service';
 import type { TemplateFamilyId } from './code-generator.service';
@@ -65,6 +74,11 @@ import { syntaxValidator, type SyntaxValidator } from './syntax-validator';
 import { artifactSigningService, ArtifactSigningService } from './artifact-signing.service';
 import { deploymentUpdateService, DeploymentUpdateService } from './deployment-update.service';
 import { buildCacheService, BuildCacheService } from './build-cache.service';
+import {
+    githubCommitStatusService,
+    type GitHubCommitStatusService,
+} from './github-commit-status.service';
+import type { SupabaseClient } from '@supabase/supabase-js';
 // ── Request / result types ────────────────────────────────────────────────────
 
 export interface DeploymentPipelineRequest {
@@ -107,6 +121,70 @@ export class RetryableError extends Error {
 
 type LogLevel = 'info' | 'warn' | 'error';
 
+/** Internal pipeline stage identifiers executed via the dependency graph. */
+export type PipelineStageId =
+    | 'generate'
+    | 'validate'
+    | 'cache_check'
+    | 'sign'
+    | 'sync_env_vars'
+    | 'create_repo'
+    | 'push_code'
+    | 'deploy'
+    | 'verify_contract'
+    | 'complete';
+
+/** DAG of deployment pipeline stages — independent stages run concurrently. */
+export const PIPELINE_STAGE_GRAPH: DeploymentNode[] = [
+    { id: 'generate', dependsOn: [] },
+    { id: 'validate', dependsOn: ['generate'] },
+    { id: 'cache_check', dependsOn: ['validate'] },
+    { id: 'sign', dependsOn: ['cache_check'] },
+    { id: 'sync_env_vars', dependsOn: ['sign'] },
+    { id: 'create_repo', dependsOn: ['sign'] },
+    { id: 'push_code', dependsOn: ['create_repo'] },
+    { id: 'deploy', dependsOn: ['push_code', 'sync_env_vars'] },
+    { id: 'verify_contract', dependsOn: ['deploy'] },
+    { id: 'complete', dependsOn: ['verify_contract'] },
+];
+
+type StageFailure = { kind: 'failure'; result: DeploymentPipelineResult };
+type StageSuccess = { kind: 'success'; patch: Partial<PipelineContext> };
+type StageOutcome = StageFailure | StageSuccess;
+
+interface PipelineContext {
+    deploymentId: string;
+    correlationId: string;
+    userId: string;
+    templateId: string;
+    customization: CustomizationConfig;
+    name: string;
+    updateContext?: DeploymentPipelineRequest['updateContext'];
+    supabase: SupabaseClient;
+    logger: ReturnType<typeof createLogger>;
+    generationResult?: Awaited<ReturnType<TemplateGeneratorService['generate']>>;
+    cacheResult?: Awaited<ReturnType<BuildCacheService['checkCache']>>;
+    artifactContent?: string;
+    artifactChecksum?: string;
+    artifactSignature?: string;
+    templateCategory?: string;
+    templateFamily?: TemplateFamilyId;
+    envVars?: ReturnType<typeof buildVercelEnvVars>;
+    repoFullName?: string;
+    repositoryUrl?: string;
+    defaultBranch?: string;
+    commitSha?: string;
+    owner?: string;
+    repo?: string;
+    deploymentUrl?: string;
+    vercelProjectId?: string;
+    vercelDeploymentId?: string;
+}
+
+export function buildPipelineGraph(): DependencyGraph {
+    return buildGraph(PIPELINE_STAGE_GRAPH);
+}
+
 // ── Service ───────────────────────────────────────────────────────────────────
 
 export class DeploymentPipelineService {
@@ -119,6 +197,7 @@ export class DeploymentPipelineService {
         private readonly _artifactSigningService: ArtifactSigningService = artifactSigningService,
         private readonly _deploymentUpdateService: Pick<DeploymentUpdateService, 'rollbackUpdate'> | null = null,
         private readonly _commitStatusService: Pick<GitHubCommitStatusService, 'reportPending' | 'reportSuccess' | 'reportFailure'> = githubCommitStatusService,
+        private readonly _buildCacheService: BuildCacheService = buildCacheService,
     ) {}
 
     /**
@@ -193,7 +272,101 @@ export class DeploymentPipelineService {
 
         await this.log(deploymentId, 'pending', 'Deployment record created', 'info', { correlationId });
 
-        // ── Step 2: Generate code ─────────────────────────────────────────────
+        const pipelineContext: PipelineContext = {
+            deploymentId,
+            correlationId,
+            userId,
+            templateId,
+            customization,
+            name,
+            updateContext,
+            supabase,
+            logger,
+        };
+
+        return this.runPipelineStages(pipelineContext);
+    }
+
+    /**
+     * Executes pipeline stages via the dependency graph. Stages whose
+     * prerequisites are satisfied run concurrently within each level.
+     */
+    private async runPipelineStages(
+        initialContext: PipelineContext,
+    ): Promise<DeploymentPipelineResult> {
+        const graph = buildPipelineGraph();
+        let context = { ...initialContext };
+
+        for (const level of graph.executionLevels()) {
+            const snapshot = Object.freeze({ ...context }) as PipelineContext;
+            const levelExecutors = new Map(
+                level.map((stageId) => [
+                    stageId,
+                    () => this.runStage(stageId as PipelineStageId, snapshot),
+                ]),
+            );
+
+            const levelGraph = buildGraph(level.map((id) => ({ id, dependsOn: [] as string[] })));
+            const { results } = await executeAsync(levelGraph, levelExecutors);
+
+            for (const stageId of level) {
+                const outcome = results.get(stageId)!;
+                if (outcome.kind === 'failure') {
+                    return outcome.result;
+                }
+                context = { ...context, ...outcome.patch };
+            }
+        }
+
+        return {
+            success: true,
+            deploymentId: context.deploymentId,
+            correlationId: context.correlationId,
+            repositoryUrl: context.repositoryUrl,
+            deploymentUrl: context.deploymentUrl,
+        };
+    }
+
+    private runStage(stageId: PipelineStageId, ctx: PipelineContext): Promise<StageOutcome> {
+        switch (stageId) {
+            case 'generate':
+                return this.stageGenerate(ctx);
+            case 'validate':
+                return this.stageValidate(ctx);
+            case 'cache_check':
+                return this.stageCacheCheck(ctx);
+            case 'sign':
+                return this.stageSign(ctx);
+            case 'sync_env_vars':
+                return this.stageSyncEnvVars(ctx);
+            case 'create_repo':
+                return this.stageCreateRepo(ctx);
+            case 'push_code':
+                return this.stagePushCode(ctx);
+            case 'deploy':
+                return this.stageDeploy(ctx);
+            case 'verify_contract':
+                return this.stageVerifyContract(ctx);
+            case 'complete':
+                return this.stageComplete(ctx);
+            default: {
+                const exhaustive: never = stageId;
+                return Promise.resolve({
+                    kind: 'failure',
+                    result: {
+                        success: false,
+                        deploymentId: ctx.deploymentId,
+                        correlationId: ctx.correlationId,
+                        errorMessage: `Unknown pipeline stage: ${exhaustive}`,
+                    },
+                });
+            }
+        }
+    }
+
+    private async stageGenerate(ctx: PipelineContext): Promise<StageOutcome> {
+        const { deploymentId, correlationId, templateId, customization, updateContext } = ctx;
+
         await this.setStatus(deploymentId, 'generating');
         await this.log(deploymentId, 'generating', 'Starting code generation', 'info', { correlationId });
 
@@ -205,7 +378,16 @@ export class DeploymentPipelineService {
 
         if (!generationResult.success) {
             const msg = generationResult.errors.map((e) => e.message).join('; ');
-            return this.fail(deploymentId, 'generating', `Code generation failed: ${msg}`, { correlationId }, updateContext);
+            return {
+                kind: 'failure',
+                result: await this.fail(
+                    deploymentId,
+                    'generating',
+                    `Code generation failed: ${msg}`,
+                    { correlationId },
+                    updateContext,
+                ),
+            };
         }
 
         await this.log(
@@ -216,7 +398,18 @@ export class DeploymentPipelineService {
             { correlationId, fileCount: generationResult.generatedFiles.length },
         );
 
-        // ── Step 2b: Validate syntax of generated files ───────────────────────
+        return { kind: 'success', patch: { generationResult } };
+    }
+
+    private async stageValidate(ctx: PipelineContext): Promise<StageOutcome> {
+        const { deploymentId, correlationId, updateContext, generationResult } = ctx;
+        if (!generationResult) {
+            return {
+                kind: 'failure',
+                result: await this.fail(deploymentId, 'validating', 'Missing generation result', { correlationId }, updateContext),
+            };
+        }
+
         await this.setStatus(deploymentId, 'validating');
         await this.log(deploymentId, 'validating', 'Validating generated file syntax', 'info', { correlationId });
 
@@ -231,10 +424,17 @@ export class DeploymentPipelineService {
         }
 
         if (syntaxErrors.length > 0) {
-            const summary = syntaxErrors
-                .map((e) => `${e.file}: ${e.message}`)
-                .join('; ');
-            return this.fail(deploymentId, 'validating', `Syntax validation failed: ${summary}`, { correlationId, errorCount: syntaxErrors.length }, updateContext);
+            const summary = syntaxErrors.map((e) => `${e.file}: ${e.message}`).join('; ');
+            return {
+                kind: 'failure',
+                result: await this.fail(
+                    deploymentId,
+                    'validating',
+                    `Syntax validation failed: ${summary}`,
+                    { correlationId, errorCount: syntaxErrors.length },
+                    updateContext,
+                ),
+            };
         }
 
         await this.log(
@@ -245,12 +445,24 @@ export class DeploymentPipelineService {
             { correlationId, fileCount: generationResult.generatedFiles.length },
         );
 
-        // ── Step 2d: Build cache check ────────────────────────────────────────
+        return { kind: 'success', patch: {} };
+    }
+
+    private async stageCacheCheck(ctx: PipelineContext): Promise<StageOutcome> {
+        const { deploymentId, correlationId, supabase, generationResult } = ctx;
+        if (!generationResult) {
+            return {
+                kind: 'failure',
+                result: await this.fail(deploymentId, 'validating', 'Missing generation result', { correlationId }),
+            };
+        }
+
         const cacheResult = await this._buildCacheService.checkCache(
             supabase,
             deploymentId,
             generationResult.generatedFiles,
         );
+
         await this.log(
             deploymentId,
             'validating',
@@ -259,7 +471,18 @@ export class DeploymentPipelineService {
             { correlationId, cacheStatus: cacheResult.status, contentHash: cacheResult.contentHash },
         );
 
-        // ── Step 2c: Sign artifact ─────────────────────────────────────────────
+        return { kind: 'success', patch: { cacheResult } };
+    }
+
+    private async stageSign(ctx: PipelineContext): Promise<StageOutcome> {
+        const { deploymentId, correlationId, generationResult } = ctx;
+        if (!generationResult) {
+            return {
+                kind: 'failure',
+                result: await this.fail(deploymentId, 'signing', 'Missing generation result', { correlationId }),
+            };
+        }
+
         await this.setStatus(deploymentId, 'signing');
         await this.log(deploymentId, 'signing', 'Signing generated artifact', 'info', { correlationId });
 
@@ -272,126 +495,22 @@ export class DeploymentPipelineService {
             checksum: artifactChecksum,
         });
 
-        // ── Step 3: Create GitHub repository ─────────────────────────────────
-        await this.setStatus(deploymentId, 'creating_repo');
-        await this.log(deploymentId, 'creating_repo', 'Creating GitHub repository', 'info', { correlationId });
+        return {
+            kind: 'success',
+            patch: { artifactContent, artifactChecksum, artifactSignature },
+        };
+    }
 
-        let repoFullName: string;
-        let repositoryUrl: string;
-        let defaultBranch: string;
+    private async stageSyncEnvVars(ctx: PipelineContext): Promise<StageOutcome> {
+        const { deploymentId, correlationId, supabase, templateId, customization } = ctx;
 
-        try {
-            const { repository, resolvedName } = await this._githubService.createRepository({
-                name,
-                description: `CRAFT deployment — ${name}`,
-                private: true,
-                userId,
-            });
-
-            repoFullName = repository.fullName;
-            repositoryUrl = repository.url;
-            defaultBranch = repository.defaultBranch;
-
-            await supabase
-                .from('deployments')
-                .update({
-                    repository_url: repositoryUrl,
-                    status: 'pushing_code',
-                    updated_at: new Date().toISOString(),
-                })
-                .eq('id', deploymentId);
-
-            await this.log(
-                deploymentId,
-                'creating_repo',
-                `Repository created: ${repoFullName}`,
-                'info',
-                { correlationId, repositoryUrl, resolvedName },
-            );
-        } catch (err: unknown) {
-            const svcErr = err as { code?: string; message?: string; retryAfterMs?: number };
-            return this.fail(
-                deploymentId,
-                'creating_repo',
-                `GitHub repository creation failed: ${svcErr.message ?? 'unknown error'}`,
-                { correlationId, code: svcErr.code, retryAfterMs: svcErr.retryAfterMs },
-                updateContext,
-            );
-        }
-
-        // ── Step 4: Push generated code ───────────────────────────────────────
-        await this.setStatus(deploymentId, 'pushing_code');
-        await this.log(deploymentId, 'pushing_code', 'Pushing generated code to repository', 'info', { correlationId });
-
-        const isArtifactValid = this._artifactSigningService.verifyArtifact(
-            artifactContent,
-            artifactChecksum,
-            artifactSignature,
-        );
-
-        if (!isArtifactValid) {
-            return this.fail(
-                deploymentId,
-                'pushing_code',
-                'Artifact verification failed: checksum or signature mismatch — aborting push',
-                { correlationId, checksum: artifactChecksum },
-            );
-        }
-
-        await this.log(deploymentId, 'pushing_code', 'Artifact verified', 'info', {
+        await this.log(deploymentId, 'sync_env_vars', 'Resolving Vercel environment variables', 'info', {
             correlationId,
-            checksum: artifactChecksum,
-            deploymentId,
-            timestamp: new Date().toISOString(),
         });
 
-        const githubToken = process.env.GITHUB_TOKEN ?? '';
-        const [owner, repo] = repoFullName.split('/');
-
-        let commitSha: string | undefined;
-
-        try {
-            const commitRef = await this._githubPushService.pushGeneratedCode({
-                owner,
-                repo,
-                token: githubToken,
-                files: generationResult.generatedFiles,
-                branch: defaultBranch,
-                commitMessage: 'feat: initial CRAFT deployment',
-                authorName: 'CRAFT Platform',
-                authorEmail: 'craft@stellercraft.io',
-            });
-
-            commitSha = commitRef.commitSha;
-
-            await this.log(
-                deploymentId,
-                'pushing_code',
-                `Pushed ${commitRef.fileCount} files — commit ${commitRef.commitSha.slice(0, 7)}`,
-                'info',
-                { correlationId, commitSha: commitRef.commitSha, fileCount: commitRef.fileCount },
-            );
-
-            // ── Post "pending" commit status now that we have a commit SHA ──────
-            // Non-fatal: any error is caught and logged but does not block the pipeline.
-            await this.reportCommitStatus(
-                () => this._commitStatusService.reportPending(owner, repo, commitSha!, deploymentId, 'Deployment'),
-                deploymentId,
-                correlationId,
-                'pending',
-            );
-        } catch (err: unknown) {
-            const msg = err instanceof Error ? err.message : 'Unknown push error';
-            return this.fail(deploymentId, 'pushing_code', `Code push failed: ${msg}`, { correlationId }, updateContext);
-        }
-
-        // ── Step 5 & 6: Create Vercel project + trigger deployment ────────────
-        await this.setStatus(deploymentId, 'deploying');
-        await this.log(deploymentId, 'deploying', 'Creating Vercel project', 'info', { correlationId });
-
-        // Resolve template family for env var generation
         let templateCategory: string | undefined;
         let templateFamily: TemplateFamilyId = 'stellar-dex';
+
         try {
             const { data: tmpl } = await supabase
                 .from('templates')
@@ -410,9 +529,181 @@ export class DeploymentPipelineService {
 
         const envVars = buildVercelEnvVars(templateFamily, customization);
 
-        let deploymentUrl: string;
-        let vercelProjectId: string;
-        let vercelDeploymentId: string;
+        await this.log(deploymentId, 'sync_env_vars', 'Environment variables prepared', 'info', {
+            correlationId,
+            envVarCount: envVars.length,
+        });
+
+        return {
+            kind: 'success',
+            patch: { templateCategory, templateFamily, envVars },
+        };
+    }
+
+    private async stageCreateRepo(ctx: PipelineContext): Promise<StageOutcome> {
+        const { deploymentId, correlationId, userId, name, updateContext, supabase } = ctx;
+
+        await this.setStatus(deploymentId, 'creating_repo');
+        await this.log(deploymentId, 'creating_repo', 'Creating GitHub repository', 'info', { correlationId });
+
+        try {
+            const { repository, resolvedName } = await this._githubService.createRepository({
+                name,
+                description: `CRAFT deployment — ${name}`,
+                private: true,
+                userId,
+            });
+
+            await supabase
+                .from('deployments')
+                .update({
+                    repository_url: repository.url,
+                    status: 'pushing_code',
+                    updated_at: new Date().toISOString(),
+                })
+                .eq('id', deploymentId);
+
+            await this.log(
+                deploymentId,
+                'creating_repo',
+                `Repository created: ${repository.fullName}`,
+                'info',
+                { correlationId, repositoryUrl: repository.url, resolvedName },
+            );
+
+            return {
+                kind: 'success',
+                patch: {
+                    repoFullName: repository.fullName,
+                    repositoryUrl: repository.url,
+                    defaultBranch: repository.defaultBranch,
+                },
+            };
+        } catch (err: unknown) {
+            const svcErr = err as { code?: string; message?: string; retryAfterMs?: number };
+            return {
+                kind: 'failure',
+                result: await this.fail(
+                    deploymentId,
+                    'creating_repo',
+                    `GitHub repository creation failed: ${svcErr.message ?? 'unknown error'}`,
+                    { correlationId, code: svcErr.code, retryAfterMs: svcErr.retryAfterMs },
+                    updateContext,
+                ),
+            };
+        }
+    }
+
+    private async stagePushCode(ctx: PipelineContext): Promise<StageOutcome> {
+        const {
+            deploymentId,
+            correlationId,
+            updateContext,
+            generationResult,
+            artifactContent,
+            artifactChecksum,
+            artifactSignature,
+            repoFullName,
+            defaultBranch,
+        } = ctx;
+
+        if (!generationResult || !artifactContent || !artifactChecksum || !artifactSignature || !repoFullName || !defaultBranch) {
+            return {
+                kind: 'failure',
+                result: await this.fail(deploymentId, 'pushing_code', 'Missing prerequisites for code push', { correlationId }, updateContext),
+            };
+        }
+
+        await this.setStatus(deploymentId, 'pushing_code');
+        await this.log(deploymentId, 'pushing_code', 'Pushing generated code to repository', 'info', { correlationId });
+
+        const isArtifactValid = this._artifactSigningService.verifyArtifact(
+            artifactContent,
+            artifactChecksum,
+            artifactSignature,
+        );
+
+        if (!isArtifactValid) {
+            return {
+                kind: 'failure',
+                result: await this.fail(
+                    deploymentId,
+                    'pushing_code',
+                    'Artifact verification failed: checksum or signature mismatch — aborting push',
+                    { correlationId, checksum: artifactChecksum },
+                ),
+            };
+        }
+
+        await this.log(deploymentId, 'pushing_code', 'Artifact verified', 'info', {
+            correlationId,
+            checksum: artifactChecksum,
+            deploymentId,
+            timestamp: new Date().toISOString(),
+        });
+
+        const githubToken = process.env.GITHUB_TOKEN ?? '';
+        const [owner, repo] = repoFullName.split('/');
+
+        try {
+            const commitRef = await this._githubPushService.pushGeneratedCode({
+                owner,
+                repo,
+                token: githubToken,
+                files: generationResult.generatedFiles,
+                branch: defaultBranch,
+                commitMessage: 'feat: initial CRAFT deployment',
+                authorName: 'CRAFT Platform',
+                authorEmail: 'craft@stellercraft.io',
+            });
+
+            await this.log(
+                deploymentId,
+                'pushing_code',
+                `Pushed ${commitRef.fileCount} files — commit ${commitRef.commitSha.slice(0, 7)}`,
+                'info',
+                { correlationId, commitSha: commitRef.commitSha, fileCount: commitRef.fileCount },
+            );
+
+            await this.reportCommitStatus(
+                () => this._commitStatusService.reportPending(owner, repo, commitRef.commitSha, deploymentId, 'Deployment'),
+                deploymentId,
+                correlationId,
+                'pending',
+            );
+
+            return {
+                kind: 'success',
+                patch: { commitSha: commitRef.commitSha, owner, repo },
+            };
+        } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : 'Unknown push error';
+            return {
+                kind: 'failure',
+                result: await this.fail(deploymentId, 'pushing_code', `Code push failed: ${msg}`, { correlationId }, updateContext),
+            };
+        }
+    }
+
+    private async stageDeploy(ctx: PipelineContext): Promise<StageOutcome> {
+        const {
+            deploymentId,
+            correlationId,
+            updateContext,
+            repoFullName,
+            envVars,
+            repo,
+        } = ctx;
+
+        if (!repoFullName || !envVars || !repo) {
+            return {
+                kind: 'failure',
+                result: await this.fail(deploymentId, 'deploying', 'Missing prerequisites for Vercel deployment', { correlationId }, updateContext),
+            };
+        }
+
+        await this.setStatus(deploymentId, 'deploying');
+        await this.log(deploymentId, 'deploying', 'Creating Vercel project', 'info', { correlationId });
 
         try {
             const project = await this._vercelService.createProject({
@@ -422,63 +713,111 @@ export class DeploymentPipelineService {
                 framework: 'nextjs',
             });
 
-            vercelProjectId = project.id;
-
             await this.log(
                 deploymentId,
                 'deploying',
                 `Vercel project created: ${project.name}`,
                 'info',
-                { correlationId, vercelProjectId },
+                { correlationId, vercelProjectId: project.id },
             );
 
-            const deployment = await this._vercelService.triggerDeployment(
-                project.id,
-                repoFullName,
-            );
-
-            vercelDeploymentId = deployment.deploymentId;
-            deploymentUrl = deployment.deploymentUrl;
+            const deployment = await this._vercelService.triggerDeployment(project.id, repoFullName);
 
             await this.log(
                 deploymentId,
                 'deploying',
-                `Vercel deployment triggered: ${deploymentUrl}`,
+                `Vercel deployment triggered: ${deployment.deploymentUrl}`,
                 'info',
-                { correlationId, vercelDeploymentId, deploymentUrl },
+                { correlationId, vercelDeploymentId: deployment.deploymentId, deploymentUrl: deployment.deploymentUrl },
             );
+
+            return {
+                kind: 'success',
+                patch: {
+                    vercelProjectId: project.id,
+                    vercelDeploymentId: deployment.deploymentId,
+                    deploymentUrl: deployment.deploymentUrl,
+                },
+            };
         } catch (err: unknown) {
             const svcErr = err as { code?: string; message?: string };
-            return this.fail(
+            return {
+                kind: 'failure',
+                result: await this.fail(
+                    deploymentId,
+                    'deploying',
+                    `Vercel deployment failed: ${svcErr.message ?? 'unknown error'}`,
+                    { correlationId, code: svcErr.code },
+                    updateContext,
+                ),
+            };
+        }
+    }
+
+    private async stageVerifyContract(ctx: PipelineContext): Promise<StageOutcome> {
+        const { deploymentId, correlationId, templateCategory } = ctx;
+
+        if (templateCategory !== 'soroban-defi') {
+            return { kind: 'success', patch: {} };
+        }
+
+        try {
+            await this.setStatus(deploymentId, 'verifying_contract' as DeploymentStatusType);
+            await this.log(
                 deploymentId,
-                'deploying',
-                `Vercel deployment failed: ${svcErr.message ?? 'unknown error'}`,
-                { correlationId, code: svcErr.code },
-                updateContext,
+                'verifying_contract',
+                'Checking Soroban contract live status...',
+                'info',
+                { correlationId },
             );
-        }
 
-        // ── Step 6b: Verify Soroban Contract (Soroban-only) ────────────────────
-        if (templateCategory === 'soroban-defi') {
-            try {
-                await this.setStatus(deploymentId, 'verifying_contract' as any);
-                await this.log(deploymentId, 'verifying_contract', 'Checking Soroban contract live status...', 'info', { correlationId });
-                
-                await this.verifyContractDeployment(deploymentId, correlationId);
-                
-                await this.log(deploymentId, 'verifying_contract', 'Contract verified successfully.', 'info', { correlationId });
-            } catch (error) {
-                if (error instanceof RetryableError) {
-                    await this.log(deploymentId, 'verifying_contract', 'Verification timed out. Retrying...', 'warn', { correlationId });
-                    throw error; // Let the orchestrator handle the retry
-                }
-                await this.log(deploymentId, 'verifying_contract', 'Contract verification failed.', 'error', { correlationId });
-                await this.fail(deploymentId, 'verifying_contract' as any, (error as Error).message, { correlationId });
-                throw error; // This triggers the building -> failed transition
+            await this.verifyContractDeployment(deploymentId, correlationId);
+
+            await this.log(deploymentId, 'verifying_contract', 'Contract verified successfully.', 'info', {
+                correlationId,
+            });
+
+            return { kind: 'success', patch: {} };
+        } catch (error) {
+            if (error instanceof RetryableError) {
+                await this.log(deploymentId, 'verifying_contract', 'Verification timed out. Retrying...', 'warn', {
+                    correlationId,
+                });
+                throw error;
             }
+
+            await this.log(deploymentId, 'verifying_contract', 'Contract verification failed.', 'error', {
+                correlationId,
+            });
+            await this.fail(deploymentId, 'verifying_contract' as DeploymentStatusType, (error as Error).message, {
+                correlationId,
+            });
+            throw error;
+        }
+    }
+
+    private async stageComplete(ctx: PipelineContext): Promise<StageOutcome> {
+        const {
+            deploymentId,
+            correlationId,
+            supabase,
+            cacheResult,
+            vercelProjectId,
+            vercelDeploymentId,
+            deploymentUrl,
+            commitSha,
+            owner,
+            repo,
+            logger,
+        } = ctx;
+
+        if (!vercelProjectId || !vercelDeploymentId || !deploymentUrl) {
+            return {
+                kind: 'failure',
+                result: await this.fail(deploymentId, 'completed', 'Missing deployment results', { correlationId }),
+            };
         }
 
-        // ── Step 7: Persist completed record ──────────────────────────────────
         await supabase
             .from('deployments')
             .update({
@@ -491,21 +830,18 @@ export class DeploymentPipelineService {
             })
             .eq('id', deploymentId);
 
-        // Store the content hash so future deployments can detect cache hits
-        await this._buildCacheService.storeHash(supabase, deploymentId, cacheResult.contentHash);
+        if (cacheResult) {
+            await this._buildCacheService.storeHash(supabase, deploymentId, cacheResult.contentHash);
+        }
 
-        await this.log(
-            deploymentId,
-            'completed',
-            `Deployment complete — ${deploymentUrl}`,
-            'info',
-            { correlationId, deploymentUrl },
-        );
+        await this.log(deploymentId, 'completed', `Deployment complete — ${deploymentUrl}`, 'info', {
+            correlationId,
+            deploymentUrl,
+        });
 
-        // ── Post "success" commit status ──────────────────────────────────────
-        if (commitSha) {
+        if (commitSha && owner && repo) {
             await this.reportCommitStatus(
-                () => this._commitStatusService.reportSuccess(owner, repo, commitSha!, deploymentId, deploymentUrl),
+                () => this._commitStatusService.reportSuccess(owner, repo, commitSha, deploymentId, deploymentUrl),
                 deploymentId,
                 correlationId,
                 'success',
@@ -514,13 +850,7 @@ export class DeploymentPipelineService {
 
         logger.info('Deployment pipeline completed', { deploymentId, deploymentUrl });
 
-        return {
-            success: true,
-            deploymentId,
-            correlationId,
-            repositoryUrl,
-            deploymentUrl,
-        };
+        return { kind: 'success', patch: {} };
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
@@ -675,4 +1005,5 @@ export const deploymentPipelineService = new DeploymentPipelineService(
     artifactSigningService,
     deploymentUpdateService,
     githubCommitStatusService,
+    buildCacheService,
 );

@@ -45,3 +45,8 @@ ALTER TABLE profiles
         stripe_subscription_id_encrypted IS NULL
         OR stripe_subscription_id_encrypted NOT LIKE 'sub\_%' ESCAPE '\'
     );
+
+-- rollback: ALTER TABLE profiles DROP CONSTRAINT IF EXISTS profiles_stripe_subscription_not_plaintext;
+-- rollback: ALTER TABLE profiles DROP CONSTRAINT IF EXISTS profiles_stripe_customer_not_plaintext;
+-- rollback: ALTER TABLE profiles DROP COLUMN IF EXISTS stripe_subscription_id_encrypted;
+-- rollback: ALTER TABLE profiles DROP COLUMN IF EXISTS stripe_customer_id_encrypted;

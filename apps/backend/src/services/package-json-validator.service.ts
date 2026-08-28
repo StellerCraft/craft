@@ -14,7 +14,7 @@ import type { GeneratedFile } from '@craft/types';
 
 const NPM_NAME_RE = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/;
 const SEMVER_CORE_RE = /^\d+\.\d+\.\d+$/;
-const SEMVER_RANGE_RE = /^(\^|~|>=|>|<=|<)?\d+\.\d+\.\d+$/;
+const SEMVER_RANGE_RE = /^(workspace:)?(\*|(\^|~|>=|>|<=|<)?\d+\.\d+\.\d+)$/;
 
 // ── Required field / script lists ─────────────────────────────────────────────
 

@@ -1,0 +1,120 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`Stellar Config — Snapshot Regression Tests (#540) > Configuration Consistency > should have all required fields in config output 1`] = `
+[
+  "horizonUrl",
+  "network",
+  "networkPassphrase",
+  "sorobanRpcUrl",
+]
+`;
+
+exports[`Stellar Config — Snapshot Regression Tests (#540) > Configuration Consistency > should have matching network keys across all config objects 1`] = `
+[
+  "mainnet",
+  "testnet",
+]
+`;
+
+exports[`Stellar Config — Snapshot Regression Tests (#540) > Configuration Consistency > should return consistent config shape for all networks 1`] = `
+[
+  "horizonUrl",
+  "network",
+  "networkPassphrase",
+  "sorobanRpcUrl",
+]
+`;
+
+exports[`Stellar Config — Snapshot Regression Tests (#540) > Network Configuration Constants > should have all required networks in HORIZON_URLS 1`] = `
+[
+  "mainnet",
+  "testnet",
+]
+`;
+
+exports[`Stellar Config — Snapshot Regression Tests (#540) > Network Configuration Constants > should have all required networks in NETWORK_PASSPHRASES 1`] = `
+[
+  "mainnet",
+  "testnet",
+]
+`;
+
+exports[`Stellar Config — Snapshot Regression Tests (#540) > Network Configuration Constants > should have all required networks in SOROBAN_RPC_URLS 1`] = `
+[
+  "mainnet",
+  "testnet",
+]
+`;
+
+exports[`Stellar Config — Snapshot Regression Tests (#540) > Network Configuration Constants > should match snapshot for HORIZON_URLS 1`] = `
+{
+  "mainnet": "https://horizon.stellar.org",
+  "testnet": "https://horizon-testnet.stellar.org",
+}
+`;
+
+exports[`Stellar Config — Snapshot Regression Tests (#540) > Network Configuration Constants > should match snapshot for NETWORK_PASSPHRASES 1`] = `
+{
+  "mainnet": "Public Global Stellar Network ; September 2015",
+  "testnet": "Test SDF Network ; September 2015",
+}
+`;
+
+exports[`Stellar Config — Snapshot Regression Tests (#540) > Network Configuration Constants > should match snapshot for SOROBAN_RPC_URLS 1`] = `
+{
+  "mainnet": "https://mainnet.stellar.validationcloud.io/v1/soroban/rpc",
+  "testnet": "https://soroban-testnet.stellar.org",
+}
+`;
+
+exports[`Stellar Config — Snapshot Regression Tests (#540) > Passphrase Format Validation > should have valid Stellar network passphrases 1`] = `"Public Global Stellar Network ; September 2015"`;
+
+exports[`Stellar Config — Snapshot Regression Tests (#540) > Passphrase Format Validation > should have valid Stellar network passphrases 2`] = `"Test SDF Network ; September 2015"`;
+
+exports[`Stellar Config — Snapshot Regression Tests (#540) > Serialization Stability > should deserialize and re-serialize to same value 1`] = `"{"network":"testnet","horizonUrl":"https://horizon-testnet.stellar.org","networkPassphrase":"Test SDF Network ; September 2015","sorobanRpcUrl":"https://soroban-testnet.stellar.org"}"`;
+
+exports[`Stellar Config — Snapshot Regression Tests (#540) > Serialization Stability > should serialize mainnet config consistently 1`] = `"{"network":"mainnet","horizonUrl":"https://horizon.stellar.org","networkPassphrase":"Public Global Stellar Network ; September 2015","sorobanRpcUrl":"https://mainnet.stellar.validationcloud.io/v1/soroban/rpc"}"`;
+
+exports[`Stellar Config — Snapshot Regression Tests (#540) > Serialization Stability > should serialize testnet config consistently 1`] = `"{"network":"testnet","horizonUrl":"https://horizon-testnet.stellar.org","networkPassphrase":"Test SDF Network ; September 2015","sorobanRpcUrl":"https://soroban-testnet.stellar.org"}"`;
+
+exports[`Stellar Config — Snapshot Regression Tests (#540) > URL Format Validation > should have valid HTTPS URLs for Horizon endpoints 1`] = `"https://horizon.stellar.org"`;
+
+exports[`Stellar Config — Snapshot Regression Tests (#540) > URL Format Validation > should have valid HTTPS URLs for Horizon endpoints 2`] = `"https://horizon-testnet.stellar.org"`;
+
+exports[`Stellar Config — Snapshot Regression Tests (#540) > URL Format Validation > should have valid HTTPS URLs for Soroban RPC endpoints 1`] = `"https://mainnet.stellar.validationcloud.io/v1/soroban/rpc"`;
+
+exports[`Stellar Config — Snapshot Regression Tests (#540) > URL Format Validation > should have valid HTTPS URLs for Soroban RPC endpoints 2`] = `"https://soroban-testnet.stellar.org"`;
+
+exports[`Stellar Config — Snapshot Regression Tests (#540) > getNetworkConfig — mainnet > should have correct Horizon URL for mainnet 1`] = `"https://horizon.stellar.org"`;
+
+exports[`Stellar Config — Snapshot Regression Tests (#540) > getNetworkConfig — mainnet > should have correct Soroban RPC URL for mainnet 1`] = `"https://mainnet.stellar.validationcloud.io/v1/soroban/rpc"`;
+
+exports[`Stellar Config — Snapshot Regression Tests (#540) > getNetworkConfig — mainnet > should have correct network passphrase for mainnet 1`] = `"Public Global Stellar Network ; September 2015"`;
+
+exports[`Stellar Config — Snapshot Regression Tests (#540) > getNetworkConfig — mainnet > should have network field set to mainnet 1`] = `"mainnet"`;
+
+exports[`Stellar Config — Snapshot Regression Tests (#540) > getNetworkConfig — mainnet > should match snapshot for mainnet configuration 1`] = `
+{
+  "horizonUrl": "https://horizon.stellar.org",
+  "network": "mainnet",
+  "networkPassphrase": "Public Global Stellar Network ; September 2015",
+  "sorobanRpcUrl": "https://mainnet.stellar.validationcloud.io/v1/soroban/rpc",
+}
+`;
+
+exports[`Stellar Config — Snapshot Regression Tests (#540) > getNetworkConfig — testnet > should have correct Horizon URL for testnet 1`] = `"https://horizon-testnet.stellar.org"`;
+
+exports[`Stellar Config — Snapshot Regression Tests (#540) > getNetworkConfig — testnet > should have correct Soroban RPC URL for testnet 1`] = `"https://soroban-testnet.stellar.org"`;
+
+exports[`Stellar Config — Snapshot Regression Tests (#540) > getNetworkConfig — testnet > should have correct network passphrase for testnet 1`] = `"Test SDF Network ; September 2015"`;
+
+exports[`Stellar Config — Snapshot Regression Tests (#540) > getNetworkConfig — testnet > should have network field set to testnet 1`] = `"testnet"`;
+
+exports[`Stellar Config — Snapshot Regression Tests (#540) > getNetworkConfig — testnet > should match snapshot for testnet configuration 1`] = `
+{
+  "horizonUrl": "https://horizon-testnet.stellar.org",
+  "network": "testnet",
+  "networkPassphrase": "Test SDF Network ; September 2015",
+  "sorobanRpcUrl": "https://soroban-testnet.stellar.org",
+}
+`;

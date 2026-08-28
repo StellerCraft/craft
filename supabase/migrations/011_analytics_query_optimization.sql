@@ -38,3 +38,7 @@ AS $$
     WHERE deployment_id = p_deployment_id
     GROUP BY metric_type;
 $$;
+
+-- rollback: DROP FUNCTION IF EXISTS get_analytics_summary;
+-- rollback: DROP INDEX IF EXISTS idx_analytics_deployment_recorded_at;
+-- rollback: DROP INDEX IF EXISTS idx_analytics_deployment_metric;

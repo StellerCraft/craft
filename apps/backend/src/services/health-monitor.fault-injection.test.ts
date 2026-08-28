@@ -25,7 +25,9 @@ vi.mock('@/lib/supabase/server', () => ({
 
 // ── Analytics mock ────────────────────────────────────────────────────────────
 
-const mockRecordUptimeCheck = vi.fn().mockResolvedValue(undefined);
+const { mockRecordUptimeCheck } = vi.hoisted(() => ({
+    mockRecordUptimeCheck: vi.fn().mockResolvedValue(undefined),
+}));
 
 vi.mock('./analytics.service', () => ({
     analyticsService: { recordUptimeCheck: mockRecordUptimeCheck },
@@ -380,6 +382,172 @@ describe('HealthMonitorService — fault injection: partial failures', () => {
         await service.checkAllDeployments();
 
         expect(mockRecordUptimeCheck).toHaveBeenCalledWith('dep-healthy', true);
+        expect(mockRecordUptimeCheck).toHaveBeenCalledWith('dep-down', false);
+    });
+});
+
+// ── Partial dependency failure harness (#707) ─────────────────────────────────
+//
+// Tests that partial outages (1 of N dependencies failed) are correctly
+// reflected as 'degraded' status, and that the failure of a non-critical
+// dependency does not report the whole system as 'down'.
+// Also covers timeout SLA injection and cascading failure (DB down → no HTTP check).
+
+describe('HealthMonitorService — fault injection: partial dependency failure harness', () => {
+    let service: HealthMonitorService;
+
+    beforeEach(() => {
+        vi.clearAllMocks();
+        service = new HealthMonitorService();
+    });
+
+    /** Derive aggregated health status from checkAllDeployments() results. */
+    function deriveStatus(results: Array<{ isHealthy: boolean; deploymentId: string }>) {
+        const failedDependencies = results
+            .filter((r) => !r.isHealthy)
+            .map((r) => r.deploymentId);
+        if (failedDependencies.length === 0) return { status: 'healthy' as const, failedDependencies };
+        if (failedDependencies.length === results.length) return { status: 'down' as const, failedDependencies };
+        return { status: 'degraded' as const, failedDependencies };
+    }
+
+    function buildDeploymentList(deps: Array<{ id: string; url: string }>) {
+        const listChain = {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockResolvedValue({
+                data: deps.map((d) => ({ id: d.id })),
+                error: null,
+            }),
+        };
+        let call = 0;
+        mockFrom.mockImplementation(() => {
+            if (call++ === 0) return listChain;
+            const dep = deps[call - 2];
+            return buildChain({ data: { deployment_url: dep?.url }, error: null });
+        });
+    }
+
+    it('Stellar RPC timeout while Supabase healthy → derived status is degraded with stellar in failedDependencies', async () => {
+        const deps = [
+            { id: 'supabase', url: 'https://db.supabase.co/health' },
+            { id: 'stellar', url: 'https://horizon.stellar.org/health' },
+        ];
+        buildDeploymentList(deps);
+
+        mockFetch
+            .mockResolvedValueOnce({ ok: true, status: 200 }) // supabase healthy
+            .mockRejectedValueOnce(TIMEOUT_ERROR);             // stellar times out
+
+        const results = await service.checkAllDeployments();
+        const health = deriveStatus(results);
+
+        expect(health.status).toBe('degraded');
+        expect(health.failedDependencies).toContain('stellar');
+        expect(health.failedDependencies).not.toContain('supabase');
+    });
+
+    it('non-critical Stellar failure does not report the whole system as down', async () => {
+        const deps = [
+            { id: 'vercel', url: 'https://my-app.vercel.app' },
+            { id: 'stellar', url: 'https://horizon.stellar.org/health' },
+            { id: 'stripe', url: 'https://api.stripe.com/healthcheck' },
+        ];
+        buildDeploymentList(deps);
+
+        mockFetch
+            .mockResolvedValueOnce({ ok: true, status: 200 })  // vercel healthy
+            .mockRejectedValueOnce(TIMEOUT_ERROR)               // stellar down
+            .mockResolvedValueOnce({ ok: true, status: 200 }); // stripe healthy
+
+        const results = await service.checkAllDeployments();
+        const health = deriveStatus(results);
+
+        expect(health.status).toBe('degraded');
+        expect(health.failedDependencies).toEqual(['stellar']);
+        expect(results.filter((r) => r.isHealthy)).toHaveLength(2);
+    });
+
+    it('Supabase DB failure causes downstream HTTP check to be skipped (cascading suppression)', async () => {
+        // DB returns error → deployment URL unknown → fetch() must NOT be called
+        mockFrom.mockReturnValue(
+            buildChain({ data: null, error: { message: 'Supabase connection failed' } }),
+        );
+
+        const result = await service.checkDeploymentHealth('dep-cascade');
+
+        expect(result.isHealthy).toBe(false);
+        expect(result.error).toMatch(/Deployment URL not found/);
+        // The downstream Vercel / HTTP check is skipped entirely
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('timeout SLA breach: TIMEOUT_ERROR path reports responseTime as 0 and statusCode as null', async () => {
+        mockFrom.mockReturnValue(
+            buildChain({ data: { deployment_url: 'https://horizon.stellar.org/health' }, error: null }),
+        );
+        mockFetch.mockRejectedValue(TIMEOUT_ERROR);
+
+        const result = await service.checkDeploymentHealth('dep-sla-breach');
+
+        expect(result.isHealthy).toBe(false);
+        expect(result.responseTime).toBe(0);
+        expect(result.statusCode).toBeNull();
+        expect(result.error).toMatch(/timeout|aborted/i);
+    });
+
+    it('pool metrics above 80% utilisation threshold → getSystemHealth returns degraded', async () => {
+        service.recordPoolMetrics(85, 15, 0, 100);
+        const health = await service.getSystemHealth();
+        expect(health.status).toBe('degraded');
+    });
+
+    it('pool metrics below utilisation threshold with short wait times → getSystemHealth returns healthy', async () => {
+        service.recordPoolMetrics(10, 90, 0, 50);
+        const health = await service.getSystemHealth();
+        expect(health.status).toBe('healthy');
+    });
+
+    it('pool wait queue > 10 → getSystemHealth returns degraded', async () => {
+        service.recordPoolMetrics(5, 95, 11, 20);
+        const health = await service.getSystemHealth();
+        expect(health.status).toBe('degraded');
+    });
+
+    it('2 of 3 dependencies failing → exactly 1 healthy dependency remains, status is degraded not down', async () => {
+        const deps = [
+            { id: 'dep-a', url: 'https://service-a.example.com' },
+            { id: 'dep-b', url: 'https://service-b.example.com' },
+            { id: 'dep-c', url: 'https://service-c.example.com' },
+        ];
+        buildDeploymentList(deps);
+
+        mockFetch
+            .mockRejectedValueOnce(new Error('service-a down'))
+            .mockRejectedValueOnce(new Error('service-b down'))
+            .mockResolvedValueOnce({ ok: true, status: 200 }); // dep-c healthy
+
+        const results = await service.checkAllDeployments();
+        const health = deriveStatus(results);
+
+        expect(health.status).toBe('degraded');
+        expect(health.failedDependencies).toHaveLength(2);
+        expect(results.find((r) => r.deploymentId === 'dep-c')?.isHealthy).toBe(true);
+    });
+
+    it('analytics is recorded independently for each dependency, healthy or not', async () => {
+        const deps = [
+            { id: 'dep-up', url: 'https://up.example.com' },
+            { id: 'dep-down', url: 'https://down.example.com' },
+        ];
+        buildDeploymentList(deps);
+
+        mockFetch
+            .mockResolvedValueOnce({ ok: true, status: 200 })
+            .mockRejectedValueOnce(TIMEOUT_ERROR);
+
+        await service.checkAllDeployments();
+
+        expect(mockRecordUptimeCheck).toHaveBeenCalledWith('dep-up', true);
         expect(mockRecordUptimeCheck).toHaveBeenCalledWith('dep-down', false);
     });
 });

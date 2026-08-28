@@ -1,5 +1,5 @@
 /**
- * Soroban Contract Execution Budget Monitoring (Issue #089)
+ * Soroban Contract Execution Budget Monitoring (Issue #089 / #788)
  *
  * Tracks CPU instruction count and memory bytes from contract simulation
  * responses and fires configurable alert handlers when usage approaches
@@ -10,6 +10,12 @@
  * - memoryBytes: Memory consumed in bytes
  * - cpuLimitFraction: fraction of the 100 M instruction ceiling
  * - memoryLimitFraction: fraction of the 40 MB memory ceiling
+ *
+ * ## Real-time emission (#788)
+ * After every contract invocation, metrics are emitted to the analytics
+ * service within the same async tick (no additional scheduling delay).
+ * A `budget_warning` event is emitted when either resource exceeds the
+ * configured threshold.
  *
  * ## Alert flow
  * Register a handler with `onBudgetAlert`. It fires whenever either
@@ -66,6 +72,88 @@ export interface BudgetMetric {
 /** Called when one or both budget thresholds are breached. */
 export type BudgetAlertHandler = (metric: BudgetMetric) => void;
 
+// ── Analytics emission (#788) ─────────────────────────────────────────────────
+
+/**
+ * Analytics sink type. Receives every per-invocation metric plus an optional
+ * `budget_warning` event payload when a threshold is breached.
+ */
+export interface AnalyticsSink {
+  emit(eventName: string, payload: Record<string, unknown>): void;
+}
+
+let _analyticsSinks: AnalyticsSink[] = [];
+
+/**
+ * Register an analytics sink to receive real-time budget metrics.
+ * Returns an unsubscribe function.
+ *
+ * @example
+ * ```typescript
+ * const off = addAnalyticsSink({
+ *   emit(event, payload) { analytics.track(event, payload); }
+ * });
+ * off(); // deregister
+ * ```
+ */
+export function addAnalyticsSink(sink: AnalyticsSink): () => void {
+  _analyticsSinks.push(sink);
+  return () => {
+    const idx = _analyticsSinks.indexOf(sink);
+    if (idx !== -1) _analyticsSinks.splice(idx, 1);
+  };
+}
+
+/**
+ * Register an analytics sink to receive real-time budget metrics.
+ * Pass `null` to clear all sinks. Pass a sink to clear all existing sinks and
+ * register only this one (backward compatibility).
+ *
+ * @deprecated Use {@link addAnalyticsSink} instead for multi-sink support.
+ * @example
+ * ```typescript
+ * setAnalyticsSink({
+ *   emit(event, payload) { analytics.track(event, payload); }
+ * });
+ * ```
+ */
+export function setAnalyticsSink(sink: AnalyticsSink | null): void {
+  _analyticsSinks = [];
+  if (sink) {
+    _analyticsSinks.push(sink);
+  }
+}
+
+/**
+ * Emits a `budget_metric` event (and `budget_warning` when thresholds are
+ * exceeded) to all registered analytics sinks.
+ * Called synchronously after each contract invocation.
+ */
+export function emitBudgetMetrics(metric: BudgetMetric): void {
+  if (_analyticsSinks.length === 0) return;
+
+  const payload = {
+    contractId: metric.contractId,
+    functionName: metric.method,
+    cpuInstructions: metric.usage.cpuInsns.toString(),
+    memBytes: metric.usage.memoryBytes.toString(),
+    cpuLimitFraction: metric.usage.cpuLimitFraction,
+    memoryLimitFraction: metric.usage.memoryLimitFraction,
+    timestamp: metric.timestamp,
+  };
+
+  for (const sink of _analyticsSinks) {
+    sink.emit('budget_metric', payload);
+    if (metric.usage.cpuAlert || metric.usage.memoryAlert) {
+      sink.emit('budget_warning', {
+        ...payload,
+        cpuAlert: metric.usage.cpuAlert,
+        memoryAlert: metric.usage.memoryAlert,
+      });
+    }
+  }
+}
+
 // ── Module-level state (ring-buffer + handlers) ───────────────────────────────
 
 const MAX_STORED_METRICS = 1_000;
@@ -114,18 +202,34 @@ export function getBudgetMetrics(): readonly BudgetMetric[] {
  * alert handlers if CPU or memory usage meets or exceeds the configured
  * thresholds.
  *
+ * When a fresh, already-computed `SimulateTransactionResponse` is available
+ * (e.g. from a recent `simulateContractCall` call within the same request
+ * lifecycle), pass it as `precomputedSimulation` to avoid a duplicate RPC
+ * round-trip.  When `precomputedSimulation` is **not** supplied the function
+ * falls back to forcing a fresh simulation (bypasses the cache) so that
+ * budget tracking always records accurate per-invocation numbers.
+ *
  * @param contractId - The contract address (C...)
  * @param method - Contract method name
  * @param args - XDR-encoded method arguments
  * @param sourcePublicKey - Source account public key
  * @param thresholds - Optional alert thresholds (default: 80 % of hard limit)
  * @param _simulate - Override `simulateContractCall` for unit testing
+ * @param precomputedSimulation - Optional already-fresh simulation result to
+ *   reuse instead of issuing a new RPC call.  Callers are responsible for
+ *   ensuring the response is fresh enough for their use-case.
  * @returns `BudgetUsage` when cost data is present in the simulation, `null`
  *   when the simulation response does not include cost information
  *
  * @example
  * ```typescript
+ * // Without a pre-computed result (one RPC call):
  * const usage = await trackContractBudget(contractId, 'transfer', args, pubKey);
+ *
+ * // With a pre-computed result (zero additional RPC calls):
+ * const sim = await simulateContractCall(contractId, 'transfer', args, pubKey);
+ * const usage = await trackContractBudget(contractId, 'transfer', args, pubKey, {}, simulateContractCall, sim);
+ *
  * if (usage?.cpuAlert) {
  *   console.warn(`CPU at ${(usage.cpuLimitFraction * 100).toFixed(1)}% of limit`);
  * }
@@ -138,9 +242,12 @@ export async function trackContractBudget(
     sourcePublicKey: string,
     thresholds: BudgetThresholds = {},
     _simulate: typeof simulateContractCall = simulateContractCall,
+    precomputedSimulation?: SorobanRpc.Api.SimulateTransactionResponse,
 ): Promise<BudgetUsage | null> {
     const resolved = resolveThresholds(thresholds);
-    const simulation = await _simulate(contractId, method, args, sourcePublicKey);
+    const simulation = precomputedSimulation
+        ? precomputedSimulation
+        : await _simulate(contractId, method, args, sourcePublicKey, { skipCache: true });
     const usage = extractBudgetUsage(simulation, resolved);
     if (!usage) return null;
 
@@ -196,6 +303,9 @@ function pushMetric(metric: BudgetMetric): void {
         metricsStore.shift();
     }
     metricsStore.push(metric);
+
+    // Emit to analytics sink immediately (#788)
+    emitBudgetMetrics(metric);
 
     if (metric.usage.cpuAlert || metric.usage.memoryAlert) {
         for (const handler of alertHandlers) {

@@ -2,13 +2,26 @@ import { stripe } from '@/lib/stripe/client';
 import { getTierFromPriceId } from '@/lib/stripe/pricing';
 import { getTaxConfiguration, buildCheckoutTaxParams, buildTaxExemptUpdate, type TaxExemptStatus } from '@/lib/stripe/tax';
 import { createClient } from '@/lib/supabase/server';
+import { acquireAdvisoryLock, releaseAdvisoryLock } from '@/lib/supabase/supabase-lock';
 import { paymentIdempotencyService } from './payment-idempotency.service';
 import { invoiceDeliveryService } from './invoice-delivery.service';
+
 import type {
     CheckoutSession,
     SubscriptionStatus,
     StripeEvent,
 } from '@craft/types';
+
+const CHECKOUT_LOCK_TIMEOUT_MS = 10_000;
+
+/** Thrown when the checkout advisory lock cannot be acquired (concurrent request in progress). */
+export class CheckoutLockError extends Error {
+    readonly retryAfterMs = CHECKOUT_LOCK_TIMEOUT_MS;
+    constructor() {
+        super('Checkout already in progress for this user');
+        this.name = 'CheckoutLockError';
+    }
+}
 
 /**
  * PaymentService
@@ -32,9 +45,31 @@ import type {
 export class PaymentService {
     /**
      * Create a Stripe checkout session for subscription with idempotency guarantees.
-     * Retried calls with the same user/priceId will return the same session ID.
+     * A distributed advisory lock (payment_checkout_{userId}) prevents concurrent
+     * duplicate sessions from the same user. Returns the acquired session.
+     *
+     * Throws CheckoutLockError when the lock cannot be acquired within 10 seconds.
      */
     async createCheckoutSession(
+        userId: string,
+        priceId: string,
+        successUrl?: string,
+        cancelUrl?: string
+    ): Promise<CheckoutSession> {
+        const lockKey = `payment_checkout_${userId}`;
+        const acquired = await acquireAdvisoryLock(lockKey, CHECKOUT_LOCK_TIMEOUT_MS);
+        if (!acquired) {
+            throw new CheckoutLockError();
+        }
+
+        try {
+            return await this._createCheckoutSessionInner(userId, priceId, successUrl, cancelUrl);
+        } finally {
+            await releaseAdvisoryLock(lockKey);
+        }
+    }
+
+    private async _createCheckoutSessionInner(
         userId: string,
         priceId: string,
         successUrl?: string,

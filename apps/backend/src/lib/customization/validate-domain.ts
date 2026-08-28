@@ -1,3 +1,5 @@
+import { domainToASCII } from 'url';
+
 /**
  * Custom Domain Validation
  *
@@ -40,11 +42,12 @@ const RESERVED_DOMAINS = new Set([
  * 1. Must be non-empty
  * 2. Total length ≤ 253 characters (DNS limit)
  * 3. No scheme, path, port, or whitespace — bare hostname only
- * 4. Each label must match RFC 1035 (1–63 chars, alphanumeric + hyphens)
- * 5. Must have at least two labels (i.e. a TLD is required)
- * 6. TLD must not be a reserved/special-use TLD (RFC 2606 / RFC 6761)
- * 7. Full domain must not be a reserved domain
- * 8. Must not be a localhost pattern (127.x.x.x, ::1, *.localhost)
+ * 4. Convert IDN/Unicode domain to ASCII punycode
+ * 5. Each label must match RFC 1035 (1–63 chars, alphanumeric + hyphens)
+ * 6. Must have at least two labels (i.e. a TLD is required)
+ * 7. TLD must not be a reserved/special-use TLD (RFC 2606 / RFC 6761)
+ * 8. Full domain must not be a reserved domain
+ * 9. Must not be a localhost pattern (127.x.x.x, ::1, *.localhost)
  *
  * @param input - Raw domain string from user input
  * @param field - Field name to include in error (default: "customDomain")
@@ -66,7 +69,7 @@ export function validateCustomDomain(
     const raw = input.trim().toLowerCase();
 
     // Strip a single trailing dot (FQDN notation) for normalisation
-    const domain = raw.endsWith('.') ? raw.slice(0, -1) : raw;
+    let domain = raw.endsWith('.') ? raw.slice(0, -1) : raw;
 
     // Loopback IPv6 — check before the format guard since '::1' contains ':'
     if (domain === '::1') {
@@ -80,6 +83,28 @@ export function validateCustomDomain(
 
     // Reject anything that looks like a URL or contains unsafe characters
     if (/[/:?#@\s]/.test(domain)) {
+        return {
+            valid: false,
+            field,
+            message:
+                'Enter a bare domain name without a scheme, path, or port (e.g. "app.example.com").',
+            code: 'DOMAIN_INVALID_FORMAT',
+        };
+    }
+
+    // Convert Unicode / IDN domain to ASCII punycode form before validating labels
+    try {
+        const ascii = domainToASCII(domain);
+        if (!ascii) {
+            return {
+                valid: false,
+                field,
+                message: `"${domain}" is not a valid domain label.`,
+                code: 'DOMAIN_INVALID_LABEL',
+            };
+        }
+        domain = ascii;
+    } catch {
         return {
             valid: false,
             field,

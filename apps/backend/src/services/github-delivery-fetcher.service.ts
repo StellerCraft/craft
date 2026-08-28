@@ -92,85 +92,130 @@ export class GitHubDeliveryFetcherService {
     });
 
     private readonly authClient = getGitHubAppAuthClient();
+    private readonly MAX_PAGES = 10;
 
     /**
-     * Fetches webhook delivery log from GitHub API.
+     * Fetches webhook delivery log from GitHub API with pagination.
+     *
+     * Retrieves all deliveries within the requested window by following
+     * GitHub's Link header pagination (rel="next") until exhausted or
+     * safety limit is reached.
      *
      * @param hookId - GitHub webhook ID (from GitHub App settings)
      * @param since - Optional ISO 8601 timestamp to fetch deliveries after this time
-     * @returns Result with list of deliveries
+     * @returns Result with list of deliveries from all pages
      */
     async fetchDeliveryLog(
         hookId: number,
         since?: string
     ): Promise<FetchDeliveryLogResult> {
+        /**
+         * GitHub's deliveries endpoint is cursor-paginated (newest-first).
+         * We follow the Link: rel="next" header across pages until:
+         *   a) a delivery older than `since` is encountered, or
+         *   b) MAX_PAGES pages have been fetched (safety cap).
+         */
+        const MAX_PAGES = 10;
+
         try {
-            // Build URL with optional cursor parameter
-            let url = `/app/hooks/${hookId}/deliveries`;
-            const params = new URLSearchParams();
+            const sinceDate = since ? new Date(since) : null;
+            const accumulated: GitHubDelivery[] = [];
+            let reachedSinceBoundary = false;
 
-            if (since) {
-                // GitHub API doesn't support 'since' directly, so we'll fetch all and filter
-                // In production, you might want to implement pagination
-                params.append('per_page', '100');
-            } else {
-                params.append('per_page', '100');
-            }
-
-            if (params.toString()) {
-                url += `?${params.toString()}`;
-            }
+            // Initial URL — per_page=100 is the maximum GitHub allows per request.
+            let nextUrl: string | null =
+                `/app/hooks/${hookId}/deliveries?per_page=100`;
 
             this.log.info('Fetching delivery log from GitHub', { hookId, since });
 
-            const response = await this.authClient.requestWithInstallationAuth(url, {
-                method: 'GET',
-            });
+            for (let page = 0; page < MAX_PAGES && nextUrl !== null; page++) {
+                const response = await this.authClient.requestWithInstallationAuth(
+                    nextUrl,
+                    { method: 'GET' },
+                );
 
-            if (!response.ok) {
-                const errorText = await response.text();
-                this.log.error('Failed to fetch delivery log from GitHub', undefined, {
-                    status: response.status,
-                    error: errorText,
-                });
-                return {
-                    success: false,
-                    error: `GitHub API error: ${response.status} ${errorText}`,
-                };
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    this.log.error('Failed to fetch delivery log from GitHub', undefined, {
+                        status: response.status,
+                        error: errorText,
+                        page,
+                    });
+                    return {
+                        success: false,
+                        error: `GitHub API error: ${response.status} ${errorText}`,
+                    };
+                }
+
+                const data = await response.json();
+                const pageItems: GitHubDelivery[] = (data || []).map((d: any) => ({
+                    id: d.id,
+                    guid: d.guid,
+                    deliveredAt: d.delivered_at,
+                    redelivery: d.redelivery || false,
+                    duration: d.duration || 0,
+                    status: d.status || 'unknown',
+                    statusCode: d.status_code || 0,
+                    event: d.event || 'unknown',
+                    action: d.action || null,
+                    installationId: d.installation_id || null,
+                    repositoryId: d.repository_id || null,
+                }));
+
+                // Deliveries arrive newest-first. Stop as soon as we cross the
+                // since boundary — everything after this will be even older.
+                if (sinceDate) {
+                    for (const delivery of pageItems) {
+                        if (new Date(delivery.deliveredAt) <= sinceDate) {
+                            reachedSinceBoundary = true;
+                            break;
+                        }
+                        accumulated.push(delivery);
+                    }
+                } else {
+                    accumulated.push(...pageItems);
+                }
+
+                if (reachedSinceBoundary) {
+                    break;
+                }
+
+                // Follow the cursor from the Link: <url>; rel="next" header.
+                nextUrl = this.parseLinkNext(response.headers.get('link'));
             }
-
-            const data = await response.json();
-
-            // Map GitHub API response to our format
-            const deliveries: GitHubDelivery[] = (data || []).map((d: any) => ({
-                id: d.id,
-                guid: d.guid,
-                deliveredAt: d.delivered_at,
-                redelivery: d.redelivery || false,
-                duration: d.duration || 0,
-                status: d.status || 'unknown',
-                statusCode: d.status_code || 0,
-                event: d.event || 'unknown',
-                action: d.action || null,
-                installationId: d.installation_id || null,
-                repositoryId: d.repository_id || null,
-            }));
-
-            // Filter by 'since' if provided
-            const filteredDeliveries = since
-                ? deliveries.filter((d) => new Date(d.deliveredAt) > new Date(since))
-                : deliveries;
 
             this.log.info('Fetched delivery log from GitHub', {
                 hookId,
-                count: filteredDeliveries.length,
+                count: accumulated.length,
+                pages: Math.min(MAX_PAGES, accumulated.length > 0 ? MAX_PAGES : 1),
             });
 
-            return { success: true, deliveries: filteredDeliveries };
+            return { success: true, deliveries: accumulated };
         } catch (error: any) {
             this.log.error('Unexpected error fetching delivery log', error);
             return { success: false, error: error.message || 'Unknown error' };
         }
+    }
+
+    /**
+     * Parses the `Link` response header and returns the URL for rel="next",
+     * or null if there is no next page.
+     *
+     * GitHub format: `<https://api.github.com/...?cursor=xxx>; rel="next", <...>; rel="last"`
+     */
+    private parseLinkNext(linkHeader: string | null): string | null {
+        if (!linkHeader) return null;
+
+        for (const part of linkHeader.split(',')) {
+            const [urlPart, relPart] = part.split(';').map((s) => s.trim());
+            if (relPart === 'rel="next"') {
+                // Strip surrounding angle brackets: <url> → url
+                const match = urlPart.match(/^<(.+)>$/);
+                if (match) return match[1];
+            }
+        }
+
+        return null;
     }
 
     /**

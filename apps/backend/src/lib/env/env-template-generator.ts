@@ -52,7 +52,7 @@ export interface VercelEnvVar {
 
 // ── Placeholder helpers ───────────────────────────────────────────────────────
 
-const SECRET_PLACEHOLDER = 'your-secret-here';
+export const SECRET_PLACEHOLDER = 'your-secret-here';
 
 function placeholder(hint: string): string {
     return `your-${hint}-here`;
@@ -334,17 +334,35 @@ export function renderEnvExample(
 /**
  * Produce a Vercel API-compatible EnvironmentVariable[] array.
  * Secrets are typed as 'encrypted'; public vars as 'plain'.
+ *
+ * @param family - Template family ID
+ * @param cfg - Customization configuration
+ * @param secrets - Optional resolved secret key-value pairs
+ * @throws Error if any required secret variable value is still SECRET_PLACEHOLDER
  */
 export function buildVercelEnvVars(
     family: TemplateFamilyId,
-    cfg: CustomizationConfig
+    cfg: CustomizationConfig,
+    secrets: Record<string, string> = {}
 ): VercelEnvVar[] {
-    return buildEnvVarEntries(family, cfg).map((entry) => ({
-        key: entry.key,
-        value: entry.value,
-        target: entry.targets,
-        type: entry.secret ? 'encrypted' : 'plain',
-    }));
+    return buildEnvVarEntries(family, cfg).map((entry) => {
+        let value = entry.value;
+        if (entry.secret) {
+            const resolvedSecret = secrets[entry.key];
+            if (resolvedSecret && resolvedSecret !== SECRET_PLACEHOLDER) {
+                value = resolvedSecret;
+            }
+            if (value === SECRET_PLACEHOLDER) {
+                throw new Error(`Missing required secret value for ${entry.key}`);
+            }
+        }
+        return {
+            key: entry.key,
+            value,
+            target: entry.targets,
+            type: entry.secret ? 'encrypted' : 'plain',
+        };
+    });
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────

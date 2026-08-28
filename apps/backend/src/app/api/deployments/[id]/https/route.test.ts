@@ -3,7 +3,7 @@ import { NextRequest } from 'next/server';
 
 const mockGetUser = vi.fn();
 const mockFrom = vi.fn();
-const mockAddDomain = vi.fn();
+const mockAddProjectDomain = vi.fn();
 const mockGetCertificate = vi.fn();
 
 vi.mock('@/lib/supabase/server', () => ({
@@ -15,7 +15,7 @@ vi.mock('@/lib/supabase/server', () => ({
 
 vi.mock('@/services/vercel.service', () => ({
     VercelService: vi.fn().mockImplementation(() => ({
-        addDomain: mockAddDomain,
+        addProjectDomain: mockAddProjectDomain,
         getCertificate: mockGetCertificate,
     })),
     VercelApiError: class VercelApiError extends Error {
@@ -116,7 +116,7 @@ describe('POST /api/deployments/[id]/https', () => {
     it('returns 409 when domain already added', async () => {
         mockFrom.mockReturnValue(withProTier([{ data: fullDeployment, error: null }]));
         const { VercelApiError } = await import('@/services/vercel.service');
-        mockAddDomain.mockRejectedValue(new VercelApiError('exists', 'DOMAIN_EXISTS'));
+        mockAddProjectDomain.mockRejectedValue(new VercelApiError('exists', 'DOMAIN_EXISTS'));
         const { POST } = await import('./route');
         expect((await POST(makeRequest('POST'), { params })).status).toBe(409);
     });
@@ -124,7 +124,7 @@ describe('POST /api/deployments/[id]/https', () => {
     it('returns 429 with Retry-After when rate limited', async () => {
         mockFrom.mockReturnValue(withProTier([{ data: fullDeployment, error: null }]));
         const { VercelApiError } = await import('@/services/vercel.service');
-        mockAddDomain.mockRejectedValue(new VercelApiError('rate limited', 'RATE_LIMITED', 30_000));
+        mockAddProjectDomain.mockRejectedValue(new VercelApiError('rate limited', 'RATE_LIMITED', 30_000));
         const { POST } = await import('./route');
         const res = await POST(makeRequest('POST'), { params });
         expect(res.status).toBe(429);
@@ -133,7 +133,7 @@ describe('POST /api/deployments/[id]/https', () => {
 
     it('returns 200 with cert state on success', async () => {
         mockFrom.mockReturnValue(withProTier([{ data: fullDeployment, error: null }]));
-        mockAddDomain.mockResolvedValue(undefined);
+        mockAddProjectDomain.mockResolvedValue(undefined);
         mockGetCertificate.mockResolvedValue({ domain: 'example.com', state: 'pending' });
         const { POST } = await import('./route');
         const res = await POST(makeRequest('POST'), { params });
@@ -146,7 +146,7 @@ describe('POST /api/deployments/[id]/https', () => {
     // Certificate provisioning begins in 'pending' state immediately after domain is added
     it('returns pending cert state immediately after domain add', async () => {
         mockFrom.mockReturnValue(withProTier([{ data: fullDeployment, error: null }]));
-        mockAddDomain.mockResolvedValue(undefined);
+        mockAddProjectDomain.mockResolvedValue(undefined);
         mockGetCertificate.mockResolvedValue({ domain: 'example.com', state: 'pending', expiresAt: null });
 
         const { POST } = await import('./route');
@@ -162,7 +162,7 @@ describe('POST /api/deployments/[id]/https', () => {
     it('returns 500 when Vercel authentication fails (AUTH_FAILED)', async () => {
         mockFrom.mockReturnValue(withProTier([{ data: fullDeployment, error: null }]));
         const { VercelApiError } = await import('@/services/vercel.service');
-        mockAddDomain.mockRejectedValue(new VercelApiError('Invalid Vercel token', 'AUTH_FAILED'));
+        mockAddProjectDomain.mockRejectedValue(new VercelApiError('Invalid Vercel token', 'AUTH_FAILED'));
 
         const { POST } = await import('./route');
         expect((await POST(makeRequest('POST'), { params })).status).toBe(500);
@@ -171,7 +171,7 @@ describe('POST /api/deployments/[id]/https', () => {
     // Generic unexpected error from addDomain
     it('returns 500 on unexpected addDomain error', async () => {
         mockFrom.mockReturnValue(withProTier([{ data: fullDeployment, error: null }]));
-        mockAddDomain.mockRejectedValue(new Error('Unexpected Vercel error'));
+        mockAddProjectDomain.mockRejectedValue(new Error('Unexpected Vercel error'));
 
         const { POST } = await import('./route');
         const res = await POST(makeRequest('POST'), { params });
@@ -183,7 +183,7 @@ describe('POST /api/deployments/[id]/https', () => {
     // getCertificate fails after domain successfully added
     it('propagates error when getCertificate throws after successful domain add', async () => {
         mockFrom.mockReturnValue(withProTier([{ data: fullDeployment, error: null }]));
-        mockAddDomain.mockResolvedValue(undefined);
+        mockAddProjectDomain.mockResolvedValue(undefined);
         mockGetCertificate.mockRejectedValue(new Error('Certificate fetch failed'));
 
         const { POST } = await import('./route');
@@ -195,7 +195,7 @@ describe('POST /api/deployments/[id]/https', () => {
     it('rounds Retry-After up to nearest second for fractional retryAfterMs', async () => {
         mockFrom.mockReturnValue(withProTier([{ data: fullDeployment, error: null }]));
         const { VercelApiError } = await import('@/services/vercel.service');
-        mockAddDomain.mockRejectedValue(new VercelApiError('rate limited', 'RATE_LIMITED', 1500));
+        mockAddProjectDomain.mockRejectedValue(new VercelApiError('rate limited', 'RATE_LIMITED', 1500));
 
         const { POST } = await import('./route');
         const res = await POST(makeRequest('POST'), { params });
@@ -207,7 +207,7 @@ describe('POST /api/deployments/[id]/https', () => {
     it('omits Retry-After header when retryAfterMs is undefined', async () => {
         mockFrom.mockReturnValue(withProTier([{ data: fullDeployment, error: null }]));
         const { VercelApiError } = await import('@/services/vercel.service');
-        mockAddDomain.mockRejectedValue(new VercelApiError('rate limited', 'RATE_LIMITED'));
+        mockAddProjectDomain.mockRejectedValue(new VercelApiError('rate limited', 'RATE_LIMITED'));
 
         const { POST } = await import('./route');
         const res = await POST(makeRequest('POST'), { params });

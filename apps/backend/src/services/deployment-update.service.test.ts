@@ -434,4 +434,65 @@ describe('DeploymentUpdateService', () => {
         expect(result.rolledBack).toBe(true);
         expect(result.errorMessage).toMatch(/manual rollback triggered/i);
     });
+
+    describe('blue-green alias lineage persistence', () => {
+        it('persists staging_deployment_id and production_deployment_id on successful promotion', async () => {
+            mockSupabase.single.mockResolvedValueOnce({ data: mockDeploymentRow, error: null });
+
+            const result = await service.updateDeployment({
+                deploymentId: mockDeploymentId,
+                userId: mockUserId,
+                customizationConfig: mockConfig,
+            });
+
+            expect(result.success).toBe(true);
+
+            const deploymentsUpdateCalls = mockSupabase.update.mock.calls
+                .filter((call: any[]) => {
+                    const payload = call[0];
+                    return payload.staging_deployment_id !== undefined
+                        || payload.production_deployment_id !== undefined;
+                });
+
+            expect(deploymentsUpdateCalls.length).toBeGreaterThanOrEqual(1);
+
+            const lineagePayload = deploymentsUpdateCalls[deploymentsUpdateCalls.length - 1][0];
+            expect(lineagePayload.staging_deployment_id).toBeNull();
+            expect(lineagePayload.production_deployment_id).toBe('new-vercel-id');
+            expect(lineagePayload.previous_production_deployment_id).toBe('old-vercel-id');
+        });
+
+        it('restores production_deployment_id on rollback', async () => {
+            mockSupabase.single
+                .mockResolvedValueOnce({ data: mockDeploymentRow, error: null })
+                .mockResolvedValueOnce({
+                    data: {
+                        previous_state: {
+                            ...mockPreviousState,
+                            vercelDeploymentId: 'old-vercel-id',
+                        },
+                    },
+                    error: null,
+                });
+            (globalThis as any).__DEPLOYMENT_UPDATE_SHOULD_FAIL = true;
+
+            const result = await service.updateDeployment({
+                deploymentId: mockDeploymentId,
+                userId: mockUserId,
+                customizationConfig: mockConfig,
+            });
+
+            expect(result.success).toBe(false);
+            expect(result.rolledBack).toBe(true);
+
+            const rollbackUpdateCalls = mockSupabase.update.mock.calls
+                .filter((call: any[]) => call[0].production_deployment_id !== undefined);
+
+            expect(rollbackUpdateCalls.length).toBeGreaterThanOrEqual(1);
+
+            const rollbackPayload = rollbackUpdateCalls[rollbackUpdateCalls.length - 1][0];
+            expect(rollbackPayload.production_deployment_id).toBe('old-vercel-id');
+            expect(rollbackPayload.staging_deployment_id).toBeNull();
+        });
+    });
 });

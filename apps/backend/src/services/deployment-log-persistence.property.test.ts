@@ -118,6 +118,86 @@ const arbLogInput = fc.record({
 /** A non-empty stream of 1–20 log entries */
 const arbLogStream = fc.array(arbLogInput, { minLength: 1, maxLength: 20 });
 
+// ── Fallible log store (simulates partial write failures and recovery) ────────
+
+/**
+ * FallibleLogStore wraps the happy-path InMemoryLogStore with:
+ *   - Configurable offline mode that routes writes to a memory buffer instead of persisting
+ *   - Buffer bounded at MAX_BUFFER: oldest entries are evicted when full
+ *   - recover() drains the buffer into the persisted store without duplication
+ */
+class FallibleLogStore {
+    private persisted: LogEntry[] = [];
+    private buffer: LogEntry[] = [];
+    static readonly MAX_BUFFER = 1000;
+    private isOffline = false;
+
+    setOffline(offline: boolean): void {
+        this.isOffline = offline;
+    }
+
+    insert(entry: LogEntry): { error: boolean } {
+        if (this.isOffline) {
+            if (this.buffer.length >= FallibleLogStore.MAX_BUFFER) {
+                this.buffer.shift(); // evict oldest to enforce backpressure
+            }
+            this.buffer.push({ ...entry });
+            return { error: true };
+        }
+        this.persisted.push({ ...entry });
+        return { error: false };
+    }
+
+    recover(): void {
+        const persistedIds = new Set(this.persisted.map((e) => e.id));
+        for (const entry of this.buffer) {
+            if (!persistedIds.has(entry.id)) {
+                this.persisted.push({ ...entry });
+                persistedIds.add(entry.id);
+            }
+        }
+        this.buffer = [];
+        this.isOffline = false;
+    }
+
+    getLogs(deploymentId: string): LogEntry[] {
+        return this.persisted
+            .filter((r) => r.deploymentId === deploymentId)
+            .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    }
+
+    get bufferSize(): number { return this.buffer.length; }
+    get totalPersisted(): number { return this.persisted.length; }
+}
+
+function emitToFallibleStore(
+    store: FallibleLogStore,
+    deploymentId: string,
+    entries: Array<{ stage: DeploymentStage; level: LogLevel; message: string }>,
+): { emitted: LogEntry[]; errorCount: number } {
+    let tick = 0;
+    let errorCount = 0;
+    const emitted: LogEntry[] = [];
+
+    for (const { stage, level, message } of entries) {
+        const createdAt = new Date(Date.UTC(2024, 0, 1, 0, 0, 0, tick++)).toISOString();
+        const entry: LogEntry = {
+            id: `${deploymentId}-${tick}`,
+            deploymentId,
+            stage,
+            level,
+            message,
+            metadata: { correlationId: `corr-${deploymentId}` },
+            createdAt,
+        };
+        const { error } = store.insert(entry);
+        if (error) errorCount++;
+        emitted.push(entry);
+    }
+
+    return { emitted, errorCount };
+}
+
 // ── Property 25 ───────────────────────────────────────────────────────────────
 
 describe('Property 25 — Deployment Log Persistence', () => {
@@ -249,6 +329,133 @@ describe('Property 25 — Deployment Log Persistence', () => {
                 }
             }),
             { numRuns: 100 },
+        );
+    });
+});
+
+// ── Property 26 — Log Persistence Under Database Connectivity Failures (#710) ─
+
+describe('Property 26 — Deployment Log Persistence Under Connectivity Failures', () => {
+    /**
+     * 26.1 — No silent drops on write failure.
+     *
+     * When the store is offline every insert fails, but the entry must be
+     * captured in the buffer — not silently discarded.
+     */
+    it('26.1 — no log entries are silently dropped on write failure', () => {
+        fc.assert(
+            fc.property(fc.uuid(), arbLogStream, (deploymentId, stream) => {
+                const store = new FallibleLogStore();
+                store.setOffline(true);
+
+                const { errorCount } = emitToFallibleStore(store, deploymentId, stream);
+
+                expect(errorCount).toBe(stream.length);      // every write failed
+                expect(store.bufferSize).toBe(stream.length); // all buffered, none dropped
+                expect(store.totalPersisted).toBe(0);
+            }),
+            { numRuns: 100 },
+        );
+    });
+
+    /**
+     * 26.2 — No duplication on retry after recovery.
+     *
+     * Entries written before the outage plus entries buffered during the
+     * outage must total exactly (preCount + duringCount) after recovery —
+     * no duplicates introduced.
+     */
+    it('26.2 — logs written before failure are not duplicated after recovery', () => {
+        fc.assert(
+            fc.property(
+                fc.uuid(),
+                arbLogStream,
+                fc.array(arbLogInput, { minLength: 1, maxLength: 20 }),
+                (deploymentId, preFailureStream, duringFailureStream) => {
+                    const store = new FallibleLogStore();
+
+                    // Write entries before the outage
+                    emitToFallibleStore(store, deploymentId, preFailureStream);
+
+                    // Simulate connectivity loss — subsequent writes go to buffer
+                    store.setOffline(true);
+                    emitToFallibleStore(store, deploymentId, duringFailureStream);
+
+                    // Reconnect: drain buffer without duplicating pre-failure entries
+                    store.recover();
+
+                    expect(store.totalPersisted).toBe(
+                        preFailureStream.length + duringFailureStream.length,
+                    );
+                    expect(store.bufferSize).toBe(0);
+                },
+            ),
+            { numRuns: 100 },
+        );
+    });
+
+    /**
+     * 26.3 — Buffering during outage.
+     *
+     * Entries emitted while the store is offline must be held in the buffer
+     * and transferred to the persisted store once connectivity is restored.
+     */
+    it('26.3 — logs are buffered in memory during Supabase unavailability', () => {
+        fc.assert(
+            fc.property(
+                fc.uuid(),
+                fc.array(arbLogInput, { minLength: 1, maxLength: 50 }),
+                (deploymentId, stream) => {
+                    const store = new FallibleLogStore();
+                    store.setOffline(true);
+
+                    emitToFallibleStore(store, deploymentId, stream);
+
+                    // During outage: nothing persisted, everything in buffer
+                    expect(store.totalPersisted).toBe(0);
+                    expect(store.bufferSize).toBe(stream.length);
+
+                    // After recovery: everything persisted, buffer empty
+                    store.recover();
+                    expect(store.totalPersisted).toBe(stream.length);
+                    expect(store.bufferSize).toBe(0);
+                },
+            ),
+            { numRuns: 100 },
+        );
+    });
+
+    /**
+     * 26.4 — Buffer overflow: >1000 buffered entries triggers oldest-entry eviction.
+     *
+     * The in-memory buffer must never exceed MAX_BUFFER. When it is full the
+     * oldest entry is evicted to make room for the newest, implementing
+     * backpressure without unbounded memory growth.
+     */
+    it('26.4 — buffer never exceeds MAX_BUFFER; overflow evicts the oldest entries first', () => {
+        fc.assert(
+            fc.property(
+                fc.uuid(),
+                fc.integer({ min: 1001, max: 1200 }),
+                (deploymentId, entryCount) => {
+                    const store = new FallibleLogStore();
+                    store.setOffline(true);
+
+                    const stream = Array.from({ length: entryCount }, (_, i) => ({
+                        stage: 'deploying' as DeploymentStage,
+                        level: 'info' as LogLevel,
+                        message: `log-entry-${i}`,
+                    }));
+
+                    emitToFallibleStore(store, deploymentId, stream);
+
+                    // Buffer is capped at MAX_BUFFER — no unbounded growth
+                    expect(store.bufferSize).toBe(FallibleLogStore.MAX_BUFFER);
+                    // Nothing was silently persisted during offline mode
+                    expect(store.totalPersisted).toBe(0);
+                },
+            ),
+            { numRuns: 20 },
         );
     });
 });

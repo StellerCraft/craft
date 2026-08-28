@@ -291,7 +291,7 @@ describe('VercelDomainLifecycleService', () => {
 
             expect(result.success).toBe(true);
             expect(result.domain).toBe('example.com');
-            expect(result.aliasesRemoved).toBe(0);
+            expect(result.aliasesMatched).toBe(0);
             expect(result.partialFailure).toBeUndefined();
             expect(mockClient.removeDomain).toHaveBeenCalledWith('example.com', 'prj_123');
         });
@@ -315,7 +315,7 @@ describe('VercelDomainLifecycleService', () => {
 
             expect(result.success).toBe(true);
             expect(result.domain).toBe('example.com');
-            expect(result.aliasesRemoved).toBe(3);
+            expect(result.aliasesMatched).toBe(3);
             expect(result.partialFailure).toBeUndefined();
             expect(mockClient.listDeploymentAliases).toHaveBeenCalledTimes(2);
         });
@@ -331,7 +331,7 @@ describe('VercelDomainLifecycleService', () => {
 
             expect(result.success).toBe(false);
             expect(result.domain).toBe('example.com');
-            expect(result.aliasesRemoved).toBe(0);
+            expect(result.aliasesMatched).toBe(0);
             expect(result.partialFailureReason).toBe('Vercel API error');
             expect(mockClient.listDeploymentAliases).not.toHaveBeenCalled();
         });
@@ -350,7 +350,7 @@ describe('VercelDomainLifecycleService', () => {
 
             expect(result.success).toBe(true);
             expect(result.domain).toBe('example.com');
-            expect(result.aliasesRemoved).toBe(1);
+            expect(result.aliasesMatched).toBe(1);
             expect(result.partialFailure).toBe(true);
             expect(result.partialFailureReason).toContain('Alias cleanup encountered errors');
             expect(result.partialFailureReason).toContain('deployment dpl_2');
@@ -366,7 +366,7 @@ describe('VercelDomainLifecycleService', () => {
 
             expect(result.success).toBe(true);
             expect(result.domain).toBe('example.com');
-            expect(result.aliasesRemoved).toBe(0);
+            expect(result.aliasesMatched).toBe(0);
             expect(mockClient.listDeploymentAliases).not.toHaveBeenCalled();
         });
 
@@ -385,7 +385,7 @@ describe('VercelDomainLifecycleService', () => {
             );
 
             expect(result.success).toBe(true);
-            expect(result.aliasesRemoved).toBe(2); // Only example.com and app.example.com
+            expect(result.aliasesMatched).toBe(2); // Only example.com and app.example.com
         });
 
         it('handles multiple deployment alias cleanup errors gracefully', async () => {
@@ -402,7 +402,7 @@ describe('VercelDomainLifecycleService', () => {
             );
 
             expect(result.success).toBe(true);
-            expect(result.aliasesRemoved).toBe(1);
+            expect(result.aliasesMatched).toBe(1);
             expect(result.partialFailure).toBe(true);
             expect(result.partialFailureReason).toContain('deployment dpl_1: Error 1');
             expect(result.partialFailureReason).toContain('deployment dpl_2: Error 2');

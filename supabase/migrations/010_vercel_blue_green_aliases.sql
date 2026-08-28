@@ -20,3 +20,10 @@ ALTER TABLE deployments ADD COLUMN IF NOT EXISTS previous_production_deployment_
 CREATE INDEX IF NOT EXISTS idx_deployments_staging_deployment_id ON deployments(staging_deployment_id);
 CREATE INDEX IF NOT EXISTS idx_deployments_production_deployment_id ON deployments(production_deployment_id);
 CREATE INDEX IF NOT EXISTS idx_deployments_previous_production_deployment_id ON deployments(previous_production_deployment_id);
+
+-- rollback: DROP INDEX IF EXISTS idx_deployments_previous_production_deployment_id;
+-- rollback: DROP INDEX IF EXISTS idx_deployments_production_deployment_id;
+-- rollback: DROP INDEX IF EXISTS idx_deployments_staging_deployment_id;
+-- rollback: ALTER TABLE deployments DROP COLUMN IF EXISTS previous_production_deployment_id;
+-- rollback: ALTER TABLE deployments DROP COLUMN IF EXISTS production_deployment_id;
+-- rollback: ALTER TABLE deployments DROP COLUMN IF EXISTS staging_deployment_id;

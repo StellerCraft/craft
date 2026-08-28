@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Accepted vulnerability exceptions for the CRAFT monorepo. Each entry documents a known CVE that has been reviewed and accepted, with a justification and expiry date. High-severity (CVSS >= 7.0) entries require explicit sign-off.",
+  "acceptedVulnerabilities": [
+    {
+      "cveId": "CVE-2024-34351",
+      "package": "next",
+      "severity": "HIGH",
+      "cvss": 7.5,
+      "justification": "next@14.0.4 is pinned at this version to maintain stability across all CRAFT apps. CVE-2024-34351 (SSRF via Host header) requires a crafted Host header from a reverse proxy misconfiguration. CRAFT does not use the affected redirect handler in server actions. Tracked for upgrade to >=14.1.1.",
+      "acceptedBy": "security-team",
+      "acceptedAt": "2026-06-25",
+      "expiresAt": "2026-12-31",
+      "trackingIssue": "https://github.com/temma02/craft/issues/827"
+    },
+    {
+      "cveId": "CVE-2024-55565",
+      "package": "nanoid",
+      "severity": "MEDIUM",
+      "cvss": 5.3,
+      "justification": "nanoid is a transitive dev dependency used only in test tooling (vitest). It is never executed in production. Low exploitability in this context.",
+      "acceptedBy": "security-team",
+      "acceptedAt": "2026-06-25",
+      "expiresAt": "2026-12-31",
+      "trackingIssue": "https://github.com/temma02/craft/issues/800"
+    },
+    {
+      "cveId": "CVE-2023-44270",
+      "package": "postcss",
+      "severity": "MEDIUM",
+      "cvss": 5.3,
+      "justification": "postcss is used only at build time. Input is always from trusted internal source files, not user-supplied CSS. No production exposure.",
+      "acceptedBy": "security-team",
+      "acceptedAt": "2026-06-25",
+      "expiresAt": "2026-12-31",
+      "trackingIssue": "https://github.com/temma02/craft/issues/801"
+    },
+    {
+      "cveId": "CVE-2024-28849",
+      "package": "follow-redirects",
+      "severity": "MEDIUM",
+      "cvss": 6.5,
+      "justification": "follow-redirects is a transitive dependency of axios used only in server-side health-check calls to known internal endpoints. No user-controlled redirect targets.",
+      "acceptedBy": "security-team",
+      "acceptedAt": "2026-06-25",
+      "expiresAt": "2026-12-31",
+      "trackingIssue": "https://github.com/temma02/craft/issues/802"
+    }
+  ]
+}

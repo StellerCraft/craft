@@ -1,5 +1,5 @@
 -- GitHub App installations table
-CREATE TABLE github_app_installations (
+CREATE TABLE IF NOT EXISTS github_app_installations (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     installation_id BIGINT NOT NULL UNIQUE,
     app_id BIGINT NOT NULL,
@@ -21,3 +21,9 @@ CREATE INDEX idx_github_app_installations_deleted_at ON github_app_installations
 -- Apply updated_at trigger
 CREATE TRIGGER update_github_app_installations_updated_at BEFORE
 UPDATE ON github_app_installations FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- rollback: DROP INDEX IF EXISTS idx_github_app_installations_deleted_at;
+-- rollback: DROP INDEX IF EXISTS idx_github_app_installations_account_login;
+-- rollback: DROP INDEX IF EXISTS idx_github_app_installations_installation_id;
+-- rollback: DROP TRIGGER IF EXISTS update_github_app_installations_updated_at ON github_app_installations;
+-- rollback: DROP TABLE IF EXISTS github_app_installations;

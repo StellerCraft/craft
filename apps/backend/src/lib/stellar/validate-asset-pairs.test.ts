@@ -269,3 +269,92 @@ describe('validateCustomizationConfig — asset pair integration', () => {
         expect(result.errors.some(e => e.code === 'ASSET_INVALID_ISSUER')).toBe(true);
     });
 });
+
+// ── checkBridgeLiquidity tests (#793) ─────────────────────────────────────────
+
+import { describe as describe793, it as it793, expect as expect793, vi as vi793, beforeEach as beforeEach793 } from 'vitest';
+import {
+    checkBridgeLiquidity,
+    clearLiquidityCache,
+    MIN_LIQUIDITY_USD,
+    LIQUIDITY_CACHE_TTL_MS,
+} from '@/lib/stellar/validate-asset-pairs';
+import type { HorizonOrderBookResponse } from '@/lib/stellar/validate-asset-pairs';
+
+const ISSUER = 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5';
+const pairXlmUsdc: AssetPair = {
+    base: { type: 'native', code: 'XLM', issuer: '' },
+    counter: { type: 'credit_alphanum4', code: 'USDC', issuer: ISSUER },
+};
+
+function deepBook(): HorizonOrderBookResponse {
+    // Each side: 10 levels × 200 amount × price ~1 → depth ≈ 2000 > MIN
+    return {
+        bids: Array(10).fill({ price: '1.0000', amount: '200.0000' }),
+        asks: Array(10).fill({ price: '1.0100', amount: '200.0000' }),
+    };
+}
+
+function shallowBook(): HorizonOrderBookResponse {
+    // depth = 1 × 0.5 = 0.5 → way below MIN_LIQUIDITY_USD
+    return {
+        bids: [{ price: '1.0000', amount: '0.5000' }],
+        asks: [{ price: '1.0100', amount: '0.5000' }],
+    };
+}
+
+describe793('checkBridgeLiquidity (#793)', () => {
+    beforeEach793(() => clearLiquidityCache());
+
+    it793('returns liquidityWarning:false when depth exceeds minimum', async () => {
+        const fetch = vi793.fn().mockResolvedValue(deepBook());
+        const result = await checkBridgeLiquidity(pairXlmUsdc, fetch);
+
+        expect793(result.liquidityWarning).toBe(false);
+        expect793(result.valid).toBe(true);
+    });
+
+    it793('returns liquidityWarning:true with depth when below minimum', async () => {
+        const fetch = vi793.fn().mockResolvedValue(shallowBook());
+        const result = await checkBridgeLiquidity(pairXlmUsdc, fetch);
+
+        expect793(result.valid).toBe(true);
+        expect793(result.liquidityWarning).toBe(true);
+        if (result.liquidityWarning) {
+            expect793(result.depth).toBeLessThan(MIN_LIQUIDITY_USD);
+        }
+    });
+
+    it793('caches results for 5 minutes — second call does not re-fetch', async () => {
+        const fetch = vi793.fn().mockResolvedValue(deepBook());
+
+        await checkBridgeLiquidity(pairXlmUsdc, fetch);
+        await checkBridgeLiquidity(pairXlmUsdc, fetch);
+
+        expect793(fetch).toHaveBeenCalledOnce();
+    });
+
+    it793('re-fetches after cache expires', async () => {
+        vi793.useFakeTimers();
+        const fetch = vi793.fn().mockResolvedValue(deepBook());
+
+        await checkBridgeLiquidity(pairXlmUsdc, fetch);
+        vi793.advanceTimersByTime(LIQUIDITY_CACHE_TTL_MS + 1);
+        await checkBridgeLiquidity(pairXlmUsdc, fetch);
+
+        expect793(fetch).toHaveBeenCalledTimes(2);
+        vi793.useRealTimers();
+    });
+
+    it793('uses minimum of bid and ask depth for the warning threshold', async () => {
+        // Bids deep, asks shallow
+        const asymmetric: HorizonOrderBookResponse = {
+            bids: Array(20).fill({ price: '1.0000', amount: '500.0' }),
+            asks: [{ price: '1.01', amount: '1.0' }], // depth ≈ 1.01 < MIN
+        };
+        const fetch = vi793.fn().mockResolvedValue(asymmetric);
+        const result = await checkBridgeLiquidity(pairXlmUsdc, fetch);
+
+        expect793(result.liquidityWarning).toBe(true);
+    });
+});

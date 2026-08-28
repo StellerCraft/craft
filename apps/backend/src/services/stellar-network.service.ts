@@ -52,6 +52,25 @@ export interface NetworkValidationResult {
 // ── Network Registry ─────────────────────────────────────────────────────────
 
 /**
+ * Derive environment configuration block from core network fields.
+ */
+function toEnvironment(
+    id: StellarNetworkId,
+    core: {
+        networkPassphrase: string;
+        horizonUrl: string;
+        sorobanRpcUrl: string;
+    }
+): NetworkMetadata['environment'] {
+    return {
+        NEXT_PUBLIC_STELLAR_NETWORK: id,
+        NEXT_PUBLIC_HORIZON_URL: core.horizonUrl,
+        NEXT_PUBLIC_NETWORK_PASSPHRASE: core.networkPassphrase,
+        NEXT_PUBLIC_SOROBAN_RPC_URL: core.sorobanRpcUrl,
+    };
+}
+
+/**
  * Centralized network registry. All network metadata is defined here.
  * This is the single source of truth for supported networks and their configuration.
  */
@@ -62,11 +81,12 @@ const NETWORK_REGISTRY: Record<StellarNetworkId, NetworkMetadata> = {
         networkPassphrase: 'Public Global Stellar Network ; September 2015',
         horizonUrl: 'https://horizon.stellar.org',
         sorobanRpcUrl: 'https://soroban-rpc.stellar.org',
-        environment: {
-            NEXT_PUBLIC_STELLAR_NETWORK: 'mainnet',
-            NEXT_PUBLIC_HORIZON_URL: 'https://horizon.stellar.org',
-            NEXT_PUBLIC_NETWORK_PASSPHRASE: 'Public Global Stellar Network ; September 2015',
-            NEXT_PUBLIC_SOROBAN_RPC_URL: 'https://soroban-rpc.stellar.org',
+        get environment() {
+            return toEnvironment(this.id, {
+                networkPassphrase: this.networkPassphrase,
+                horizonUrl: this.horizonUrl,
+                sorobanRpcUrl: this.sorobanRpcUrl,
+            });
         },
     },
     testnet: {
@@ -75,11 +95,12 @@ const NETWORK_REGISTRY: Record<StellarNetworkId, NetworkMetadata> = {
         networkPassphrase: 'Test SDF Network ; September 2015',
         horizonUrl: 'https://horizon-testnet.stellar.org',
         sorobanRpcUrl: 'https://soroban-testnet.stellar.org',
-        environment: {
-            NEXT_PUBLIC_STELLAR_NETWORK: 'testnet',
-            NEXT_PUBLIC_HORIZON_URL: 'https://horizon-testnet.stellar.org',
-            NEXT_PUBLIC_NETWORK_PASSPHRASE: 'Test SDF Network ; September 2015',
-            NEXT_PUBLIC_SOROBAN_RPC_URL: 'https://soroban-testnet.stellar.org',
+        get environment() {
+            return toEnvironment(this.id, {
+                networkPassphrase: this.networkPassphrase,
+                horizonUrl: this.horizonUrl,
+                sorobanRpcUrl: this.sorobanRpcUrl,
+            });
         },
     },
 };

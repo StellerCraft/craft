@@ -107,6 +107,15 @@ export interface Repository {
     private: boolean;
 }
 
+/**
+ * GitHub service error codes.
+ * Maps to ErrorCode as follows:
+ * - COLLISION → GITHUB_COLLISION
+ * - AUTH_FAILED → GITHUB_AUTH_FAILED
+ * - RATE_LIMITED → GITHUB_RATE_LIMITED
+ * - NETWORK_ERROR → GITHUB_NETWORK_ERROR
+ * - UNKNOWN → GITHUB_UNKNOWN
+ */
 export type GitHubErrorCode =
     | 'COLLISION'
     | 'AUTH_FAILED'

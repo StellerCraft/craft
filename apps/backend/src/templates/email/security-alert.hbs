@@ -1,0 +1,16 @@
+<h1 style="margin:0 0 16px;font-size:22px;color:#cf222e;">Security alert</h1>
+<p style="margin:0 0 16px;font-size:15px;line-height:1.5;">
+  Hi {{name}}, we detected the following activity on your account:
+</p>
+<p style="margin:0 0 16px;padding:12px 16px;background:#fff8f0;border-left:3px solid #cf222e;font-size:15px;">
+  <strong>{{event}}</strong>
+</p>
+<table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 24px;font-size:14px;">
+  <tr><td style="padding:4px 16px 4px 0;color:#6a737d;">When</td><td style="padding:4px 0;">{{occurredAt}}</td></tr>
+  <tr><td style="padding:4px 16px 4px 0;color:#6a737d;">IP address</td><td style="padding:4px 0;">{{ipAddress}}</td></tr>
+  <tr><td style="padding:4px 16px 4px 0;color:#6a737d;">Location</td><td style="padding:4px 0;">{{location}}</td></tr>
+</table>
+<p style="margin:0 0 24px;font-size:14px;line-height:1.5;color:#6a737d;">
+  If this was you, no action is needed. Otherwise, secure your account immediately.
+</p>
+<a href="{{secureAccountUrl}}" style="display:inline-block;background:#cf222e;color:#ffffff;text-decoration:none;padding:12px 24px;border-radius:6px;font-size:15px;font-weight:600;">Secure my account</a>

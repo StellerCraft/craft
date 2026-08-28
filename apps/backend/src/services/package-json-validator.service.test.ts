@@ -90,7 +90,7 @@ describe('PackageJsonValidator', () => {
 
     // 6. Valid semver ranges in dependencies
     describe('dependency version range acceptance', () => {
-        const validRanges = ['^18.2.0', '~5.0.0', '>=1.0.0'];
+        const validRanges = ['^18.2.0', '~5.0.0', '>=1.0.0', '14.0.4', '>1.0.0', '<=2.5.0', '<3.0.0'];
 
         for (const range of validRanges) {
             it(`accepts dependency version range "${range}"`, () => {
@@ -103,6 +103,59 @@ describe('PackageJsonValidator', () => {
                 expect(depError).toBeUndefined();
             });
         }
+    });
+
+    // 6a. Wildcard and workspace protocol versions
+    describe('wildcard and workspace dependency versions', () => {
+        const validWildcardRanges = [
+            '*',                    // bare wildcard (for internal workspace packages)
+            'workspace:*',          // workspace protocol with wildcard
+            'workspace:^1.2.3',     // workspace protocol with semver
+            'workspace:~2.0.0',     // workspace protocol with tilde
+            'workspace:1.0.0',      // workspace protocol with exact version
+        ];
+
+        for (const range of validWildcardRanges) {
+            it(`accepts wildcard/workspace version "${range}"`, () => {
+                const manifest: PackageManifest = {
+                    ...validManifest,
+                    dependencies: { '@craft/types': range },
+                };
+                const result = packageJsonValidator.validate(manifest);
+                const depError = result.errors.find((e) => e.field === 'dependencies/@craft/types');
+                expect(depError).toBeUndefined();
+            });
+        }
+
+        const invalidWildcardRanges = [
+            'workspace:abc',        // workspace with invalid semver
+            'workspace:',           // workspace prefix without version
+            '^^1.0.0',              // double caret
+            'workspace:*invalid',   // workspace wildcard with suffix
+        ];
+
+        for (const range of invalidWildcardRanges) {
+            it(`rejects invalid version "${range}"`, () => {
+                const manifest: PackageManifest = {
+                    ...validManifest,
+                    dependencies: { pkg: range },
+                };
+                const result = packageJsonValidator.validate(manifest);
+                const depError = result.errors.find((e) => e.field === 'dependencies/pkg');
+                expect(depError).toBeDefined();
+            });
+        }
+    });
+
+    // 6b. Wildcard in devDependencies
+    it('accepts wildcard version in devDependencies', () => {
+        const manifest: PackageManifest = {
+            ...validManifest,
+            devDependencies: { '@craft/types': '*' },
+        };
+        const result = packageJsonValidator.validate(manifest);
+        const depError = result.errors.find((e) => e.field === 'devDependencies/@craft/types');
+        expect(depError).toBeUndefined();
     });
 
     // 7. Missing scripts individually
