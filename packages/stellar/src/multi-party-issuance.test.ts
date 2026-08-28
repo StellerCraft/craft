@@ -465,3 +465,133 @@ describe('regression #1101 – reject co-signer signatures against a different t
         expect(result.ok).toBe(true);
     });
 });
+
+// ---------------------------------------------------------------------------
+// Session expiry boundary conditions
+// ---------------------------------------------------------------------------
+
+describe('Session expiry at exact boundary', () => {
+    it('addCoSignerSignature allows signature one moment before expiry', () => {
+        const baseTxXdr = buildBaseTxXdr();
+        const session = createIssuanceSession({ required: 2, total: 3 }, baseTxXdr);
+
+        // Use a time one millisecond before expiry
+        const timeBefore = session.expiresAt - 1;
+
+        const result = addCoSignerSignature(
+            session.id,
+            SIGNER_A.publicKey(),
+            signTxXdr(baseTxXdr, SIGNER_A),
+            NETWORK,
+            timeBefore,
+        );
+
+        expect(result.ok).toBe(true);
+    });
+
+    it('addCoSignerSignature allows signature at exact expiry moment', () => {
+        const baseTxXdr = buildBaseTxXdr();
+        const session = createIssuanceSession({ required: 2, total: 3 }, baseTxXdr);
+
+        // Use the exact expiry time
+        // At exactly expiresAt, isSessionExpired returns false (because it checks now > expiresAt)
+        const exactExpiry = session.expiresAt;
+
+        const result = addCoSignerSignature(
+            session.id,
+            SIGNER_A.publicKey(),
+            signTxXdr(baseTxXdr, SIGNER_A),
+            NETWORK,
+            exactExpiry,
+        );
+
+        expect(result.ok).toBe(true);
+    });
+
+    it('addCoSignerSignature rejects signature after expiry', () => {
+        const baseTxXdr = buildBaseTxXdr();
+        const session = createIssuanceSession({ required: 2, total: 3 }, baseTxXdr);
+
+        // Use a time one millisecond after expiry
+        const timeAfter = session.expiresAt + 1;
+
+        const result = addCoSignerSignature(
+            session.id,
+            SIGNER_A.publicKey(),
+            signTxXdr(baseTxXdr, SIGNER_A),
+            NETWORK,
+            timeAfter,
+        );
+
+        expect(result.ok).toBe(false);
+        expect(result.error).toMatch(/expired/i);
+    });
+
+    it('expireTimedOutSessions does not expire session one moment before boundary', () => {
+        const baseTxXdr = buildBaseTxXdr();
+        const session = createIssuanceSession({ required: 2, total: 3 }, baseTxXdr);
+
+        // Use a time one millisecond before expiry
+        const timeBefore = session.expiresAt - 1;
+        const expiredCount = expireTimedOutSessions(timeBefore);
+
+        expect(expiredCount).toBe(0);
+
+        // Verify session is still in pending state
+        const updated = getIssuanceSession(session.id);
+        expect(updated?.state).toBe('pending');
+    });
+
+    it('expireTimedOutSessions expires session at exact boundary', () => {
+        const baseTxXdr = buildBaseTxXdr();
+        const session = createIssuanceSession({ required: 2, total: 3 }, baseTxXdr);
+
+        // Use the exact expiry time
+        const exactExpiry = session.expiresAt;
+        const expiredCount = expireTimedOutSessions(exactExpiry);
+
+        expect(expiredCount).toBe(0); // not expired at exactly the boundary
+
+        // Verify session is still in pending state at boundary
+        const updated = getIssuanceSession(session.id);
+        expect(updated?.state).toBe('pending');
+    });
+
+    it('expireTimedOutSessions expires session after boundary', () => {
+        const baseTxXdr = buildBaseTxXdr();
+        const session = createIssuanceSession({ required: 2, total: 3 }, baseTxXdr);
+
+        // Use a time one millisecond after expiry
+        const timeAfter = session.expiresAt + 1;
+        const expiredCount = expireTimedOutSessions(timeAfter);
+
+        expect(expiredCount).toBe(1);
+
+        // Verify session transitioned to expired state
+        const updated = getIssuanceSession(session.id);
+        expect(updated?.state).toBe('expired');
+    });
+
+    it('addCoSignerSignature and expireTimedOutSessions agree at boundary', () => {
+        const baseTxXdr = buildBaseTxXdr();
+        const session = createIssuanceSession({ required: 2, total: 3 }, baseTxXdr);
+        const exactExpiry = session.expiresAt;
+
+        // At the exact boundary (now === expiresAt):
+        // - addCoSignerSignature should accept (isSessionExpired checks now > expiresAt, not >=)
+        const sigResult = addCoSignerSignature(
+            session.id,
+            SIGNER_A.publicKey(),
+            signTxXdr(baseTxXdr, SIGNER_A),
+            NETWORK,
+            exactExpiry,
+        );
+
+        // - expireTimedOutSessions should NOT expire (isSessionExpired also checks now > expiresAt)
+        const expiredCount = expireTimedOutSessions(exactExpiry);
+
+        // Both should agree: the session is NOT expired at exactly expiresAt
+        expect(sigResult.ok).toBe(true);
+        expect(expiredCount).toBe(0);
+    });
+});
