@@ -381,6 +381,22 @@ describe('orchestrateContractUpgrade', () => {
     }
   });
 
+  it('returns specific error message with populated diffReport when dryRun=true without upgradeTransactionXdr', async () => {
+    const result = await orchestrateContractUpgrade({
+      currentSchema,
+      newSchema: makeSchema(),
+      dryRun: true,
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBe('dryRun requires upgradeTransactionXdr to simulate the transaction.');
+      expect(result.diffReport).toBeDefined();
+      expect(result.diffReport?.safe).toBe(true);
+      expect(result.diffReport?.changes).toHaveLength(0);
+    }
+  });
+
   it('performs simulation when dryRun=true with valid XDR', async () => {
     mocks.mockSimulate.mockResolvedValue({});
 
