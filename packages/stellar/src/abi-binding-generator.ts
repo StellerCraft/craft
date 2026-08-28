@@ -453,6 +453,29 @@ function specEntriesToBase64(entries: xdr.ScSpecEntry[]): string[] {
 // ---------------------------------------------------------------------------
 
 /**
+ * Detect whether any two distinct raw names in `names` sanitize to the same
+ * `safeIdent` output.  Throws a descriptive error if a collision is found.
+ *
+ * @param names - Array of raw names to check (e.g. function names or UDT names)
+ * @param context - A human-readable label used in the error message (e.g. 'function', 'UDT')
+ */
+function assertNoIdentifierCollisions(names: string[], context: string): void {
+  const seen = new Map<string, string>(); // safeIdent → first raw name
+  for (const raw of names) {
+    const safe = safeIdent(raw);
+    const existing = seen.get(safe);
+    if (existing !== undefined && existing !== raw) {
+      throw new Error(
+        `Identifier collision detected in ${context} names: ` +
+        `"${existing}" and "${raw}" both sanitize to "${safe}". ` +
+        `Rename one of these in the contract before generating bindings.`,
+      );
+    }
+    seen.set(safe, raw);
+  }
+}
+
+/**
  * Generate a complete TypeScript source file that provides type-safe
  * bindings for a Soroban contract from its XDR spec entries.
  *
@@ -483,6 +506,19 @@ export function generateBinding(
   contractName?: string,
 ): string {
   const parsed = parseAbi(specEntries, contractName);
+
+  // ── Collision detection ───────────────────────────────────────────────────
+  // Detect any two distinct function names that map to the same safe identifier.
+  assertNoIdentifierCollisions(
+    parsed.functions.map((f) => f.name),
+    'function',
+  );
+  // Detect any two distinct UDT names that map to the same safe identifier.
+  assertNoIdentifierCollisions(
+    parsed.udts.map((u) => u.name),
+    'UDT',
+  );
+  // ─────────────────────────────────────────────────────────────────────────
 
   let base64: string[];
   if (typeof specEntries[0] === 'string') {

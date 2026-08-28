@@ -626,3 +626,96 @@ describe('generateBinding', () => {
     expect(source).toContain('Unauthorized = 7');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Regression #1105 – sanitized-identifier collision detection
+// ---------------------------------------------------------------------------
+
+describe('generateBinding – identifier collision detection (regression #1105)', () => {
+  it('throws a descriptive error when two function names sanitize to the same identifier', () => {
+    // "transfer-from" and "transfer_from" both become "transfer_from" after safeIdent
+    const entries = buildSpecEntries({
+      functions: [
+        {
+          name: 'transfer-from',
+          inputs: [{ name: 'amount', type: xdr.ScSpecTypeDef.scSpecTypeU64() }],
+          outputs: [xdr.ScSpecTypeDef.scSpecTypeBool()],
+        },
+        {
+          name: 'transfer_from',
+          inputs: [{ name: 'amount', type: xdr.ScSpecTypeDef.scSpecTypeU64() }],
+          outputs: [xdr.ScSpecTypeDef.scSpecTypeBool()],
+        },
+      ],
+    });
+
+    expect(() => generateBinding(entries)).toThrow(/collision/i);
+    expect(() => generateBinding(entries)).toThrow(/transfer.from/);
+  });
+
+  it('includes both colliding raw names in the error message', () => {
+    const entries = buildSpecEntries({
+      functions: [
+        {
+          name: 'my.method',
+          inputs: [],
+          outputs: [xdr.ScSpecTypeDef.scSpecTypeVoid()],
+        },
+        {
+          name: 'my_method',
+          inputs: [],
+          outputs: [xdr.ScSpecTypeDef.scSpecTypeVoid()],
+        },
+      ],
+    });
+
+    let err: Error | undefined;
+    try {
+      generateBinding(entries);
+    } catch (e) {
+      err = e as Error;
+    }
+    expect(err).toBeDefined();
+    expect(err!.message).toContain('my.method');
+    expect(err!.message).toContain('my_method');
+  });
+
+  it('does NOT throw when all function names produce distinct safe identifiers', () => {
+    const entries = buildSpecEntries({
+      functions: [
+        {
+          name: 'transfer',
+          inputs: [],
+          outputs: [xdr.ScSpecTypeDef.scSpecTypeVoid()],
+        },
+        {
+          name: 'approve',
+          inputs: [],
+          outputs: [xdr.ScSpecTypeDef.scSpecTypeVoid()],
+        },
+      ],
+    });
+
+    expect(() => generateBinding(entries)).not.toThrow();
+  });
+
+  it('throws when two UDT names sanitize to the same identifier', () => {
+    // "My-Type" and "My_Type" both become "My_Type"
+    const myType1 = buildStructUdt('My-Type', [
+      { name: 'value', type: xdr.ScSpecTypeDef.scSpecTypeU32() },
+    ]);
+    const myType2 = buildStructUdt('My_Type', [
+      { name: 'value', type: xdr.ScSpecTypeDef.scSpecTypeU32() },
+    ]);
+    const fnEntries = buildSpecEntries({
+      functions: [
+        { name: 'noop', inputs: [], outputs: [xdr.ScSpecTypeDef.scSpecTypeVoid()] },
+      ],
+    });
+
+    expect(() => generateBinding([myType1, myType2, ...fnEntries])).toThrow(/collision/i);
+  });
+});
+// ---------------------------------------------------------------------------
+// End regression #1105
+// ---------------------------------------------------------------------------

@@ -198,7 +198,8 @@ describe('diffAbiSchemas', () => {
     expect(report.changes.find((c) => c.type === 'added')?.key).toBe('new_flag');
     expect(report.changes.find((c) => c.type === 'removed')?.key).toBe('admin');
     expect(report.changes.find((c) => c.type === 'type_changed')?.key).toBe('balance');
-    expect(report.breakingChanges).toHaveLength(2);
+    // admin removed (required) + balance type changed + new_flag added (required) = 3 breaking
+    expect(report.breakingChanges).toHaveLength(3);
   });
 
   // ── Function signature diffing (Issue #969) ────────────────────────────────

@@ -398,6 +398,109 @@ describe('serializeScVal – round-trip tests', () => {
     });
 });
 
+// ── Regression: #1103 – scvBytes / scvAddress as distinct map keys ────────────
+
+describe('scvMap with scvBytes keys (regression #1103)', () => {
+    it('deserializes multiple distinct scvBytes keys as separate entries', () => {
+        const key1 = Buffer.from([0x01, 0x02, 0x03]);
+        const key2 = Buffer.from([0xaa, 0xbb, 0xcc]);
+        const key3 = Buffer.from([0x00]);
+
+        const mapVal = xdr.ScVal.scvMap([
+            new xdr.ScMapEntry({ key: xdr.ScVal.scvBytes(key1), val: xdr.ScVal.scvU32(1) }),
+            new xdr.ScMapEntry({ key: xdr.ScVal.scvBytes(key2), val: xdr.ScVal.scvU32(2) }),
+            new xdr.ScMapEntry({ key: xdr.ScVal.scvBytes(key3), val: xdr.ScVal.scvU32(3) }),
+        ]);
+
+        const result = deserializeScVal(mapVal) as Record<string, unknown>;
+
+        // All three entries must survive — none should collapse to the same key
+        expect(Object.keys(result)).toHaveLength(3);
+        expect(result['0x010203']).toBe(1);
+        expect(result['0xaabbcc']).toBe(2);
+        expect(result['0x00']).toBe(3);
+    });
+
+    it('encodes scvBytes keys as hex with 0x prefix', () => {
+        const mapVal = xdr.ScVal.scvMap([
+            new xdr.ScMapEntry({
+                key: xdr.ScVal.scvBytes(Buffer.from([0xde, 0xad, 0xbe, 0xef])),
+                val: xdr.ScVal.scvBool(true),
+            }),
+        ]);
+
+        const result = deserializeScVal(mapVal) as Record<string, unknown>;
+        expect(result['0xdeadbeef']).toBe(true);
+    });
+
+    it('treats empty bytes as a valid distinct key', () => {
+        const mapVal = xdr.ScVal.scvMap([
+            new xdr.ScMapEntry({ key: xdr.ScVal.scvBytes(Buffer.alloc(0)), val: xdr.ScVal.scvU32(99) }),
+        ]);
+
+        const result = deserializeScVal(mapVal) as Record<string, unknown>;
+        expect(result['0x']).toBe(99);
+    });
+});
+
+describe('scvMap with scvAddress keys (regression #1103)', () => {
+    it('deserializes multiple distinct scvAddress keys as separate entries', () => {
+        const addr1 = xdr.ScAddress.scAddressTypeAccount(
+            xdr.AccountId.publicKeyTypeEd25519(Buffer.alloc(32, 0x01)),
+        );
+        const addr2 = xdr.ScAddress.scAddressTypeAccount(
+            xdr.AccountId.publicKeyTypeEd25519(Buffer.alloc(32, 0x02)),
+        );
+
+        const mapVal = xdr.ScVal.scvMap([
+            new xdr.ScMapEntry({ key: xdr.ScVal.scvAddress(addr1), val: xdr.ScVal.scvU32(10) }),
+            new xdr.ScMapEntry({ key: xdr.ScVal.scvAddress(addr2), val: xdr.ScVal.scvU32(20) }),
+        ]);
+
+        const result = deserializeScVal(mapVal) as Record<string, unknown>;
+
+        // Both entries must survive — distinct addresses must not collapse
+        expect(Object.keys(result)).toHaveLength(2);
+        const keys = Object.keys(result);
+        // Keys must be StrKey-encoded G... addresses
+        expect(keys[0]).toMatch(/^G/);
+        expect(keys[1]).toMatch(/^G/);
+        expect(keys[0]).not.toBe(keys[1]);
+        expect(result[keys[0]]).toBe(10);
+        expect(result[keys[1]]).toBe(20);
+    });
+
+    it('renders contract address keys as C... StrKey strings', () => {
+        const contractAddr = xdr.ScAddress.scAddressTypeContract(Buffer.alloc(32, 0xab));
+
+        const mapVal = xdr.ScVal.scvMap([
+            new xdr.ScMapEntry({ key: xdr.ScVal.scvAddress(contractAddr), val: xdr.ScVal.scvBool(false) }),
+        ]);
+
+        const result = deserializeScVal(mapVal) as Record<string, unknown>;
+        const keys = Object.keys(result);
+        expect(keys).toHaveLength(1);
+        expect(keys[0]).toMatch(/^C/);
+        expect(result[keys[0]]).toBe(false);
+    });
+});
+
+describe('scvMap key – unsupported type throws (regression #1103)', () => {
+    it('throws SorobanDeserializationError for unrecognized key types', () => {
+        // scvVec is not a valid map key type
+        const mapVal = xdr.ScVal.scvMap([
+            new xdr.ScMapEntry({
+                key: xdr.ScVal.scvVec([xdr.ScVal.scvU32(1)]),
+                val: xdr.ScVal.scvBool(true),
+            }),
+        ]);
+
+        expect(() => deserializeScVal(mapVal)).toThrow(SorobanDeserializationError);
+    });
+});
+
+// ── End regression #1103 ─────────────────────────────────────────────────────
+
 describe('serializeScVal – error handling', () => {
     it('throws for unsupported type', () => {
         const obj = new Date();

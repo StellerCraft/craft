@@ -423,6 +423,16 @@ function decodeAddress(addr: xdr.ScAddress): string {
  * Convert a ScVal map key to a string for use as an object property name.
  * Symbols and strings are used verbatim; numeric and other types are
  * rendered as their string representation.
+ *
+ * scvBytes keys are hex-encoded (prefixed with "0x") to guarantee distinct
+ * strings for distinct byte sequences.
+ *
+ * scvAddress keys are decoded via `decodeAddress` to their canonical StrKey
+ * representation (G..., C..., M..., etc.) so that each distinct address
+ * maps to a unique string.
+ *
+ * For genuinely unrecognised key types a `SorobanDeserializationError` is
+ * thrown rather than silently collapsing all such keys to the same placeholder.
  */
 function mapKeyToString(key: xdr.ScVal): string {
     const typeName = key.switch().name as string;
@@ -434,9 +444,13 @@ function mapKeyToString(key: xdr.ScVal): string {
         case 'scvU64':    return uint64ToBigInt(key.u64()).toString();
         case 'scvI64':    return int64ToBigInt(key.i64()).toString();
         case 'scvBool':   return String(key.b());
+        case 'scvBytes':  return '0x' + (key.bytes() as Buffer).toString('hex');
+        case 'scvAddress': return decodeAddress(key.address());
         default:
-            // Fall back to a recognisable placeholder rather than silently losing data.
-            return `[${typeName}]`;
+            throw new SorobanDeserializationError(
+                `Unsupported ScVal map key type: ${typeName}`,
+                typeName,
+            );
     }
 }
 
