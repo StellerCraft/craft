@@ -78,12 +78,17 @@ export class MeteringService {
     userId: string,
     operationType: string,
     quantity: number = 1,
-    metadata: Record<string, unknown> = {}
+    metadata: Record<string, unknown> = {},
+    idempotencyKey?: string
   ): Promise<UsageRecord> {
     const supabase = createClient();
     const now = new Date();
     const billingPeriod = this.getBillingPeriod(now);
-    const idempotencyKey = this.generateIdempotencyKey(userId, operationType);
+    // When a caller supplies a stable logical key (e.g. the payment idempotency key
+    // for a checkout), use it for deduplication. Otherwise fall back to the legacy
+    // one-second-granularity key for non-billable API-call metering.
+    const dedupKey =
+      idempotencyKey ?? this.generateIdempotencyKey(userId, operationType);
 
     // Insert or get existing record for this operation in this billing period
     const { data: existingRecords, error: fetchError } = await supabase
@@ -92,11 +97,22 @@ export class MeteringService {
       .eq('user_id', userId)
       .eq('operation_type', operationType)
       .eq('billing_period_start', billingPeriod.start.toISOString())
-      .eq('idempotency_key', idempotencyKey)
+      .eq('idempotency_key', dedupKey)
       .single();
 
-    // If record exists for this idempotency key, increment and return
+    // If record exists for this idempotency key...
     if (!fetchError && existingRecords) {
+      // A caller-supplied logical key (e.g. the payment idempotency key for a
+      // checkout) identifies a single billable event. A replay of that event
+      // (a retry/duplicate webhook) must not be counted again, so we return the
+      // existing record without incrementing — true exactly-once metering.
+      if (idempotencyKey) {
+        return existingRecords as UsageRecord;
+      }
+
+      // Legacy path: no logical key was provided, so the one-second-granularity
+      // key collides only for genuinely concurrent calls within the same second.
+      // Those are distinct events and should accumulate.
       const newQuantity = (existingRecords.quantity || 0) + quantity;
 
       const { data: updated } = await supabase
@@ -125,7 +141,7 @@ export class MeteringService {
         metadata,
         billing_period_start: billingPeriod.start.toISOString(),
         billing_period_end: billingPeriod.end.toISOString(),
-        idempotency_key: idempotencyKey,
+        idempotency_key: dedupKey,
         reported_to_stripe: false,
       })
       .select()

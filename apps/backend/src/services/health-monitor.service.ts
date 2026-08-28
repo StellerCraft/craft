@@ -89,7 +89,11 @@ export class HealthMonitorService {
     }
 
     /**
-     * Check health for all active deployments
+     * Check health for all active deployments.
+     *
+     * @deprecated Prefer {@link checkAllDeploymentsPaged} for cron sweeps so the work can
+     * be bounded and resumed. This helper remains for backward compatibility and gathers
+     * every active deployment in a single unbounded pass.
      */
     async checkAllDeployments(): Promise<
         Array<{
@@ -123,6 +127,67 @@ export class HealthMonitorService {
         );
 
         return results;
+    }
+
+    /**
+     * Check health for a single ordered page of active deployments.
+     *
+     * Deployments are ordered by `id` so the returned `nextCursor` (the last id in the
+     * page) is stable across invocations. A run truncated by the cron execution budget can
+     * resume from this cursor on the next invocation instead of restarting from the top.
+     */
+    async checkAllDeploymentsPaged(opts?: {
+        cursor?: string | null;
+        limit?: number;
+    }): Promise<{
+        results: Array<{
+            deploymentId: string;
+            isHealthy: boolean;
+            responseTime: number;
+        }>;
+        nextCursor: string | null;
+        totalProcessed: number;
+    }> {
+        const supabase = createClient();
+        const limit = opts?.limit ?? 50;
+
+        // Get a page of active deployments, ordered so the cursor is stable.
+        let query = supabase
+            .from('deployments')
+            .select('id')
+            .eq('status', 'completed')
+            .eq('is_active', true)
+            .order('id', { ascending: true })
+            .limit(limit);
+
+        if (opts?.cursor) {
+            query = query.gt('id', opts.cursor);
+        }
+
+        const { data: deployments } = await query;
+
+        if (!deployments || deployments.length === 0) {
+            return { results: [], nextCursor: null, totalProcessed: 0 };
+        }
+
+        const results = await Promise.all(
+            deployments.map(async (deployment) => {
+                const health = await this.checkDeploymentHealth(deployment.id);
+                return {
+                    deploymentId: deployment.id,
+                    isHealthy: health.isHealthy,
+                    responseTime: health.responseTime,
+                };
+            })
+        );
+
+        // If we filled the page we may have more; expose the last id as the resume cursor.
+        const nextCursor =
+            deployments.length === limit
+                ? deployments[deployments.length - 1].id
+                : null;
+
+        return { results, nextCursor, totalProcessed: results.length };
     }
 
     /**

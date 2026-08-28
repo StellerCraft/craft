@@ -107,11 +107,14 @@ export class MeteringPaymentIntegration {
     userId: string,
     operationType: string,
     quantity: number = 1,
-    timestamp?: number
+    timestamp?: number,
+    idempotencyKey?: string
   ): Promise<{ success: boolean; error?: string }> {
     try {
-      // Record usage locally first
-      await meterService.recordUsage(userId, operationType, quantity);
+      // Record usage locally first. When a stable idempotency key (e.g. the payment
+      // idempotency key for a checkout) is supplied it is used for deduplication so a
+      // retried checkout that lands in a different one-second window is not metered twice.
+      await meterService.recordUsage(userId, operationType, quantity, {}, idempotencyKey);
 
       // Get subscription from profile
       const supabase = createClient();

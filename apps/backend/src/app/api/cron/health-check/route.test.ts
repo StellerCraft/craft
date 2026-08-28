@@ -22,7 +22,11 @@ const mockHealthCheckResults = [
 ];
 
 const mockHealthMonitorService = {
-  checkAllDeployments: vi.fn().mockResolvedValue(mockHealthCheckResults),
+  checkAllDeploymentsPaged: vi.fn().mockResolvedValue({
+    results: mockHealthCheckResults,
+    nextCursor: null,
+    totalProcessed: mockHealthCheckResults.length,
+  }),
 };
 
 const mockVercelService = {
@@ -92,7 +96,7 @@ describe('GET /api/cron/health-check', () => {
       const request = createCronRequest();
       await GET(request);
 
-      expect(mockHealthMonitorService.checkAllDeployments).toHaveBeenCalledTimes(1);
+      expect(mockHealthMonitorService.checkAllDeploymentsPaged).toHaveBeenCalledTimes(1);
     });
 
     it('returns correct response structure', async () => {
@@ -131,17 +135,17 @@ describe('GET /api/cron/health-check', () => {
       const data2 = await response2.json();
 
       expect(data1).toEqual(data2);
-      expect(mockHealthMonitorService.checkAllDeployments).toHaveBeenCalledTimes(2);
+      expect(mockHealthMonitorService.checkAllDeploymentsPaged).toHaveBeenCalledTimes(2);
     });
 
     it('does not accumulate state across invocations', async () => {
       // First invocation
       await GET(createCronRequest());
-      const firstCallCount = mockHealthMonitorService.checkAllDeployments.mock.calls.length;
+      const firstCallCount = mockHealthMonitorService.checkAllDeploymentsPaged.mock.calls.length;
 
       // Second invocation
       await GET(createCronRequest());
-      const secondCallCount = mockHealthMonitorService.checkAllDeployments.mock.calls.length;
+      const secondCallCount = mockHealthMonitorService.checkAllDeploymentsPaged.mock.calls.length;
 
       expect(secondCallCount).toBe(firstCallCount + 1);
     });
@@ -151,7 +155,7 @@ describe('GET /api/cron/health-check', () => {
       const responses = await Promise.all(requests.map(r => GET(r)));
 
       expect(responses.every(r => r.status === 200)).toBe(true);
-      expect(mockHealthMonitorService.checkAllDeployments).toHaveBeenCalledTimes(5);
+      expect(mockHealthMonitorService.checkAllDeploymentsPaged).toHaveBeenCalledTimes(5);
     });
   });
 
@@ -237,7 +241,7 @@ describe('GET /api/cron/health-check', () => {
       expect(response2.status).toBe(200);
 
       // Both should call the service independently (no deduplication at this level)
-      expect(mockHealthMonitorService.checkAllDeployments).toHaveBeenCalledTimes(2);
+      expect(mockHealthMonitorService.checkAllDeploymentsPaged).toHaveBeenCalledTimes(2);
 
       vi.useRealTimers();
     });
@@ -273,7 +277,7 @@ describe('GET /api/cron/health-check', () => {
 
       expect(responses.every(r => r.status === 200)).toBe(true);
       // Each invocation calls the service independently
-      expect(mockHealthMonitorService.checkAllDeployments).toHaveBeenCalledTimes(3);
+      expect(mockHealthMonitorService.checkAllDeploymentsPaged).toHaveBeenCalledTimes(3);
 
       vi.useRealTimers();
     });
@@ -289,9 +293,13 @@ describe('GET /api/cron/health-check', () => {
       const request = createCronRequest();
 
       // Simulate the health check taking 2 minutes
-      mockHealthMonitorService.checkAllDeployments.mockImplementation(async () => {
+      mockHealthMonitorService.checkAllDeploymentsPaged.mockImplementation(async () => {
         vi.advanceTimersByTime(120000); // 2 minutes
-        return mockHealthCheckResults;
+        return {
+          results: mockHealthCheckResults,
+          nextCursor: null,
+          totalProcessed: mockHealthCheckResults.length,
+        };
       });
 
       const response = await GET(request);
@@ -308,10 +316,14 @@ describe('GET /api/cron/health-check', () => {
       vi.setSystemTime(new Date('2024-01-15T10:00:00Z'));
 
       let executionTime: Date | null = null;
-      mockHealthMonitorService.checkAllDeployments.mockImplementation(async () => {
+      mockHealthMonitorService.checkAllDeploymentsPaged.mockImplementation(async () => {
         executionTime = new Date();
         vi.advanceTimersByTime(30000); // 30 seconds
-        return mockHealthCheckResults;
+        return {
+          results: mockHealthCheckResults,
+          nextCursor: null,
+          totalProcessed: mockHealthCheckResults.length,
+        };
       });
 
       const response = await GET(createCronRequest());
@@ -327,7 +339,7 @@ describe('GET /api/cron/health-check', () => {
   // ─────────────────────────────────────────────────────────────────────────
   describe('Error handling', () => {
     it('returns 500 when health check service throws', async () => {
-      mockHealthMonitorService.checkAllDeployments.mockRejectedValueOnce(
+      mockHealthMonitorService.checkAllDeploymentsPaged.mockRejectedValueOnce(
         new Error('Service unavailable')
       );
 
@@ -340,7 +352,7 @@ describe('GET /api/cron/health-check', () => {
     });
 
     it('returns 500 with generic message for unknown errors', async () => {
-      mockHealthMonitorService.checkAllDeployments.mockRejectedValueOnce(
+      mockHealthMonitorService.checkAllDeploymentsPaged.mockRejectedValueOnce(
         new Error('Unknown error')
       );
 
@@ -353,7 +365,7 @@ describe('GET /api/cron/health-check', () => {
     });
 
     it('recovers from transient errors on retry', async () => {
-      mockHealthMonitorService.checkAllDeployments
+      mockHealthMonitorService.checkAllDeploymentsPaged
         .mockRejectedValueOnce(new Error('Transient error'))
         .mockResolvedValueOnce(mockHealthCheckResults);
 
@@ -382,7 +394,7 @@ describe('GET /api/cron/health-check', () => {
     });
 
     it('satisfies idempotency: no side effects on repeated execution', async () => {
-      const initialCallCount = mockHealthMonitorService.checkAllDeployments.mock.calls.length;
+      const initialCallCount = mockHealthMonitorService.checkAllDeploymentsPaged.mock.calls.length;
 
       // Execute 3 times
       for (let i = 0; i < 3; i++) {
@@ -390,7 +402,7 @@ describe('GET /api/cron/health-check', () => {
       }
 
       // Each execution should call the service exactly once
-      expect(mockHealthMonitorService.checkAllDeployments.mock.calls.length).toBe(
+      expect(mockHealthMonitorService.checkAllDeploymentsPaged.mock.calls.length).toBe(
         initialCallCount + 3
       );
     });
