@@ -36,6 +36,15 @@ function invalidateFlagCache(flagKey?: string): void {
     }
 }
 
+function hashIdentityToBucket(identity: string): number {
+    let hash = 2166136261;
+    for (let i = 0; i < identity.length; i++) {
+        hash ^= identity.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
+    }
+    return Math.abs(hash >>> 0) % 100;
+}
+
 export class RolloutEngine {
     private _canaryPercent = 0;
     private _status: RolloutStatus = 'pending';
@@ -87,20 +96,38 @@ export class RolloutEngine {
         this._status = percent === 0 ? 'pending' : percent === 100 ? 'promoted' : 'in_progress';
     }
 
-    routeRequest(): DeploymentVersion {
+    /**
+     * Routes a request to either candidate (canary) or stable deployment.
+     * When an identity is provided (e.g. userId, sessionId), routing is deterministic
+     * and sticky across requests for the same rollout configuration.
+     * If no identity is provided, falls back to a shared request counter.
+     */
+    routeRequest(identity?: string): DeploymentVersion {
+        if (identity !== undefined && identity !== '') {
+            const bucket = hashIdentityToBucket(identity);
+            const useCanary = bucket < this._canaryPercent;
+            return useCanary ? this.candidate : this.stable;
+        }
+
         this._requestCounter += 1;
         const useCanary = (this._requestCounter % 100) < this._canaryPercent;
         return useCanary ? this.candidate : this.stable;
     }
 
-    simulateTraffic(requestCount: number): Record<string, number> {
+    simulateTraffic(
+        requestCount: number,
+        identityGenerator?: (index: number) => string
+    ): Record<string, number> {
         const counts: Record<string, number> = {
             [this.stable.id]: 0,
             [this.candidate.id]: 0,
         };
 
         for (let i = 0; i < requestCount; i += 1) {
-            const servedBy = this.routeRequest();
+            const identity = identityGenerator
+                ? identityGenerator(i)
+                : `user-sim-${i}`;
+            const servedBy = this.routeRequest(identity);
             counts[servedBy.id] = (counts[servedBy.id] ?? 0) + 1;
         }
 

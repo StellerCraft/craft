@@ -81,6 +81,8 @@ export interface ReplayDeliveryResult {
     error?: string;
 }
 
+export type WebhookDeliveryProcessor = (delivery: WebhookDelivery) => Promise<void>;
+
 // ── Service ───────────────────────────────────────────────────────────────────
 
 export class WebhookDeliveryService {
@@ -88,6 +90,21 @@ export class WebhookDeliveryService {
         correlationId: 'webhook-delivery-service',
         service: 'webhook-delivery',
     });
+    private processor: WebhookDeliveryProcessor | null = null;
+
+    /**
+     * Registers a processor function to handle downstream processing of replayed webhook deliveries.
+     */
+    registerProcessor(processor: WebhookDeliveryProcessor): void {
+        this.processor = processor;
+    }
+
+    /**
+     * Returns the registered processor, if any.
+     */
+    getProcessor(): WebhookDeliveryProcessor | null {
+        return this.processor;
+    }
 
     /**
      * Records a new webhook delivery in the database.
@@ -321,6 +338,24 @@ export class WebhookDeliveryService {
                 newDeliveryId,
                 eventType: original.event_type,
             });
+
+            // Re-trigger downstream processing if a processor is registered
+            if (this.processor) {
+                const replayedDelivery = this.mapToWebhookDelivery(replayed);
+                try {
+                    await this.processor(replayedDelivery);
+                    await this.markProcessed(newDeliveryId);
+                } catch (procErr: any) {
+                    this.log.error('Failed to process replayed webhook delivery', procErr, {
+                        newDeliveryId,
+                        originalDeliveryId,
+                    });
+                    await this.markFailed(
+                        newDeliveryId,
+                        procErr?.message || 'Replay processing failed'
+                    );
+                }
+            }
 
             return { success: true, newDeliveryId };
         } catch (error: any) {

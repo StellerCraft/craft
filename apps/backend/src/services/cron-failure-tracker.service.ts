@@ -56,28 +56,89 @@ export class CronFailureTrackerService {
         );
 
         if (rpcError) {
-            console.error('[cron-failure-tracker] RPC call failed, falling back to upsert', rpcError);
-            // Fallback: read-then-upsert (not atomic, but better than failing)
-            const { data: existing } = await supabase
-                .from('cron_job_failures')
-                .select('consecutive_failures')
-                .eq('job_name', jobName)
-                .single();
+            console.error('[cron-failure-tracker] RPC call failed, falling back to optimistic concurrency update', rpcError);
+            /**
+             * Fallback path when `increment_cron_failure` RPC is unavailable.
+             *
+             * Note on non-atomicity: A naive read-then-upsert is subject to race conditions
+             * if two workers fail concurrently for the same jobName (both read same count and write count + 1,
+             * losing an increment). To mitigate lost updates, we use an optimistic-concurrency guard:
+             * conditional update on the expected consecutive_failures value with a retry loop.
+             */
+            const MAX_RETRIES = 3;
+            let persistedCount: number | null = null;
 
-            const newCount = (existing?.consecutive_failures ?? 0) + 1;
+            for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+                const { data: existing } = await supabase
+                    .from('cron_job_failures')
+                    .select('consecutive_failures')
+                    .eq('job_name', jobName)
+                    .maybeSingle();
 
-            await supabase.from('cron_job_failures').upsert(
-                {
-                    job_name: jobName,
-                    consecutive_failures: newCount,
-                    last_failure_at: new Date().toISOString(),
-                    last_error: error,
-                    updated_at: new Date().toISOString(),
-                },
-                { onConflict: 'job_name' }
-            );
+                if (existing) {
+                    const currentFailures = existing.consecutive_failures ?? 0;
+                    const nextCount = currentFailures + 1;
+                    const { data: updated, error: updateErr } = await supabase
+                        .from('cron_job_failures')
+                        .update({
+                            consecutive_failures: nextCount,
+                            last_failure_at: new Date().toISOString(),
+                            last_error: error,
+                            updated_at: new Date().toISOString(),
+                        })
+                        .eq('job_name', jobName)
+                        .eq('consecutive_failures', currentFailures)
+                        .select('consecutive_failures')
+                        .maybeSingle();
 
-            await this._escalate(jobName, newCount, error);
+                    if (!updateErr && updated) {
+                        persistedCount = updated.consecutive_failures;
+                        break;
+                    }
+                } else {
+                    const { data: inserted, error: insertErr } = await supabase
+                        .from('cron_job_failures')
+                        .insert({
+                            job_name: jobName,
+                            consecutive_failures: 1,
+                            last_failure_at: new Date().toISOString(),
+                            last_error: error,
+                            updated_at: new Date().toISOString(),
+                        })
+                        .select('consecutive_failures')
+                        .maybeSingle();
+
+                    if (!insertErr && inserted) {
+                        persistedCount = inserted.consecutive_failures;
+                        break;
+                    }
+                }
+            }
+
+            // If optimistic-concurrency retries were exhausted due to high contention,
+            // fall back to a direct upsert so the failure is recorded.
+            if (persistedCount === null) {
+                const { data: existing } = await supabase
+                    .from('cron_job_failures')
+                    .select('consecutive_failures')
+                    .eq('job_name', jobName)
+                    .maybeSingle();
+
+                const fallbackCount = (existing?.consecutive_failures ?? 0) + 1;
+                await supabase.from('cron_job_failures').upsert(
+                    {
+                        job_name: jobName,
+                        consecutive_failures: fallbackCount,
+                        last_failure_at: new Date().toISOString(),
+                        last_error: error,
+                        updated_at: new Date().toISOString(),
+                    },
+                    { onConflict: 'job_name' }
+                );
+                persistedCount = fallbackCount;
+            }
+
+            await this._escalate(jobName, persistedCount, error);
             return;
         }
 

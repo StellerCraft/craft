@@ -150,4 +150,49 @@ describe('withTierEnforcement', () => {
         const res = await freeHandler(makeRequest(), { params: {} });
         expect(res.status).toBe(200);
     });
+
+    it('logs database query errors and fails closed to free tier (returning 402 for pro)', async () => {
+        const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        const mock = {
+            auth: {
+                getUser: vi.fn().mockResolvedValue({
+                    data: { user: { id: 'user-1' } },
+                    error: null,
+                }),
+            },
+            from: vi.fn().mockReturnValue({
+                select: vi.fn().mockReturnThis(),
+                eq: vi.fn().mockReturnThis(),
+                single: vi.fn().mockResolvedValue({
+                    data: null,
+                    error: { message: 'connection timeout to Supabase', code: 'PGRST504' },
+                }),
+            }),
+        };
+        mockCreateClient.mockReturnValue(mock as any);
+        const withTierEnforcement = await load();
+
+        const handler = withTierEnforcement('pro', okHandler);
+        const res = await handler(makeRequest('/api/deployments/analytics'), { params: {} });
+
+        expect(res.status).toBe(402);
+        expect(okHandler).not.toHaveBeenCalled();
+        expect(consoleErrorSpy).toHaveBeenCalled();
+        const logged = consoleErrorSpy.mock.calls[0]?.[0];
+        expect(logged).toContain('Database error during subscription tier lookup');
+        consoleErrorSpy.mockRestore();
+    });
+
+    it('does not log error for legitimate free-tier user with no database error', async () => {
+        const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        mockCreateClient.mockReturnValue(makeSupabaseMock('free') as any);
+        const withTierEnforcement = await load();
+
+        const handler = withTierEnforcement('pro', okHandler);
+        const res = await handler(makeRequest('/api/deployments/analytics'), { params: {} });
+
+        expect(res.status).toBe(402);
+        expect(consoleErrorSpy).not.toHaveBeenCalled();
+        consoleErrorSpy.mockRestore();
+    });
 });
