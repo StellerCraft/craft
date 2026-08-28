@@ -178,6 +178,19 @@ export function addCoSignerSignature(
         return { ok: false, error: 'Invalid signed transaction XDR' };
     }
 
+    // Verify the submitted transaction matches the session's base transaction.
+    // Compare transaction hashes on the unsigned envelopes so that differences
+    // in source/sequence/operations/timeBounds are all caught in one check.
+    const baseTx = TransactionBuilder.fromXDR(session.baseTxXdr, networkPassphrase) as Transaction;
+    const baseHash = baseTx.hash().toString('hex');
+    const submittedHash = parsedTx.hash().toString('hex');
+    if (submittedHash !== baseHash) {
+        return {
+            ok: false,
+            error: 'Submitted transaction does not match the session base transaction',
+        };
+    }
+
     // Verify that at least one signature matches the claimed co-signer's public key
     const signerKeypair = Keypair.fromPublicKey(signerPublicKey);
     const txHash = parsedTx.hash();

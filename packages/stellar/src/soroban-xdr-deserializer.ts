@@ -278,8 +278,20 @@ export function serializeScVal(value: SorobanValue, hint?: ScValTypeHint): xdr.S
             );
         }
         if (hint === 'u32') {
+            if (value < 0 || value > 4_294_967_295) {
+                throw new SorobanSerializationError(
+                    `Number ${value} is out of range for u32 (0 to 4294967295)`,
+                    'number',
+                );
+            }
             return xdr.ScVal.scvU32(value >>> 0);
         } else if (hint === 'i32') {
+            if (value < -2_147_483_648 || value > 2_147_483_647) {
+                throw new SorobanSerializationError(
+                    `Number ${value} is out of range for i32 (-2147483648 to 2147483647)`,
+                    'number',
+                );
+            }
             return xdr.ScVal.scvI32(value | 0);
         } else if (value >= 0) {
             return xdr.ScVal.scvU32(value >>> 0);

@@ -522,3 +522,47 @@ describe('serializeScVal – error handling', () => {
         expect(() => serializeScVal(value, 'invalid' as any)).toThrow(SorobanSerializationError);
     });
 });
+
+// ── Regression: #1102 – explicit hint must throw instead of silently wrapping ─
+
+describe('regression #1102 – out-of-range values with explicit hint throw SorobanSerializationError', () => {
+    it('throws when hint is i32 and value exceeds i32 max (2147483647)', () => {
+        // 3_000_000_000 is a valid u32 but out of i32 range — must throw, not wrap
+        expect(() => serializeScVal(3_000_000_000, 'i32')).toThrow(SorobanSerializationError);
+    });
+
+    it('throws when hint is i32 and value is exactly i32 max + 1', () => {
+        expect(() => serializeScVal(2_147_483_648, 'i32')).toThrow(SorobanSerializationError);
+    });
+
+    it('throws when hint is u32 and value is negative', () => {
+        expect(() => serializeScVal(-1, 'u32')).toThrow(SorobanSerializationError);
+    });
+
+    it('throws when hint is u32 and value is -2147483648 (valid i32, invalid u32)', () => {
+        expect(() => serializeScVal(-2_147_483_648, 'u32')).toThrow(SorobanSerializationError);
+    });
+
+    it('does NOT throw for a value that legitimately fits i32 with hint i32', () => {
+        // 2_147_483_647 is INT32_MAX — must succeed
+        expect(() => serializeScVal(2_147_483_647, 'i32')).not.toThrow();
+        expect(() => serializeScVal(-2_147_483_648, 'i32')).not.toThrow();
+    });
+
+    it('does NOT throw for a value that legitimately fits u32 with hint u32', () => {
+        expect(() => serializeScVal(4_294_967_295, 'u32')).not.toThrow();
+        expect(() => serializeScVal(0, 'u32')).not.toThrow();
+    });
+
+    it('the thrown error is SorobanSerializationError not a silent wrap', () => {
+        // Without the fix, scvI32(3_000_000_000 | 0) would silently produce -1294967296
+        let caughtError: unknown;
+        try {
+            serializeScVal(3_000_000_000, 'i32');
+        } catch (e) {
+            caughtError = e;
+        }
+        expect(caughtError).toBeInstanceOf(SorobanSerializationError);
+        expect((caughtError as SorobanSerializationError).valueType).toBe('number');
+    });
+});
