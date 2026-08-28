@@ -379,6 +379,68 @@ describe('WebhookDeliveryService', () => {
             expect(result.newDeliveryId).toMatch(/^replay-/);
         });
 
+        it('produces a replay-<timestamp>-<8charhex> style delivery ID', async () => {
+            const service = new WebhookDeliveryService();
+
+            const originalDelivery = {
+                id: 'uuid-1',
+                delivery_id: 'del-original',
+                event_type: 'push',
+                payload: {},
+                headers: {},
+                status: 'failed',
+            };
+
+            const replayedDelivery = {
+                id: 'uuid-2',
+                delivery_id: 'replay-placeholder',
+                event_type: 'push',
+                payload: {},
+                headers: {},
+                status: 'received',
+                replayed_from_delivery_id: 'del-original',
+            };
+
+            mockFrom.mockReturnValueOnce({
+                select: vi.fn().mockReturnValue({
+                    eq: vi.fn().mockReturnValue({
+                        single: vi.fn().mockResolvedValue({
+                            data: originalDelivery,
+                            error: null,
+                        }),
+                    }),
+                }),
+            });
+
+            const insertMock = vi.fn().mockReturnValue({
+                select: vi.fn().mockReturnValue({
+                    single: vi.fn().mockResolvedValue({
+                        data: replayedDelivery,
+                        error: null,
+                    }),
+                }),
+            });
+            mockFrom.mockReturnValueOnce({
+                insert: insertMock,
+            });
+
+            const before = Date.now();
+            const result = await service.replayDelivery('del-original');
+            const after = Date.now();
+
+            expect(result.success).toBe(true);
+            expect(result.newDeliveryId).toBeDefined();
+            const id = result.newDeliveryId!;
+            expect(id.startsWith('replay-')).toBe(true);
+            const parts = id.split('-');
+            expect(parts.length).toBe(3);
+            const timestamp = Number(parts[1]);
+            expect(timestamp).toBeGreaterThanOrEqual(before);
+            expect(timestamp).toBeLessThanOrEqual(after);
+            expect(parts[2].length).toBe(8);
+            expect(/^[0-9a-f]{8}$/.test(parts[2])).toBe(true);
+        });
+
         it('handles original delivery not found', async () => {
             const service = new WebhookDeliveryService();
 

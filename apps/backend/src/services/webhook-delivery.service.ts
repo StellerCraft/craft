@@ -17,6 +17,7 @@
 
 import { createClient } from '@/lib/supabase/server';
 import { createLogger } from '@/lib/api/logger';
+import { randomUUID } from 'node:crypto';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -309,7 +310,7 @@ export class WebhookDeliveryService {
             }
 
             // Generate a new delivery ID for the replay
-            const newDeliveryId = `replay-${Date.now()}-${crypto.randomUUID().substring(0, 8)}`;
+            const newDeliveryId = `replay-${Date.now()}-${randomUUID().substring(0, 8)}`;
 
             // Create a new delivery record for the replay
             const { data: replayed, error: insertError } = await supabase

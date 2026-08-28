@@ -64,6 +64,30 @@ export interface EnvSyncResult {
     deleted: number;
 }
 
+function isAlreadyExistsError(err: unknown): boolean {
+    if (err && typeof err === 'object') {
+        const obj = err as Record<string, unknown>;
+        if (obj.status === 409) return true;
+        if (typeof obj.message === 'string') {
+            const msg = obj.message.toLowerCase();
+            if (msg.includes('already exists') || msg.includes('duplicate')) return true;
+        }
+    }
+    return false;
+}
+
+function isNotFoundError(err: unknown): boolean {
+    if (err && typeof err === 'object') {
+        const obj = err as Record<string, unknown>;
+        if (obj.status === 404) return true;
+        if (typeof obj.message === 'string') {
+            const msg = obj.message.toLowerCase();
+            if (msg.includes('not found')) return true;
+        }
+    }
+    return false;
+}
+
 /**
  * Converts VercelEnvVar[] to a normalized format with target metadata.
  */
@@ -113,16 +137,30 @@ export class EnvSyncService {
                         }
                         existingMap.delete(mapKey);
                     } else {
-                        await this.api.createEnvVar(projectId, variable);
-                        created++;
+                        try {
+                            await this.api.createEnvVar(projectId, variable);
+                            created++;
+                        } catch (err) {
+                            if (isAlreadyExistsError(err)) {
+                                created++;
+                            } else {
+                                throw err;
+                            }
+                        }
                     }
                 }
 
-                // Remaining entries in existingMap are stale — delete them
                 let deleted = 0;
                 for (const stale of existingMap.values()) {
-                    await this.api.deleteEnvVar(projectId, stale.id);
-                    deleted++;
+                    try {
+                        await this.api.deleteEnvVar(projectId, stale.id);
+                        deleted++;
+                    } catch (err) {
+                        if (!isNotFoundError(err)) {
+                            throw err;
+                        }
+                        deleted++;
+                    }
                 }
 
                 return { created, updated, deleted };
