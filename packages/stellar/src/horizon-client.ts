@@ -108,9 +108,21 @@ export class CircuitBreaker {
 // ── Adaptive retry helper ──────────────────────────────────────────────────────
 
 /**
+ * Upper bound for the rate-limit-derived backoff delay.
+ *
+ * The X-RateLimit-Reset header is server-supplied and can be far in the future
+ * because of a Horizon anomaly, a misbehaving proxy, or clock drift between the
+ * client and the server. Without a ceiling, a single retry attempt could block
+ * the caller for minutes or hours. Cap it at a few seconds so a retry never
+ * outlives a reasonable request timeout.
+ */
+export const MAX_BACKOFF_DELAY_MS = 5_000;
+
+/**
  * Computes the backoff delay in ms for a given response.
  *
- * - If X-RateLimit-Remaining < 10, delays until X-RateLimit-Reset (epoch seconds).
+ * - If X-RateLimit-Remaining < 10, delays until X-RateLimit-Reset (epoch seconds),
+ *   clamped to {@link MAX_BACKOFF_DELAY_MS}.
  * - Otherwise uses exponential backoff: 200 * 2^attempt ms.
  */
 export function computeBackoffMs(
@@ -122,8 +134,13 @@ export function computeBackoffMs(
 
   if (remaining < 10 && reset > 0) {
     const nowSec = Math.floor(Date.now() / 1000);
-    const delayMs = Math.max(0, (reset - nowSec) * 1000);
-    return { delayMs, reason: `rate_limit_low_remaining (${remaining} left, reset in ${reset - nowSec}s)` };
+    const uncappedDelayMs = Math.max(0, (reset - nowSec) * 1000);
+    const delayMs = Math.min(uncappedDelayMs, MAX_BACKOFF_DELAY_MS);
+    const capped = delayMs < uncappedDelayMs;
+    const reason =
+      `rate_limit_low_remaining (${remaining} left, reset in ${reset - nowSec}s` +
+      (capped ? `, capped ${uncappedDelayMs}ms->${delayMs}ms)` : `)`);
+    return { delayMs, reason };
   }
 
   const delayMs = 200 * Math.pow(2, attempt);

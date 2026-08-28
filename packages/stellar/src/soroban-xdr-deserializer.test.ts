@@ -282,6 +282,40 @@ describe('deserializeScValAs', () => {
         const val = xdr.ScVal.scvBool(false);
         expect(deserializeScValAs(val)).toBe(false);
     });
+
+    it('names the ScVal discriminant in the message when JS typeof is ambiguous (#1117)', () => {
+        // A scvMap deserializes to an object, so `typeof value` is just "object" —
+        // useless for telling a map apart from a vec. The message must say scvMap.
+        const mapVal = xdr.ScVal.scvMap([
+            new xdr.ScMapEntry({ key: xdr.ScVal.scvSymbol('k'), val: xdr.ScVal.scvU32(1) }),
+        ]);
+        try {
+            deserializeScValAs<string>(mapVal, (v): v is string => typeof v === 'string');
+            expect.unreachable('guard should have failed');
+        } catch (e) {
+            expect(e).toBeInstanceOf(SorobanDeserializationError);
+            const err = e as SorobanDeserializationError;
+            expect(err.message).toContain('scvMap');
+            // The diagnostic property is still populated as before.
+            expect(err.scvType).toBe('scvMap');
+        }
+    });
+
+    it('names the ScVal discriminant for an ambiguous bigint variant (#1117)', () => {
+        // Every 64/128/256-bit integer variant is `bigint` at runtime; the message
+        // must disambiguate which one (scvI128 here).
+        const i128Val = xdr.ScVal.scvI128(
+            new xdr.Int128Parts({ hi: new xdr.Int64(0n), lo: new xdr.Uint64(1000n) }),
+        );
+        try {
+            deserializeScValAs<number>(i128Val, (v): v is number => typeof v === 'number');
+            expect.unreachable('guard should have failed');
+        } catch (e) {
+            const err = e as SorobanDeserializationError;
+            expect(err.message).toContain('scvI128');
+            expect(err.scvType).toBe('scvI128');
+        }
+    });
 });
 
 // ── Serialization (inverse of deserialization) ────────────────────────────────

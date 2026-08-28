@@ -153,7 +153,7 @@ export function addCoSignerSignature(
     }
 
     // Expire sessions that exceeded the timeout
-    if (Date.now() > session.expiresAt) {
+    if (isSessionExpired(session, Date.now())) {
         session.state = 'expired';
         return { ok: false, error: 'Session has expired' };
     }
@@ -272,7 +272,7 @@ export function expireTimedOutSessions(_now: number = Date.now()): number {
             session.state !== 'approved' &&
             session.state !== 'issued' &&
             session.state !== 'expired' &&
-            _now > session.expiresAt
+            isSessionExpired(session, _now)
         ) {
             session.state = 'expired';
             expired++;
@@ -285,6 +285,20 @@ export function expireTimedOutSessions(_now: number = Date.now()): number {
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Single source of truth for "has this session passed its expiry deadline?".
+ *
+ * `addCoSignerSignature` and `expireTimedOutSessions` both gate on session
+ * expiry; routing both through this helper keeps their semantics identical and
+ * prevents drift if the rule later changes (e.g. `>=` or a grace period).
+ *
+ * @param session - Session whose `expiresAt` is compared against `now`.
+ * @param now     - Current timestamp in ms (epoch).
+ */
+function isSessionExpired(session: IssuanceSession, now: number): boolean {
+    return now > session.expiresAt;
+}
 
 /**
  * Merge the signatures from multiple signed transaction XDRs into a single

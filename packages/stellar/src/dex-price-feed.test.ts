@@ -177,4 +177,43 @@ describe('subscribeLedgerPriceFeed', () => {
 
         expect(onUpdate).toHaveBeenCalledTimes(3);
     });
+
+    it('surfaces a sustained fetch failure through onError on every ledger while staying subscribed (#1116)', async () => {
+        const { emitter, emit, handlers } = makeEmitter();
+        const failure = new Error('expired credentials');
+        const fetcher: OrderBookFetcher = { fetch: vi.fn().mockRejectedValue(failure) };
+        const onUpdate = vi.fn();
+        const onError = vi.fn();
+
+        const unsubscribe = subscribeLedgerPriceFeed(emitter, fetcher, onUpdate, onError);
+
+        emit(2000);
+        emit(2001);
+        emit(2002);
+        await new Promise(r => setTimeout(r, 20));
+
+        // Observability: onError fired once per failed ledger with the error + triggering event.
+        expect(onError).toHaveBeenCalledTimes(3);
+        expect(onError.mock.calls[0][0]).toBe(failure);
+        expect(onError.mock.calls[0][1]).toEqual({ sequence: 2000 });
+        expect(onError.mock.calls[2][1]).toEqual({ sequence: 2002 });
+
+        // Resilience unchanged: no price updates, subscription still active.
+        expect(onUpdate).not.toHaveBeenCalled();
+        expect(handlers.size).toBe(1);
+
+        unsubscribe();
+    });
+
+    it('does not require an onError callback (#1116)', async () => {
+        const { emitter, emit } = makeEmitter();
+        const fetcher: OrderBookFetcher = { fetch: vi.fn().mockRejectedValue(new Error('network')) };
+        const onUpdate = vi.fn();
+
+        expect(() => subscribeLedgerPriceFeed(emitter, fetcher, onUpdate)).not.toThrow();
+        emit(3000);
+        await new Promise(r => setTimeout(r, 10));
+
+        expect(onUpdate).not.toHaveBeenCalled();
+    });
 });
