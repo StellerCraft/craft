@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import { getRetentionPolicyWindows, readRetentionDays, validateRetentionWindows } from '@/lib/retention-policy';
 import { cleanupService } from '@/services/cleanup.service';
 
 /**
@@ -23,7 +24,8 @@ export async function GET(req: NextRequest) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const retentionDays = parseInt(process.env.DEPLOYMENT_TOMBSTONE_RETENTION_DAYS ?? '30', 10);
+    const retentionDays = readRetentionDays('tombstonedDeploymentPurge');
+    validateRetentionWindows(getRetentionPolicyWindows());
 
     let purged = 0;
     if (retentionDays > 0) {
