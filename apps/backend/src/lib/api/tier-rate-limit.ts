@@ -14,6 +14,9 @@ import { createClient } from '@/lib/supabase/server';
  *   - enterprise: 10000 req/min general, 1000 req/min sensitive
  *
  * Sensitive endpoints: auth, payments, deployments
+ *
+ * See "Rate Limiting, Idempotency, and Tier Enforcement" in CONTRIBUTING.md
+ * for the full reference of tier limits and the RATE_LIMIT_DISABLED env var.
  */
 
 export interface TierRateLimitConfig {

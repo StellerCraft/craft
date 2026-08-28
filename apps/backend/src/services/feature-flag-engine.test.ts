@@ -18,7 +18,7 @@ import {
     type FlagDefinition,
     type UserContext,
     type TargetingRule,
-} from './rollout-strategy';
+} from './feature-flag-engine';
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 

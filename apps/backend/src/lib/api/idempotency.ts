@@ -30,6 +30,9 @@
  * Usage:
  *   const handler = withIdempotency(userId, async (req) => { ... });
  *   return handler(req);
+ *
+ * See "Rate Limiting, Idempotency, and Tier Enforcement" in CONTRIBUTING.md
+ * for the full env-var reference.
  */
 
 import { NextResponse } from 'next/server';
