@@ -504,3 +504,74 @@ describe('ContractStateSnapshotService.restore() – corrupted blob (#1110)', ()
         expect(restored.entries).toHaveLength(FAKE_ENTRIES.length);
     });
 });
+
+// ── Issue #1125 – restore() edge-case coverage ─────────────────────────────────
+
+describe('ContractStateSnapshotService.restore() – edge-case coverage (#1125)', () => {
+    const STORAGE_PATH = `${CONTRACT_ID}/${LEDGER_SEQ}.json.zlib`;
+
+    it('throws SnapshotStorageError with snapshot-identifying context when decompressed payload is malformed JSON', async () => {
+        const malformedJson = '{ "contractId": "CXXXX", "ledgerSequence": 123,';
+        const corruptedCompressed = await promisify(zlib.deflate)(
+            Buffer.from(malformedJson, 'utf8')
+        );
+
+        const storage = makeStorage({
+            download: vi.fn().mockResolvedValue({
+                data: new Blob([corruptedCompressed]),
+                error: null,
+            }),
+        });
+        const svc = new ContractStateSnapshotService(makeRpc(), storage, makeDb());
+
+        const error = await svc.restore(SNAPSHOT_ID).catch((e) => e);
+
+        expect(error).toBeInstanceOf(SnapshotStorageError);
+        expect(error.message).toContain(SNAPSHOT_ID);
+        expect(error.message).toContain(STORAGE_PATH);
+    });
+
+    it('successfully restores a snapshot with zero entries', async () => {
+        const emptyBlob = await buildCompressedBlob([]);
+        const storage = makeStorage({
+            download: vi.fn().mockResolvedValue({
+                data: emptyBlob,
+                error: null,
+            }),
+        });
+        const svc = new ContractStateSnapshotService(makeRpc(), storage, makeDb());
+
+        const restored = await svc.restore(SNAPSHOT_ID);
+
+        expect(restored.contractId).toBe(CONTRACT_ID);
+        expect(restored.ledgerSequence).toBe(LEDGER_SEQ);
+        expect(restored.entries).toStrictEqual([]);
+    });
+
+    it('round-trip snapshot → restore handles zero entries without error', async () => {
+        const rpc = makeRpc([]); // no entries
+
+        let capturedBlob: Buffer | null = null;
+        const storage = makeStorage({
+            upload: vi.fn().mockImplementation(async (_path: string, data: Buffer) => {
+                capturedBlob = data;
+                return { error: null };
+            }),
+            download: vi.fn().mockImplementation(async () => {
+                return { data: new Blob([capturedBlob!]), error: null };
+            }),
+        });
+
+        const svc = new ContractStateSnapshotService(rpc, storage, makeDb());
+
+        // Snapshot with no entries
+        const snap = await svc.snapshot(CONTRACT_ID, LEDGER_SEQ);
+        expect(snap.entryCount).toBe(0);
+
+        // Restore and verify it's still empty
+        const restored = await svc.restore(snap.id);
+        expect(restored.entries).toHaveLength(0);
+        expect(restored.contractId).toBe(CONTRACT_ID);
+        expect(restored.ledgerSequence).toBe(LEDGER_SEQ);
+    });
+});
