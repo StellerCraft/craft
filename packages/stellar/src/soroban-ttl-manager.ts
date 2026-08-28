@@ -33,7 +33,7 @@ import {
     BASE_FEE,
     SorobanDataBuilder,
 } from 'stellar-sdk';
-import { config, getSorobanRpcUrl, getNetworkPassphrase } from './config';
+import { getSorobanRpcUrl, getNetworkPassphrase } from './config';
 import { parseStellarError } from './errors';
 import type { LedgerEventEmitter } from './dex-price-feed';
 
@@ -253,24 +253,6 @@ export async function checkContractTtl(
     }
 }
 
-// ── Internal helpers ──────────────────────────────────────────────────────────
-
-const SOROBAN_RPC_URLS = {
-    mainnet: 'https://soroban-mainnet.stellar.org',
-    testnet: 'https://soroban-testnet.stellar.org',
-} as const;
-
-function getSorobanRpcUrl(): string {
-    return (
-        process.env.NEXT_PUBLIC_SOROBAN_RPC_URL ||
-        SOROBAN_RPC_URLS[config.stellar.network]
-    );
-}
-
-function getNetworkPassphrase(): string {
-    return config.stellar.network === 'mainnet' ? Networks.PUBLIC : Networks.TESTNET;
-}
-
 // ---------------------------------------------------------------------------
 // Automated TTL Renewal with Ledger-Sequence Awareness (#792)
 // ---------------------------------------------------------------------------
@@ -280,6 +262,20 @@ export const RENEWAL_QUEUE_THRESHOLD = 1_000;
 
 /** Trigger renewal when TTL remaining reaches this many ledgers (50% of threshold). */
 export const RENEWAL_TRIGGER_LEDGERS = 500;
+
+/**
+ * Maximum number of ledger keys packed into a single `ExtendFootprintTtl`
+ * renewal transaction.
+ *
+ * Soroban enforces hard per-transaction footprint and resource limits. A
+ * watchlist covering many deployed contracts can have a large number of
+ * entries reach their renewal urgency in the same tick; batching all of them
+ * into one transaction would exceed those limits and fail the whole batch at
+ * simulation/submission time — including entries nowhere near expiry. `_tick`
+ * therefore splits an oversized queue into sequential sub-batches of at most
+ * this size and attempts each independently.
+ */
+export const MAX_RENEWAL_BATCH_SIZE = 50;
 
 export interface RenewalAlert {
     type: 'renewal_failed';
@@ -403,22 +399,29 @@ export class AutomaticTTLRenewer {
 
         if (!shouldRenewNow) return;
 
-        // Batch all queued keys into a single renewal transaction
-        try {
-            await buildTtlExtensionTransaction(
-                queued,
-                this.sourcePublicKey,
-                this.options.thresholds,
-                this.options.txClient,
-            );
-        } catch (error: unknown) {
-            const parsed = parseStellarError(error);
-            this.options.onAlert({
-                type: 'renewal_failed',
-                keys: queued,
-                error: parsed.message,
-                timestamp: Date.now(),
-            });
+        // Split the queue into sub-batches capped at MAX_RENEWAL_BATCH_SIZE so a
+        // single renewal transaction cannot exceed Soroban's per-transaction
+        // footprint/resource limits. Each sub-batch is built and attempted
+        // independently: a failure in one does not prevent the others from being
+        // tried, and fires its own onAlert rather than aborting the whole tick.
+        for (let offset = 0; offset < queued.length; offset += MAX_RENEWAL_BATCH_SIZE) {
+            const subBatch = queued.slice(offset, offset + MAX_RENEWAL_BATCH_SIZE);
+            try {
+                await buildTtlExtensionTransaction(
+                    subBatch,
+                    this.sourcePublicKey,
+                    this.options.thresholds,
+                    this.options.txClient,
+                );
+            } catch (error: unknown) {
+                const parsed = parseStellarError(error);
+                this.options.onAlert({
+                    type: 'renewal_failed',
+                    keys: subBatch,
+                    error: parsed.message,
+                    timestamp: Date.now(),
+                });
+            }
         }
     }
 }

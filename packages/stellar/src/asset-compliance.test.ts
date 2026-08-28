@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { checkAssetCompliance, loadComplianceConfig } from './asset-compliance';
 import type { ComplianceConfig } from './asset-compliance';
 
@@ -98,6 +98,52 @@ describe('loadComplianceConfig', () => {
   it('uses provided override directly', () => {
     const config = loadComplianceConfig(baseConfig);
     expect(config.blocklist).toHaveLength(1);
+    expect(config.jurisdictionRules).toHaveLength(1);
+  });
+});
+
+describe('loadComplianceConfig — malformed env var diagnostics', () => {
+  const originalBlocklist = process.env.COMPLIANCE_BLOCKLIST_JSON;
+  const originalJurisdiction = process.env.COMPLIANCE_JURISDICTION_JSON;
+
+  afterEach(() => {
+    if (originalBlocklist === undefined) delete process.env.COMPLIANCE_BLOCKLIST_JSON;
+    else process.env.COMPLIANCE_BLOCKLIST_JSON = originalBlocklist;
+    if (originalJurisdiction === undefined) delete process.env.COMPLIANCE_JURISDICTION_JSON;
+    else process.env.COMPLIANCE_JURISDICTION_JSON = originalJurisdiction;
+    vi.restoreAllMocks();
+  });
+
+  it('logs a warning naming the offending variable while still returning an empty blocklist', () => {
+    process.env.COMPLIANCE_BLOCKLIST_JSON = '[{ "issuer": "GABC", }]'; // trailing comma → invalid JSON
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const config = loadComplianceConfig();
+
+    expect(config.blocklist).toEqual([]);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0][0]).toContain('COMPLIANCE_BLOCKLIST_JSON');
+  });
+
+  it('logs a warning for a malformed COMPLIANCE_JURISDICTION_JSON and falls back to empty rules', () => {
+    process.env.COMPLIANCE_JURISDICTION_JSON = '{ not valid json';
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const config = loadComplianceConfig();
+
+    expect(config.jurisdictionRules).toEqual([]);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0][0]).toContain('COMPLIANCE_JURISDICTION_JSON');
+  });
+
+  it('does not log when the env vars are absent or valid', () => {
+    delete process.env.COMPLIANCE_BLOCKLIST_JSON;
+    process.env.COMPLIANCE_JURISDICTION_JSON = '[{"jurisdiction":"US","blockedAssets":["TOKEN"]}]';
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const config = loadComplianceConfig();
+
+    expect(warnSpy).not.toHaveBeenCalled();
     expect(config.jurisdictionRules).toHaveLength(1);
   });
 });

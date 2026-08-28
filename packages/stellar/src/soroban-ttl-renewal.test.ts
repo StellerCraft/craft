@@ -7,8 +7,10 @@ import {
     AutomaticTTLRenewer,
     createAutoRenewer,
     buildContractInstanceKey,
+    buildContractDataKey,
     RENEWAL_QUEUE_THRESHOLD,
     RENEWAL_TRIGGER_LEDGERS,
+    MAX_RENEWAL_BATCH_SIZE,
 } from './soroban-ttl-manager';
 
 const CONTRACT_A = 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM';
@@ -169,6 +171,80 @@ describe('AutomaticTTLRenewer._tick', () => {
         expect(alert.type).toBe('renewal_failed');
         expect(typeof alert.error).toBe('string');
         expect(alert.keys).toHaveLength(1);
+    });
+});
+
+// ── Batch-size cap (oversized queue) ──────────────────────────────────────────
+
+describe('AutomaticTTLRenewer._tick — renewal batch size cap', () => {
+    /** Build an at-risk ttlClient mock returning one entry per key at the trigger threshold. */
+    function makeAtRiskTtlClient(keys: xdr.LedgerKey[], currentLedger: number) {
+        return {
+            getLatestLedger: vi.fn().mockResolvedValue({ sequence: currentLedger }),
+            getLedgerEntries: vi.fn().mockResolvedValue({
+                entries: keys.map((key) => ({
+                    key,
+                    xdr: {} as xdr.LedgerEntry,
+                    liveUntilLedgerSeq: currentLedger + RENEWAL_TRIGGER_LEDGERS,
+                })),
+                latestLedger: currentLedger,
+            }),
+        };
+    }
+
+    it('MAX_RENEWAL_BATCH_SIZE is a positive cap', () => {
+        expect(MAX_RENEWAL_BATCH_SIZE).toBeGreaterThan(0);
+    });
+
+    it('splits an oversized queue into multiple capped renewal transactions rather than one', async () => {
+        const currentLedger = 1000;
+        const keyCount = MAX_RENEWAL_BATCH_SIZE * 2 + 3; // exceeds a single batch
+        const keys = Array.from({ length: keyCount }, (_, i) =>
+            buildContractDataKey(CONTRACT_A, xdr.ScVal.scvU32(i)),
+        );
+        const ttlClient = makeAtRiskTtlClient(keys, currentLedger);
+        const txClient = makeTxClient();
+
+        const renewer = new AutomaticTTLRenewer(SOURCE_KEY, { ttlClient, txClient });
+        keys.forEach((k) => renewer.watch(k));
+        await renewer._tick();
+
+        const expectedBatches = Math.ceil(keyCount / MAX_RENEWAL_BATCH_SIZE);
+        expect(expectedBatches).toBeGreaterThan(1);
+        // One built transaction per sub-batch — never a single oversized batch.
+        expect(txClient.getAccount).toHaveBeenCalledTimes(expectedBatches);
+        expect(txClient.prepareTransaction).toHaveBeenCalledTimes(expectedBatches);
+    });
+
+    it('continues attempting later sub-batches after one sub-batch fails, alerting per failure', async () => {
+        const currentLedger = 1000;
+        const keyCount = MAX_RENEWAL_BATCH_SIZE * 3;
+        const keys = Array.from({ length: keyCount }, (_, i) =>
+            buildContractDataKey(CONTRACT_A, xdr.ScVal.scvU32(i)),
+        );
+        const ttlClient = makeAtRiskTtlClient(keys, currentLedger);
+
+        const fakeTx = { toXDR: vi.fn().mockReturnValue('renewal-tx-xdr') };
+        const fakeAccount = new Account(SOURCE_KEY, '1');
+        const prepareTransaction = vi
+            .fn()
+            .mockRejectedValueOnce(new Error('footprint resource limit exceeded'))
+            .mockResolvedValue(fakeTx);
+        const txClient = {
+            getAccount: vi.fn().mockResolvedValue(fakeAccount),
+            prepareTransaction,
+        };
+        const onAlert = vi.fn();
+
+        const renewer = new AutomaticTTLRenewer(SOURCE_KEY, { ttlClient, txClient, onAlert });
+        keys.forEach((k) => renewer.watch(k));
+        await renewer._tick();
+
+        // All 3 sub-batches attempted despite the first failing.
+        expect(prepareTransaction).toHaveBeenCalledTimes(3);
+        // Exactly one alert — for the sub-batch that failed, not the whole tick.
+        expect(onAlert).toHaveBeenCalledOnce();
+        expect(onAlert.mock.calls[0][0].keys).toHaveLength(MAX_RENEWAL_BATCH_SIZE);
     });
 });
 

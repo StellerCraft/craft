@@ -124,6 +124,46 @@ describe('Soroban Error Code Taxonomy', () => {
     });
   });
 
+  describe('parseStellarError with structured (non-Error-instance) Soroban errors', () => {
+    it('maps a plain object with a nested scv* code to the specific Soroban guidance, not UNKNOWN_ERROR', () => {
+      // Raw RPC-style error object: the contract code lives in a nested field,
+      // not an Error message.
+      const structuredError = {
+        status: 400,
+        type: 'invalid',
+        code: 'scvExceededLimit',
+        detail: 'transaction simulation failed',
+      };
+
+      const parsed = parseStellarError(structuredError);
+
+      expect(parsed.code).toBe('SOROBAN_RESOURCE_LIMIT_EXCEEDED');
+      expect(parsed.title).toBe('Resource Limit Exceeded');
+      expect(parsed.resultCode).toBe('scvExceededLimit');
+      expect(parsed.retryable).toBe(false);
+      expect(parsed.code).not.toBe('UNKNOWN_ERROR');
+      expect(parsed.code).not.toBe('MALFORMED_TRANSACTION');
+    });
+
+    it('maps a Horizon-style object whose message field carries the scv* token', () => {
+      const structuredError = {
+        message: 'host invocation failed: scvContractPanic while executing',
+      };
+
+      const parsed = parseStellarError(structuredError);
+
+      expect(parsed.code).toBe('SOROBAN_CONTRACT_PANIC');
+      expect(parsed.title).toBe('Contract Panic');
+    });
+
+    it('leaves non-Soroban structured errors unchanged', () => {
+      expect(parseStellarError({ status: 404 }).code).toBe('ACCOUNT_NOT_FOUND');
+      expect(parseStellarError({ status: 429 }).code).toBe('RATE_LIMITED');
+      expect(parseStellarError({ status: 503 }).code).toBe('ENDPOINT_UNREACHABLE');
+      expect(parseStellarError({ status: 400, type: 'invalid' }).code).toBe('MALFORMED_TRANSACTION');
+    });
+  });
+
   describe('Error Guidance for Soroban Errors', () => {
     it('should provide guidance for contract errors', () => {
       const guidance = getErrorGuidance('SOROBAN_CONTRACT_ERROR');
