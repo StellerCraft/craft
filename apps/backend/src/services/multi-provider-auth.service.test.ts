@@ -200,6 +200,20 @@ describe('MultiProviderAuthService', () => {
         expect(status.stellar).toBe(true);
     });
 
+    it('throws when the Supabase query returns an error instead of masking it as disconnected', async () => {
+        const supabase = makeSupabase();
+        supabase.from.mockReturnValue({
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            single: vi.fn().mockResolvedValue({ data: null, error: { message: 'connection dropped' } }),
+        });
+        const { multiProviderAuthService } = await import('./multi-provider-auth.service');
+
+        await expect(
+            multiProviderAuthService.getConnectionStatus(supabase, 'user-1'),
+        ).rejects.toThrow('Failed to fetch connection status: connection dropped');
+    });
+
     // ── getGitHubToken ────────────────────────────────────────────────────────
 
     it('decrypts and returns the GitHub token', async () => {
@@ -254,7 +268,7 @@ describe('MultiProviderAuthService', () => {
 
         expect(connectRes.provider).toBe('stellar');
         expect(disconnectRes.provider).toBe('stellar');
-        expect(supabase.rpc).toHaveBeenCalledWith('connect_stellar_provider', expect.objectContaining({ p_public_key: 'GCONCURRENT' }));
-        expect(supabase.rpc).toHaveBeenCalledWith('disconnect_stellar_provider', expect.objectContaining({ p_user_id: 'user-1' }));
+        expect(supabase.rpc).toHaveBeenCalledWith('set_provider_connection', expect.objectContaining({ p_user_id: 'user-1' }));
+        expect(supabase.rpc).toHaveBeenCalledWith('remove_provider_connection', expect.objectContaining({ p_user_id: 'user-1' }));
     });
 });

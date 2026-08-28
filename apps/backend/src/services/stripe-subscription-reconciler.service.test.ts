@@ -146,6 +146,28 @@ describe('StripeSubscriptionReconciler — replayed webhook idempotency', () => 
         expect(updated).toBe(true);
         expect(state.lastEventId).toBe('evt_conflict');
     });
+
+    it('does not let a stale redelivered event bypass staleness via the event-id dedup fast path', async () => {
+        // Simulate a state where lastEventId still matches the redelivered event
+        // but event_timestamp has advanced past it (e.g. after a conflict-resolution
+        // branch updated the timestamp without changing the stored ID).
+        const current = makeState({
+            status: 'past_due',
+            event_timestamp: 1_700_001_000,
+            lastEventId: 'evt_stale',
+        });
+        const staleRedelivery = makeEvent({
+            id: 'evt_stale',
+            created: 1_700_000,
+            status: 'active',
+        });
+
+        const { updated, state } = await reconciler.applyWebhookEvent(current, staleRedelivery);
+
+        expect(updated).toBe(false);
+        expect(state).toStrictEqual(current);
+        expect(mockGetSubscription).not.toHaveBeenCalled();
+    });
 });
 
 describe('StripeSubscriptionReconciler — out-of-sequence events', () => {

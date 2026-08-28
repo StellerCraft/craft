@@ -84,16 +84,21 @@ export class StripeSubscriptionReconciler {
         current: SubscriptionStateRecord,
         event: StripeWebhookEvent,
     ): Promise<{ updated: boolean; state: SubscriptionStateRecord }> {
-        // Dedup by event id: same id already applied → fast no-op
-        if (event.id === current.lastEventId) {
-            return { updated: false, state: current };
-        }
-
         // Convert Stripe timestamp (seconds) to milliseconds
         const eventTimestampMs = event.created * 1000;
 
-        // Ignore stale events (older than current state)
+        // Staleness must be validated BEFORE the event-id dedup fast path.
+        // Without this ordering, a late redelivery of an event whose ID still
+        // matches `current.lastEventId` could skip the staleness guard and
+        // re-apply state older than what `current.event_timestamp` already
+        // reflects (e.g. after a conflict-resolution branch advanced the
+        // timestamp via `reconcileFromStripe` without changing the stored ID).
         if (eventTimestampMs < current.event_timestamp) {
+            return { updated: false, state: current };
+        }
+
+        // Dedup by event id: same id already applied → fast no-op
+        if (event.id === current.lastEventId) {
             return { updated: false, state: current };
         }
 
