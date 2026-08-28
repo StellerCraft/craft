@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { checkRateLimit, getRateLimitKey, type RateLimitConfig } from './rate-limit';
 import { createClient } from '@/lib/supabase/server';
+import { createLogger, resolveCorrelationId } from './logger';
 
 /**
  * Multi-Tier Rate Limiting with Sliding Window
@@ -57,26 +58,38 @@ function isSensitiveEndpoint(route: string): boolean {
  * Get user subscription tier from the database.
  * Anonymous users get 'free' tier.
  */
-async function getUserTier(req: NextRequest): Promise<'free' | 'pro' | 'enterprise'> {
+async function getUserTier(req: NextRequest, routeKey: string): Promise<'free' | 'pro' | 'enterprise'> {
   try {
     const supabase = createClient();
     const {
       data: { user },
+      error: userError,
     } = await supabase.auth.getUser();
+
+    if (userError) throw userError;
 
     if (!user) {
       return 'free';
     }
 
-    const { data: profile } = await supabase
+    const { data: profile, error: profileError } = await supabase
       .from('profiles')
       .select('subscription_tier')
       .eq('id', user.id)
       .single();
 
+    if (profileError) throw profileError;
+
     return (profile?.subscription_tier ?? 'free') as 'free' | 'pro' | 'enterprise';
   } catch (err) {
-    // On any error, fall back to free tier (conservative)
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    createLogger({
+      correlationId: resolveCorrelationId(req),
+      route: routeKey,
+    }).warn('Subscription tier lookup failed; defaulting to free tier', {
+      route: routeKey,
+      error: errorMessage,
+    });
     return 'free';
   }
 }
@@ -100,7 +113,7 @@ export function withTierRateLimit<TParams = {}>(routeKey: string) {
         return handler(req, ctx);
       }
 
-      const tier = await getUserTier(req);
+      const tier = await getUserTier(req, routeKey);
       const isSensitive = isSensitiveEndpoint(routeKey);
       const tierLimits = isSensitive ? SENSITIVE_TIER_LIMITS : GENERAL_TIER_LIMITS;
       const config = tierLimits[tier];

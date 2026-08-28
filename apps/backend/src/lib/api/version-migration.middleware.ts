@@ -20,6 +20,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { DEFAULT_API_VERSION } from './version-negotiation';
 
 // ── Version constants ─────────────────────────────────────────────────────────
 
@@ -86,8 +87,7 @@ export function withVersionMigration(handler: RouteHandler): RouteHandler {
         let defaulted = false;
 
         if (acceptVersion === null) {
-            // No header → default to latest (v2)
-            version = 2;
+            version = DEFAULT_API_VERSION;
             defaulted = true;
         } else {
             const parsed = parseAcceptVersion(acceptVersion);
