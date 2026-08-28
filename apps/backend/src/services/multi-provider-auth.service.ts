@@ -26,6 +26,7 @@
  */
 
 import { encryptToken, decryptToken } from '@/lib/github/token-encryption';
+import { clearScopeValidationCacheEntry } from '@/lib/github/scope-validator';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -138,6 +139,16 @@ export class MultiProviderAuthService {
         provider: OAuthProvider,
     ): Promise<ExchangeResult> {
         if (provider === 'github') {
+            // Retrieve the encrypted token before clearing it so we can
+            // invalidate the matching scope-validation cache entry below.
+            // If the row is missing or already disconnected the token will be
+            // null and there is nothing to evict.
+            const { data: profile } = await supabase
+                .from('profiles')
+                .select('github_token_encrypted')
+                .eq('id', userId)
+                .single();
+
             const { error } = await supabase
                 .from('profiles')
                 .update({
@@ -150,6 +161,21 @@ export class MultiProviderAuthService {
                 .eq('id', userId);
 
             if (error) throw new Error(`Failed to disconnect GitHub: ${error.message}`);
+
+            // Invalidate the in-memory scope-validation cache entry for this
+            // token. Without this a disconnect-then-reconnect cycle that
+            // happens to reuse the same raw token value (common in test/staging
+            // environments and possible in production) would serve a stale
+            // `valid: true` result until the TTL expired.
+            if (profile?.github_token_encrypted) {
+                try {
+                    const plainToken = decryptToken(profile.github_token_encrypted);
+                    clearScopeValidationCacheEntry(plainToken);
+                } catch {
+                    // Decryption failure is non-fatal: the cache entry will
+                    // expire naturally after SCOPE_VALIDATION_CACHE_TTL_MS.
+                }
+            }
         } else {
             // Uses the remove_provider_connection RPC for the same reason
             // connectStellar uses set_provider_connection: a client-side
