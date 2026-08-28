@@ -16,6 +16,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import {
     withIdempotency,
     clearIdempotencyCache,
+    evictExpired,
     IDEMPOTENCY_KEY_HEADER,
 } from './idempotency';
 
@@ -265,5 +266,50 @@ describe('withIdempotency — non-JSON response bodies', () => {
 
         const body2 = await r2.json();
         expect(body2).toBeNull();
+    });
+});
+
+// ── Bounded / scheduled eviction (#1048) ──────────────────────────────────────
+
+describe('withIdempotency — bounded cache growth (#1048)', () => {
+    it('evicts expired entries even when no further keyed request arrives', async () => {
+        // Very short TTL so all entries expire quickly.
+        vi.stubEnv('IDEMPOTENCY_TTL_MS', '50');
+
+        const handler = makeHandler(201, { id: 'dep_1' });
+        const wrapped = withIdempotency('user_a', handler);
+
+        // One-shot keys: each used exactly once, then never re-requested.
+        for (let i = 0; i < 200; i++) {
+            await wrapped(makeRequest(`one-shot-${i}`));
+        }
+
+        // No further keyed traffic — but the entries must still expire.
+        await new Promise((r) => setTimeout(r, 80));
+        evictExpired();
+
+        await vi.waitFor(() => {
+            const replay = makeHandler(201, { id: 'dep_1' });
+            const replayedWrapped = withIdempotency('user_a', replay);
+            return replayedWrapped(makeRequest('one-shot-0')).then(() => {
+                expect(replay).toHaveBeenCalledTimes(1);
+            });
+        });
+    });
+
+    it('keeps the cache size bounded under many one-off keys', async () => {
+        // Cap the cache so growth can be asserted deterministically.
+        vi.stubEnv('IDEMPOTENCY_MAX_ENTRIES', '10');
+
+        const handler = makeHandler(201, { id: 'dep_1' });
+        const wrapped = withIdempotency('user_a', handler);
+
+        for (let i = 0; i < 500; i++) {
+            await wrapped(makeRequest(`cap-${i}`));
+        }
+
+        // Cache must never exceed the configured cap (oldest evicted on write).
+        const { _cacheSize } = await import('./idempotency');
+        expect(_cacheSize()).toBeLessThanOrEqual(10);
     });
 });
