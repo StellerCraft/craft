@@ -21,6 +21,59 @@
  * Register a handler with `onBudgetAlert`. It fires whenever either
  * resource meets or exceeds the configured threshold (default 80 %).
  *
+ * ## Combined analytics and alert usage
+ *
+ * Both `addAnalyticsSink` and `onBudgetAlert` can be registered together
+ * to track budget metrics and respond to alerts in a single flow.
+ * Use `addAnalyticsSink` (preferred) over the deprecated `setAnalyticsSink`
+ * because it supports multiple sinks without clearing existing ones.
+ *
+ * @example
+ * ```typescript
+ * import { addAnalyticsSink, onBudgetAlert, trackContractBudget } from '@craft/stellar';
+ *
+ * // Step 1: Register an analytics sink (preferred over setAnalyticsSink)
+ * const offAnalytics = addAnalyticsSink({
+ *   emit(eventName, payload) {
+ *     if (eventName === 'budget_metric') {
+ *       console.log('Budget metric:', payload);
+ *     }
+ *     // Send to your analytics backend
+ *     analytics.track(eventName, payload);
+ *   }
+ * });
+ *
+ * // Step 2: Register an alert handler
+ * const offAlert = onBudgetAlert((metric) => {
+ *   if (metric.usage.cpuAlert) {
+ *     logger.warn(`CPU usage at ${(metric.usage.cpuLimitFraction * 100).toFixed(1)}%`, metric);
+ *   }
+ *   if (metric.usage.memoryAlert) {
+ *     logger.warn(`Memory usage at ${(metric.usage.memoryLimitFraction * 100).toFixed(1)}%`, metric);
+ *   }
+ * });
+ *
+ * // Step 3: Track contract call (both analytics and alerts fire automatically)
+ * const budgetUsage = await trackContractBudget(
+ *   'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4',
+ *   'transfer',
+ *   [param1, param2],
+ *   sourcePublicKey,
+ *   { cpuFraction: 0.75, memoryFraction: 0.75 } // custom thresholds
+ * );
+ *
+ * if (budgetUsage) {
+ *   console.log('Contract invoked, budget tracked:', {
+ *     cpu: `${(budgetUsage.cpuLimitFraction * 100).toFixed(1)}%`,
+ *     memory: `${(budgetUsage.memoryLimitFraction * 100).toFixed(1)}%`,
+ *   });
+ * }
+ *
+ * // Cleanup when done
+ * offAnalytics(); // Remove the analytics sink
+ * offAlert();     // Remove the alert handler
+ * ```
+ *
  * @see https://developers.stellar.org/docs/smart-contracts/resource-limits-fees
  */
 
