@@ -40,6 +40,13 @@ export interface DLQRecoveryConfig {
      * Useful for ops dashboards or metrics collection without parsing logs.
      */
     onCircuitStateChange?: (name: string, from: CircuitState, to: CircuitState) => void;
+    /**
+     * Optional parent circuit breaker state provider (e.g., Horizon client's circuit).
+     * If provided, DLQ retries for Horizon-dependent processors will consult this
+     * breaker's state to avoid redundant attempts when the upstream service is known to be down.
+     * Called with (parentBreakerName) and should return the current CircuitState or null if unknown.
+     */
+    getParentCircuitState?: (name: string) => CircuitState | null;
 }
 
 interface RetryState {
@@ -58,6 +65,7 @@ export class DLQAutoRecovery {
     private readonly now: () => number;
     private readonly sleepFn: (ms: number) => Promise<void>;
     private readonly onCircuitStateChange?: DLQRecoveryConfig['onCircuitStateChange'];
+    private readonly getParentCircuitState?: DLQRecoveryConfig['getParentCircuitState'];
     private readonly logger = createLogger({ correlationId: randomUUID() });
 
     constructor(config: DLQRecoveryConfig = {}) {
@@ -65,6 +73,7 @@ export class DLQAutoRecovery {
         this.now = config.now ?? Date.now;
         this.sleepFn = config.sleep ?? sleep;
         this.onCircuitStateChange = config.onCircuitStateChange;
+        this.getParentCircuitState = config.getParentCircuitState;
     }
 
     /** Start the background polling loop. */
@@ -166,6 +175,31 @@ export class DLQAutoRecovery {
 
         const circuitKey = `${entry.source}:${entry.eventType}`;
         const breaker = this._circuitFor(circuitKey);
+
+        // Check if a parent/upstream service circuit breaker is open (e.g., Horizon for Horizon-dependent processors).
+        // If so, skip retrying to avoid wasting attempts on a known-down dependency.
+        // For now, we check for Horizon-dependent processors by source name convention.
+        const parentBreakerName = entry.source === 'webhook' ? 'horizon' : null;
+        if (parentBreakerName) {
+            const parentState = this.getParentCircuitState?.(parentBreakerName);
+            if (parentState === 'OPEN') {
+                this.logger.info('Skipping retry due to parent breaker OPEN', {
+                    id: entry.id,
+                    source: entry.source,
+                    eventType: entry.eventType,
+                    parentBreaker: parentBreakerName,
+                });
+                // Reschedule for later when parent might recover
+                const attempt = state.retryCount;
+                const baseDelay = RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length - 1)];
+                const nextDelay = calculateBackoffDelay(0, baseDelay, baseDelay * 1.1, 1);
+                this.retryState.set(entry.id, {
+                    nextRetryAt: this.now() + nextDelay,
+                    retryCount: attempt,
+                });
+                return;
+            }
+        }
 
         try {
             await breaker.call(() => webhookDLQ.reprocess(entry.id).then((result) => {
