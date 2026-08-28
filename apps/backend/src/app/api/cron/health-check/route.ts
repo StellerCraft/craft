@@ -12,37 +12,44 @@ import { withCronAuth } from '@/lib/api/cron-auth';
  */
 // Documented execution time budget for a single cron invocation (ms). If the sweep
 // exceeds this, it stops and resumes from the persisted cursor on the next run.
-const HEALTH_CHECK_BUDGET_MS = 60_000;
+// Override with HEALTH_CHECK_BUDGET_MS (used by tests and by platform-specific configs).
 const HEALTH_CHECK_PAGE_SIZE = 50;
 
 async function handleHealthCheck(req: NextRequest) {
     try {
         console.log('Running health check for all deployments...');
         const startedAt = Date.now();
+        const HEALTH_CHECK_BUDGET_MS = parseInt(
+            process.env.HEALTH_CHECK_BUDGET_MS || '60000',
+            10
+        );
 
-        let cursor: string | null = null;
+        // Resume from the last persisted cursor so a previously truncated run continues
+        // where it left off instead of restarting from the top.
+        let cursor: string | null = await healthMonitorService.getCheckpoint();
         let allResults: Array<{
             deploymentId: string;
             isHealthy: boolean;
             responseTime: number;
         }> = [];
 
-        // Process deployments in ordered pages. Each page is bounded by HEALTH_CHECK_PAGE_SIZE,
-        // and the returned cursor lets a truncated run resume where it left off next time.
         do {
+            const page = await healthMonitorService.checkAllDeploymentsPaged({
+                cursor,
+                limit: HEALTH_CHECK_PAGE_SIZE,
+            });
+            allResults = allResults.concat(page.results);
+            // Persist progress *before* checking the budget, so a run that is killed
+            // mid-page by the platform will resume from the last fully completed page.
+            cursor = page.nextCursor;
+            await healthMonitorService.saveCheckpoint(cursor);
+
             if (Date.now() - startedAt > HEALTH_CHECK_BUDGET_MS) {
                 console.warn(
                     'Health-check budget exceeded; resuming from cursor on next invocation.'
                 );
                 break;
             }
-
-            const page = await healthMonitorService.checkAllDeploymentsPaged({
-                cursor,
-                limit: HEALTH_CHECK_PAGE_SIZE,
-            });
-            allResults = allResults.concat(page.results);
-            cursor = page.nextCursor;
         } while (cursor);
 
         const unhealthyCount = allResults.filter((r) => !r.isHealthy).length;

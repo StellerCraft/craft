@@ -27,6 +27,8 @@ const mockHealthMonitorService = {
     nextCursor: null,
     totalProcessed: mockHealthCheckResults.length,
   }),
+  getCheckpoint: vi.fn().mockResolvedValue(null),
+  saveCheckpoint: vi.fn().mockResolvedValue(undefined),
 };
 
 const mockVercelService = {
