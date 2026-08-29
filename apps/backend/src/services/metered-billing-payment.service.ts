@@ -112,11 +112,22 @@ export class MeteringPaymentIntegration {
     userId: string,
     operationType: string,
     quantity: number = 1,
-    timestamp?: number
+    timestamp?: number,
+    paymentIdempotencyKey?: string
   ): Promise<{ success: boolean; error?: string }> {
     try {
-      // Record usage locally first
-      const localRecord = await meterService.recordUsage(userId, operationType, quantity);
+      // Record usage locally first. When the caller has a payment idempotency
+      // key for the underlying checkout (the logical operation identity), thread
+      // it through as the metering dedup key so a retried checkout — which the
+      // payment layer already de-duplicates — is metered exactly once regardless
+      // of how many seconds elapsed between attempts (issue #1151).
+      const localRecord = await meterService.recordUsage(
+        userId,
+        operationType,
+        quantity,
+        {},
+        paymentIdempotencyKey
+      );
 
       // Get subscription from profile
       const supabase = createClient();

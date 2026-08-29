@@ -83,12 +83,18 @@ export class MeteringService {
     userId: string,
     operationType: string,
     quantity: number = 1,
-    metadata: Record<string, unknown> = {}
+    metadata: Record<string, unknown> = {},
+    dedupKey?: string
   ): Promise<UsageRecord> {
     const supabase = createClient();
     const now = new Date();
     const billingPeriod = this.getBillingPeriod(now);
-    const idempotencyKey = this.generateIdempotencyKey(userId, operationType);
+    // When an explicit dedup key is supplied (e.g. the payment idempotency key
+    // for the same logical checkout), prefer it over the one-second-granularity
+    // key we'd otherwise derive. This prevents a retried checkout that lands in
+    // a different calendar second from producing a second, duplicate usage
+    // record for the same logical operation (see issue #1151).
+    const idempotencyKey = dedupKey || this.generateIdempotencyKey(userId, operationType);
 
     try {
       const { data: record, error: upsertError } = await supabase
