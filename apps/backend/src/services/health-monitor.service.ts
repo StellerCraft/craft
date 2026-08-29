@@ -20,6 +20,14 @@ interface PoolMetricsInternal {
 
 const POOL_ALERT_THRESHOLD = 0.8;
 const POOL_METRICS_WINDOW_MS = 60_000;
+
+/**
+ * Documented time budget for a single cron health-check sweep (issue #1152).
+ * Platforms such as Vercel cap cron function execution; the sweep is expected to
+ * finish well under this. `checkAllDeployments` can be paged (cursor/limit) to
+ * stay within it for very large deployment counts.
+ */
+export const HEALTH_CHECK_SWEEP_BUDGET_MS = 30_000;
 const poolMetrics: PoolMetricsInternal = {
     activeConnections: 0,
     idleConnections: 0,
@@ -89,27 +97,52 @@ export class HealthMonitorService {
     }
 
     /**
-     * Check health for all active deployments
+     * Check health for all active deployments.
+     *
+     * The sweep fans out across every active deployment via `pMap`. To bound the
+     * cron execution time budget (issue #1152) and to allow a truncated run to
+     * resume instead of restarting from the beginning, callers may pass
+     * `{ cursor, limit }` to page the underlying query. When `limit` is provided
+     * the method returns a paged result (`{ results, nextCursor, truncated }`)
+     * whose `nextCursor` can be fed into the next invocation. When called with no
+     * options the behavior is unchanged for existing callers (a flat array).
      */
-    async checkAllDeployments(): Promise<
-        Array<{
-            deploymentId: string;
-            isHealthy: boolean;
-            responseTime: number;
-        }>
+    async checkAllDeployments(
+        opts: { cursor?: number; limit?: number } = {},
+    ): Promise<
+        | Array<{
+              deploymentId: string;
+              isHealthy: boolean;
+              responseTime: number;
+          }>
+        | {
+              results: Array<{
+                  deploymentId: string;
+                  isHealthy: boolean;
+                  responseTime: number;
+              }>;
+              nextCursor: number | null;
+              truncated: boolean;
+          }
     > {
         const supabase = createClient();
 
         const startTime = Date.now();
+        const limit = opts.limit ?? Number.MAX_SAFE_INTEGER;
+        const cursor = opts.cursor ?? 0;
 
         const { data: deployments } = await supabase
             .from('deployments')
             .select('id')
             .eq('status', 'completed')
-            .eq('is_active', true);
+            .eq('is_active', true)
+            .order('id', { ascending: true })
+            .range(cursor, cursor + limit - 1);
 
         if (!deployments) {
-            return [];
+            return opts.limit !== undefined
+                ? { results: [], nextCursor: null, truncated: false }
+                : [];
         }
 
         const results = await pMap(
@@ -127,8 +160,17 @@ export class HealthMonitorService {
 
         const durationMs = Date.now() - startTime;
         console.log(
-            `[health-monitor] Sweep completed: ${deployments.length} deployments checked in ${durationMs}ms`
+            `[health-monitor] Sweep completed: ${deployments.length} deployments checked in ${durationMs}ms (cursor=${cursor}, limit=${limit})`
         );
+
+        if (opts.limit !== undefined) {
+            const truncated = deployments.length >= limit;
+            return {
+                results,
+                nextCursor: truncated ? cursor + limit : null,
+                truncated,
+            };
+        }
 
         return results;
     }
