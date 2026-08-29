@@ -71,13 +71,13 @@ export class MeteringService {
   }
 
   /**
-   * Record API usage atomically under concurrent requests
+   * Record API usage atomically under concurrent requests.
    *
-   * Idempotent: Uses atomic upsert on idempotency_key to handle
-   * concurrent calls within the same second safely. Multiple concurrent
-   * recordUsage() calls with the same (userId, operationType) within
-   * the same second will result in exactly one usage record with
-   * summed quantity, never duplicates or unhandled errors.
+   * Each user/operation pair in a single second is keyed by a deterministic
+   * idempotency key. The first insert wins; any concurrent duplicate call in
+   * the same second is resolved by an atomic Postgres increment RPC so the
+   * final quantity reflects the sum of all attempts without a read-then-update
+   * race.
    */
   async recordUsage(
     userId: string,
@@ -115,29 +115,21 @@ export class MeteringService {
 
       return record as UsageRecord;
     } catch (error: any) {
-      if (error.code === '23505') {
-        const { data: existingRecords, error: fetchError } = await supabase
-          .from('usage_records')
-          .select('*')
-          .eq('idempotency_key', idempotencyKey)
-          .single();
+      if (error?.code === '23505') {
+        const { data: updated, error: rpcError } = await supabase.rpc(
+          'increment_usage_record_quantity',
+          {
+            p_user_id: userId,
+            p_operation_type: operationType,
+            p_quantity: quantity,
+            p_metadata: metadata ?? {},
+            p_billing_period_start: billingPeriod.start.toISOString().slice(0, 10),
+            p_billing_period_end: billingPeriod.end.toISOString().slice(0, 10),
+            p_idempotency_key: idempotencyKey,
+          }
+        );
 
-        if (!fetchError && existingRecords) {
-          const newQuantity = (existingRecords.quantity || 0) + quantity;
-
-          const { data: updated } = await supabase
-            .from('usage_records')
-            .update({
-              quantity: newQuantity,
-              metadata: {
-                ...existingRecords.metadata,
-                ...metadata,
-              },
-            })
-            .eq('id', existingRecords.id)
-            .select()
-            .single();
-
+        if (!rpcError && updated) {
           return updated as UsageRecord;
         }
       }
