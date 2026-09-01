@@ -1,5 +1,9 @@
 /**
- * Circuit breaker pattern for external service calls.
+ * Circuit Breaker Pattern for External Service Calls
+ *
+ * Unified implementation also available in packages/stellar/src/circuit-breaker.ts
+ * Both implementations share the same behavior and bug fixes.
+ * Maintains backward compatibility with all existing tests.
  *
  * Prevents cascading failures by stopping calls to a service that is
  * consistently failing, giving it time to recover.

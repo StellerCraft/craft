@@ -8,6 +8,8 @@
  * - Logging: each retry is logged to the analytics service
  */
 
+import { CircuitBreaker } from './circuit-breaker';
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface HorizonResponse<T = unknown> {
@@ -49,61 +51,6 @@ export interface RequestOptions {
 
 /** Request body type (same as fetch BodyInit). */
 export type BodyInit = string | Uint8Array | ReadableStream<Uint8Array> | FormData | URLSearchParams;
-
-type CircuitState = 'closed' | 'open' | 'half-open';
-
-// ── Circuit breaker state machine ─────────────────────────────────────────────
-
-export class CircuitBreaker {
-  private state: CircuitState = 'closed';
-  private failureTimes: number[] = [];
-  private openedAt = 0;
-
-  constructor(
-    private readonly threshold: number,
-    private readonly windowMs: number,
-    private readonly recoveryMs: number,
-  ) {}
-
-  getState(): CircuitState {
-    if (this.state === 'open') {
-      if (Date.now() - this.openedAt >= this.recoveryMs) {
-        this.state = 'half-open';
-      }
-    }
-    return this.state;
-  }
-
-  /** Call after a successful request. */
-  recordSuccess(): void {
-    this.state = 'closed';
-    this.failureTimes = [];
-  }
-
-  /** Call after a failed request. Opens circuit when threshold is reached. */
-  recordFailure(): void {
-    const now = Date.now();
-
-    // If half-open, immediately trip back to open on any failure
-    if (this.state === 'half-open') {
-      this.state = 'open';
-      this.openedAt = now;
-      return;
-    }
-
-    this.failureTimes = this.failureTimes.filter((t) => now - t < this.windowMs);
-    this.failureTimes.push(now);
-
-    if (this.failureTimes.length >= this.threshold) {
-      this.state = 'open';
-      this.openedAt = now;
-    }
-  }
-
-  isOpen(): boolean {
-    return this.getState() === 'open';
-  }
-}
 
 // ── Adaptive retry helper ──────────────────────────────────────────────────────
 
@@ -161,11 +108,11 @@ export class HorizonClient {
     this.maxRetries = options.maxRetries ?? 3;
     this.onRetry = options.onRetry;
     this._fetch = options._fetch ?? globalThis.fetch;
-    this.circuit = new CircuitBreaker(
-      options.circuitOpenThreshold ?? 5,
-      options.circuitWindowMs ?? 30_000,
-      options.circuitRecoveryMs ?? 60_000,
-    );
+    this.circuit = new CircuitBreaker({
+      name: 'horizon',
+      failureThreshold: options.circuitOpenThreshold ?? 5,
+      resetTimeoutMs: options.circuitRecoveryMs ?? 60_000,
+    });
   }
 
   /**
