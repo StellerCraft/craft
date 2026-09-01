@@ -140,12 +140,14 @@ export function createIssuanceSession(config: MultiPartyConfig, baseTxXdr: strin
  * @param signerPublicKey  - Public key of the co-signer submitting the signature
  * @param signedTxXdr      - Transaction signed by this co-signer
  * @param networkPassphrase - Stellar network passphrase for XDR parsing
+ * @param _now             - Override current timestamp (for testing)
  */
 export function addCoSignerSignature(
     sessionId: string,
     signerPublicKey: string,
     signedTxXdr: string,
     networkPassphrase: string,
+    _now: number = Date.now(),
 ): AddSignatureResult {
     const session = sessionStore.get(sessionId);
     if (!session) {
@@ -153,7 +155,7 @@ export function addCoSignerSignature(
     }
 
     // Expire sessions that exceeded the timeout
-    if (isSessionExpired(session, Date.now())) {
+    if (isSessionExpired(session, _now)) {
         session.state = 'expired';
         return { ok: false, error: 'Session has expired' };
     }

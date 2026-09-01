@@ -43,7 +43,7 @@ import {
 
 ## Deterministic Contract Address Derivation
 
-`deriveContractAddress(deployerPublicKey, salt, wasmHash)` computes the Soroban
+`deriveContractAddress(deployerPublicKey, salt, wasmHash, networkPassphrase)` computes the Soroban
 contract address that will be assigned when a contract is deployed with the given
 parameters, without submitting any transaction.
 
@@ -64,18 +64,79 @@ guaranteed to match the address assigned at deployment time.
 | `deployerPublicKey`| `string`           | `G…` Stellar public key of the deploying account |
 | `salt`             | `Buffer \| string` | 32-byte deployment salt (Buffer or hex string)   |
 | `wasmHash`         | `Buffer \| string` | 32-byte SHA-256 hash of the WASM binary          |
+| `networkPassphrase`| `string`           | Network passphrase (e.g., `Networks.PUBLIC`, `Networks.TESTNET_FUTURE`, etc.) |
 
 ### Example
 
 ```ts
 import { deriveContractAddress, verifyContractAddress } from '@craft/stellar';
+import { Networks } from 'stellar-sdk';
 
-const previewAddress = deriveContractAddress(deployerKey, salt, wasmHash);
+// Current signature requires networkPassphrase to prevent cross-network address collisions
+const previewAddress = deriveContractAddress(
+  deployerKey,
+  salt,
+  wasmHash,
+  Networks.PUBLIC_NETWORK_PASSPHRASE,
+);
 console.log('Pre-deployment address:', previewAddress);
 
 // After deployment, verify the address matches
-const isMatch = verifyContractAddress(deployerKey, salt, wasmHash, deployedAddress);
+const isMatch = verifyContractAddress(
+  deployerKey,
+  salt,
+  wasmHash,
+  deployedAddress,
+  Networks.PUBLIC_NETWORK_PASSPHRASE,
+);
 ```
+
+### Breaking Changes (v1.x)
+
+**Version 1.x introduced a breaking change**: both `deriveContractAddress` and `verifyContractAddress`
+now require a `networkPassphrase` parameter as their final argument.
+
+#### Migration Guide
+
+**Before (pre-v1.x):**
+```ts
+const address = deriveContractAddress(deployerKey, salt, wasmHash);
+const isValid = verifyContractAddress(deployerKey, salt, wasmHash, deployedAddress);
+```
+
+**After (v1.x+):**
+```ts
+import { Networks } from 'stellar-sdk';
+
+const address = deriveContractAddress(
+  deployerKey,
+  salt,
+  wasmHash,
+  Networks.PUBLIC_NETWORK_PASSPHRASE,
+);
+const isValid = verifyContractAddress(
+  deployerKey,
+  salt,
+  wasmHash,
+  deployedAddress,
+  Networks.PUBLIC_NETWORK_PASSPHRASE,
+);
+```
+
+#### Rationale
+
+The `networkPassphrase` parameter is required to **prevent cross-network address collisions**.
+Contract addresses are deterministic based on the deployer, salt, WASM hash, and **network**.
+Without including the network passphrase in the derivation, the same parameters could produce
+identical addresses on different networks (Mainnet, Testnet, etc.), leading to confusion and
+potential security issues.
+
+#### Available Network Passphrases
+
+- `Networks.PUBLIC_NETWORK_PASSPHRASE` – Stellar public network
+- `Networks.TESTNET_NETWORK_PASSPHRASE` – Stellar test network
+- `Networks.FUTURENET_NETWORK_PASSPHRASE` – Stellar future network
+- Custom passphrase string (for private networks)
 
 ---
 
