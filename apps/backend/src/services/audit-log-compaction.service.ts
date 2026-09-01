@@ -18,6 +18,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { RETENTION_POLICY, getRetentionPolicyWindows, validateRetentionWindows } from '@/lib/retention-policy';
 
 export interface CompactionConfig {
     /** Days to retain full audit events before PII redaction. Default: 90 */
@@ -49,7 +50,12 @@ export class AuditLogCompactionService {
         private readonly supabase: SupabaseClient,
         config: CompactionConfig = {},
     ) {
-        this.retentionDays = config.retentionDays ?? 90;
+        this.retentionDays = config.retentionDays ?? RETENTION_POLICY.auditLogCompaction.defaultDays;
+        validateRetentionWindows({
+            auditLogCompactionDays: this.retentionDays,
+            analyticsPurgeDays: getRetentionPolicyWindows().analyticsPurgeDays,
+            tombstonedDeploymentPurgeDays: getRetentionPolicyWindows().tombstonedDeploymentPurgeDays,
+        });
         this.archiveBucket = config.archiveBucket ?? 'audit-archive';
         this.batchSize = config.batchSize ?? 500;
         this.now = config.now ?? (() => new Date());
