@@ -118,6 +118,11 @@ export class CronFailureTrackerService {
             // If optimistic-concurrency retries were exhausted due to high contention,
             // fall back to a direct upsert so the failure is recorded.
             if (persistedCount === null) {
+                console.warn(
+                    '[cron-failure-tracker] Optimistic-concurrency retries exhausted for job ' +
+                    `"${jobName}": concurrent writers likely caused a lost increment. ` +
+                    'Falling back to non-atomic upsert — the recorded consecutive_failures count may be understated.'
+                );
                 const { data: existing } = await supabase
                     .from('cron_job_failures')
                     .select('consecutive_failures')

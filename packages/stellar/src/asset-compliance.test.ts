@@ -147,3 +147,154 @@ describe('loadComplianceConfig — malformed env var diagnostics', () => {
     expect(config.jurisdictionRules).toHaveLength(1);
   });
 });
+
+// ── Issue #1126 – malformed env var parsing and override precedence ──────────
+
+describe('loadComplianceConfig — independent malformed env var handling (#1126)', () => {
+  const originalBlocklist = process.env.COMPLIANCE_BLOCKLIST_JSON;
+  const originalJurisdiction = process.env.COMPLIANCE_JURISDICTION_JSON;
+
+  afterEach(() => {
+    if (originalBlocklist === undefined) delete process.env.COMPLIANCE_BLOCKLIST_JSON;
+    else process.env.COMPLIANCE_BLOCKLIST_JSON = originalBlocklist;
+    if (originalJurisdiction === undefined) delete process.env.COMPLIANCE_JURISDICTION_JSON;
+    else process.env.COMPLIANCE_JURISDICTION_JSON = originalJurisdiction;
+    vi.restoreAllMocks();
+  });
+
+  it('returns empty blocklist for malformed COMPLIANCE_BLOCKLIST_JSON while preserving valid COMPLIANCE_JURISDICTION_JSON', () => {
+    process.env.COMPLIANCE_BLOCKLIST_JSON = '[{ invalid json }]';
+    process.env.COMPLIANCE_JURISDICTION_JSON = '[{"jurisdiction":"US","blockedAssets":["TOKEN"]}]';
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const config = loadComplianceConfig();
+
+    expect(config.blocklist).toEqual([]);
+    expect(config.jurisdictionRules).toHaveLength(1);
+    expect(config.jurisdictionRules[0].jurisdiction).toBe('US');
+    expect(warnSpy).toHaveBeenCalledOnce();
+    expect(warnSpy.mock.calls[0][0]).toContain('COMPLIANCE_BLOCKLIST_JSON');
+  });
+
+  it('returns empty jurisdictionRules for malformed COMPLIANCE_JURISDICTION_JSON while preserving valid COMPLIANCE_BLOCKLIST_JSON', () => {
+    process.env.COMPLIANCE_BLOCKLIST_JSON = '[{"issuer":"GABC","reason":"Test"}]';
+    process.env.COMPLIANCE_JURISDICTION_JSON = 'not a json array at all';
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const config = loadComplianceConfig();
+
+    expect(config.blocklist).toHaveLength(1);
+    expect(config.blocklist[0].issuer).toBe('GABC');
+    expect(config.jurisdictionRules).toEqual([]);
+    expect(warnSpy).toHaveBeenCalledOnce();
+    expect(warnSpy.mock.calls[0][0]).toContain('COMPLIANCE_JURISDICTION_JSON');
+  });
+
+  it('returns empty lists when both env vars are malformed', () => {
+    process.env.COMPLIANCE_BLOCKLIST_JSON = '[{ malformed }]';
+    process.env.COMPLIANCE_JURISDICTION_JSON = '{ also malformed }';
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const config = loadComplianceConfig();
+
+    expect(config.blocklist).toEqual([]);
+    expect(config.jurisdictionRules).toEqual([]);
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('logs separate warnings for each malformed variable', () => {
+    process.env.COMPLIANCE_BLOCKLIST_JSON = '[{ bad }]';
+    process.env.COMPLIANCE_JURISDICTION_JSON = '{ bad }';
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const config = loadComplianceConfig();
+
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+    const calls = warnSpy.mock.calls.map((c) => c[0] as string);
+    expect(calls[0]).toContain('COMPLIANCE_BLOCKLIST_JSON');
+    expect(calls[1]).toContain('COMPLIANCE_JURISDICTION_JSON');
+  });
+});
+
+describe('loadComplianceConfig — override precedence (#1126)', () => {
+  const originalBlocklist = process.env.COMPLIANCE_BLOCKLIST_JSON;
+  const originalJurisdiction = process.env.COMPLIANCE_JURISDICTION_JSON;
+
+  afterEach(() => {
+    if (originalBlocklist === undefined) delete process.env.COMPLIANCE_BLOCKLIST_JSON;
+    else process.env.COMPLIANCE_BLOCKLIST_JSON = originalBlocklist;
+    if (originalJurisdiction === undefined) delete process.env.COMPLIANCE_JURISDICTION_JSON;
+    else process.env.COMPLIANCE_JURISDICTION_JSON = originalJurisdiction;
+    vi.restoreAllMocks();
+  });
+
+  it('override parameter takes complete precedence over env vars for blocklist', () => {
+    process.env.COMPLIANCE_BLOCKLIST_JSON = '[{"issuer":"GENV","reason":"From env"}]';
+    const overriddenBlocklist = [{ issuer: 'GOVERIDE', reason: 'From override' }];
+
+    const config = loadComplianceConfig({ blocklist: overriddenBlocklist });
+
+    expect(config.blocklist).toHaveLength(1);
+    expect(config.blocklist[0].issuer).toBe('GOVERIDE');
+    expect(config.blocklist[0].reason).toBe('From override');
+  });
+
+  it('override parameter takes complete precedence over env vars for jurisdictionRules', () => {
+    process.env.COMPLIANCE_JURISDICTION_JSON = '[{"jurisdiction":"US","blockedAssets":["TOKEN1"]}]';
+    const overriddenRules = [{ jurisdiction: 'CN', blockedAssets: ['TOKEN2', 'TOKEN3'] }];
+
+    const config = loadComplianceConfig({ jurisdictionRules: overriddenRules });
+
+    expect(config.jurisdictionRules).toHaveLength(1);
+    expect(config.jurisdictionRules[0].jurisdiction).toBe('CN');
+    expect(config.jurisdictionRules[0].blockedAssets).toEqual(['TOKEN2', 'TOKEN3']);
+  });
+
+  it('override blocklist with malformed COMPLIANCE_JURISDICTION_JSON still loads and warns', () => {
+    process.env.COMPLIANCE_JURISDICTION_JSON = '[{ bad }]';
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const overriddenBlocklist = [{ issuer: 'GOVERIDE', reason: 'Test' }];
+
+    const config = loadComplianceConfig({
+      blocklist: overriddenBlocklist,
+    });
+
+    expect(config.blocklist).toEqual(overriddenBlocklist);
+    expect(config.jurisdictionRules).toEqual([]);
+    expect(warnSpy).toHaveBeenCalledOnce();
+    expect(warnSpy.mock.calls[0][0]).toContain('COMPLIANCE_JURISDICTION_JSON');
+  });
+
+  it('override jurisdictionRules with malformed COMPLIANCE_BLOCKLIST_JSON still loads and warns', () => {
+    process.env.COMPLIANCE_BLOCKLIST_JSON = '{ bad }';
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const overriddenRules = [{ jurisdiction: 'US', blockedAssets: ['TOKEN'] }];
+
+    const config = loadComplianceConfig({
+      jurisdictionRules: overriddenRules,
+    });
+
+    expect(config.blocklist).toEqual([]);
+    expect(config.jurisdictionRules).toEqual(overriddenRules);
+    expect(warnSpy).toHaveBeenCalledOnce();
+    expect(warnSpy.mock.calls[0][0]).toContain('COMPLIANCE_BLOCKLIST_JSON');
+  });
+
+  it('override takes precedence even when all env vars are valid', () => {
+    process.env.COMPLIANCE_BLOCKLIST_JSON = '[{"issuer":"GENV","reason":"Env"}]';
+    process.env.COMPLIANCE_JURISDICTION_JSON = '[{"jurisdiction":"US","blockedAssets":["ENV_TOKEN"]}]';
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const overriddenBlocklist = [{ issuer: 'GOVERIDE', reason: 'Override' }];
+    const overriddenRules = [{ jurisdiction: 'CN', blockedAssets: ['OVERRIDE_TOKEN'] }];
+
+    const config = loadComplianceConfig({
+      blocklist: overriddenBlocklist,
+      jurisdictionRules: overriddenRules,
+    });
+
+    expect(config.blocklist).toEqual(overriddenBlocklist);
+    expect(config.jurisdictionRules).toEqual(overriddenRules);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+});

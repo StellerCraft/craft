@@ -536,3 +536,81 @@ describe('SorobanEventRelay – dead-letter buffer size cap (#1107)', () => {
         expect(relay.deadLetterBuffer).toHaveLength(1);
     });
 });
+
+describe('SorobanEventRelay – dead-letter buffer under ACK failures', () => {
+    it('does not enter DLB when event is acknowledged on fourth delivery attempt', async () => {
+        vi.useFakeTimers();
+
+        const ws = makeMockWs();
+        const events = [makeMockEvent(CONTRACT_A, 'transfer', 100)];
+        const client = makeMockClient(events, 100);
+
+        const relay = new SorobanEventRelay(ws, client, {
+            ackTimeoutMs: 1_000,
+            maxDeliveryAttempts: 5, // Allow up to 5 attempts
+        });
+
+        relay.subscribe({ contractId: CONTRACT_A });
+        // Flush promises from initial poll
+        for (let i = 0; i < 10; i++) await Promise.resolve();
+
+        // Simulate 3 failed ACKs (attempts 1, 2, 3)
+        for (let i = 0; i < 3; i++) {
+            vi.advanceTimersByTime(1_001);
+            for (let j = 0; j < 5; j++) await Promise.resolve();
+        }
+
+        // Event should still be in staging buffer after 3 failures
+        expect(relay.deadLetterBuffer).toHaveLength(0);
+
+        // Now, before the 4th timeout fires, acknowledge the event
+        const stagedEventId = Array.from((relay as any).stagingBuffer.keys())[0];
+        relay.acknowledgeEvent(stagedEventId);
+
+        // Advance timer for the 4th attempt (would have triggered without ACK)
+        vi.advanceTimersByTime(1_001);
+        for (let i = 0; i < 5; i++) await Promise.resolve();
+
+        // Event should never reach dead-letter buffer because it was acknowledged
+        expect(relay.deadLetterBuffer).toHaveLength(0);
+        // Event should be cleared from staging buffer
+        expect((relay as any).stagingBuffer.size).toBe(0);
+    });
+
+    it('clears staged events on unsubscribe without adding to DLB', async () => {
+        vi.useFakeTimers();
+
+        const ws = makeMockWs();
+        const events = [
+            makeMockEvent(CONTRACT_A, 'transfer', 100),
+            makeMockEvent(CONTRACT_A, 'transfer', 101),
+        ];
+        const client = makeMockClient(events, 101);
+
+        const relay = new SorobanEventRelay(ws, client, {
+            ackTimeoutMs: 1_000,
+            maxDeliveryAttempts: 2,
+        });
+
+        relay.subscribe({ contractId: CONTRACT_A });
+        // Flush promises from initial poll
+        for (let i = 0; i < 10; i++) await Promise.resolve();
+
+        // Verify events are in staging buffer
+        expect((relay as any).stagingBuffer.size).toBeGreaterThan(0);
+        expect(relay.deadLetterBuffer).toHaveLength(0);
+
+        // Unsubscribe before any ACK timeouts fire
+        relay.unsubscribe({ contractId: CONTRACT_A });
+
+        // Staged events should be cleared
+        expect((relay as any).stagingBuffer.size).toBe(0);
+
+        // Advance time well beyond ACK timeout
+        vi.advanceTimersByTime(5_000);
+        for (let i = 0; i < 5; i++) await Promise.resolve();
+
+        // Dead-letter buffer should remain empty; events were not moved there
+        expect(relay.deadLetterBuffer).toHaveLength(0);
+    });
+});

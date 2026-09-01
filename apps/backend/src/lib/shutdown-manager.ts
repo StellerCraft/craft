@@ -116,3 +116,14 @@ export async function drain(): Promise<void> {
 
     await unsubscribeAll();
 }
+
+/**
+ * Reset internal state for test isolation.
+ * Exposed for testing only.
+ */
+export function _resetState(): void {
+    draining = false;
+    inFlight.clear();
+    realtimeCleanups.length = 0;
+}
+

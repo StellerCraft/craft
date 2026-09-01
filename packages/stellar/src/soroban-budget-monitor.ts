@@ -21,6 +21,59 @@
  * Register a handler with `onBudgetAlert`. It fires whenever either
  * resource meets or exceeds the configured threshold (default 80 %).
  *
+ * ## Combined analytics and alert usage
+ *
+ * Both `addAnalyticsSink` and `onBudgetAlert` can be registered together
+ * to track budget metrics and respond to alerts in a single flow.
+ * Use `addAnalyticsSink` (preferred) over the deprecated `setAnalyticsSink`
+ * because it supports multiple sinks without clearing existing ones.
+ *
+ * @example
+ * ```typescript
+ * import { addAnalyticsSink, onBudgetAlert, trackContractBudget } from '@craft/stellar';
+ *
+ * // Step 1: Register an analytics sink (preferred over setAnalyticsSink)
+ * const offAnalytics = addAnalyticsSink({
+ *   emit(eventName, payload) {
+ *     if (eventName === 'budget_metric') {
+ *       console.log('Budget metric:', payload);
+ *     }
+ *     // Send to your analytics backend
+ *     analytics.track(eventName, payload);
+ *   }
+ * });
+ *
+ * // Step 2: Register an alert handler
+ * const offAlert = onBudgetAlert((metric) => {
+ *   if (metric.usage.cpuAlert) {
+ *     logger.warn(`CPU usage at ${(metric.usage.cpuLimitFraction * 100).toFixed(1)}%`, metric);
+ *   }
+ *   if (metric.usage.memoryAlert) {
+ *     logger.warn(`Memory usage at ${(metric.usage.memoryLimitFraction * 100).toFixed(1)}%`, metric);
+ *   }
+ * });
+ *
+ * // Step 3: Track contract call (both analytics and alerts fire automatically)
+ * const budgetUsage = await trackContractBudget(
+ *   'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4',
+ *   'transfer',
+ *   [param1, param2],
+ *   sourcePublicKey,
+ *   { cpuFraction: 0.75, memoryFraction: 0.75 } // custom thresholds
+ * );
+ *
+ * if (budgetUsage) {
+ *   console.log('Contract invoked, budget tracked:', {
+ *     cpu: `${(budgetUsage.cpuLimitFraction * 100).toFixed(1)}%`,
+ *     memory: `${(budgetUsage.memoryLimitFraction * 100).toFixed(1)}%`,
+ *   });
+ * }
+ *
+ * // Cleanup when done
+ * offAnalytics(); // Remove the analytics sink
+ * offAlert();     // Remove the alert handler
+ * ```
+ *
  * @see https://developers.stellar.org/docs/smart-contracts/resource-limits-fees
  */
 
@@ -157,7 +210,12 @@ export function emitBudgetMetrics(metric: BudgetMetric): void {
 // ── Module-level state (ring-buffer + handlers) ───────────────────────────────
 
 const MAX_STORED_METRICS = 1_000;
-const metricsStore: BudgetMetric[] = [];
+
+// Circular buffer implementation: O(1) push instead of O(n) with shift()
+const metricsBuffer = new Array<BudgetMetric>(MAX_STORED_METRICS);
+let metricsWriteIndex = 0;
+let metricsCount = 0;
+
 const alertHandlers: BudgetAlertHandler[] = [];
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -187,14 +245,33 @@ export function onBudgetAlert(handler: BudgetAlertHandler): () => void {
  * Call in test teardown to ensure isolation between test cases.
  */
 export function clearBudgetMetrics(): void {
-    metricsStore.length = 0;
+    metricsWriteIndex = 0;
+    metricsCount = 0;
 }
 
 /**
  * Return a read-only snapshot of all recorded budget metrics (newest last).
+ * Reconstructs the circular buffer in insertion order.
  */
 export function getBudgetMetrics(): readonly BudgetMetric[] {
-    return metricsStore;
+    if (metricsCount === 0) return [];
+
+    const result: BudgetMetric[] = [];
+
+    if (metricsCount < MAX_STORED_METRICS) {
+        // Buffer not yet full: read from index 0 to writeIndex
+        for (let i = 0; i < metricsCount; i++) {
+            result.push(metricsBuffer[i]!);
+        }
+    } else {
+        // Buffer is full: read from writeIndex (oldest) to writeIndex-1 (newest)
+        for (let i = 0; i < MAX_STORED_METRICS; i++) {
+            const index = (metricsWriteIndex + i) % MAX_STORED_METRICS;
+            result.push(metricsBuffer[index]!);
+        }
+    }
+
+    return result;
 }
 
 /**
@@ -299,10 +376,14 @@ function extractBudgetUsage(
 }
 
 function pushMetric(metric: BudgetMetric): void {
-    if (metricsStore.length >= MAX_STORED_METRICS) {
-        metricsStore.shift();
+    // Circular buffer: write to current index and advance
+    metricsBuffer[metricsWriteIndex] = metric;
+    metricsWriteIndex = (metricsWriteIndex + 1) % MAX_STORED_METRICS;
+
+    // Track actual count (up to MAX_STORED_METRICS)
+    if (metricsCount < MAX_STORED_METRICS) {
+        metricsCount++;
     }
-    metricsStore.push(metric);
 
     // Emit to analytics sink immediately (#788)
     emitBudgetMetrics(metric);

@@ -438,3 +438,110 @@ describe('trackContractBudget – precomputedSimulation (#1108)', () => {
         expect(metrics[0].method).toBe('myMethod');
     });
 });
+
+describe('Circular buffer metrics storage', () => {
+    it('preserves insertion order when buffer is below capacity', async () => {
+        const mockSimulate = vi.fn()
+            .mockResolvedValueOnce(makeSimulation('1000000', '512000'))
+            .mockResolvedValueOnce(makeSimulation('2000000', '1024000'))
+            .mockResolvedValueOnce(makeSimulation('3000000', '2048000'));
+
+        await trackContractBudget(CONTRACT_ID, 'method1', [], SOURCE_KEY, {}, mockSimulate);
+        await trackContractBudget(CONTRACT_ID, 'method2', [], SOURCE_KEY, {}, mockSimulate);
+        await trackContractBudget(CONTRACT_ID, 'method3', [], SOURCE_KEY, {}, mockSimulate);
+
+        const metrics = getBudgetMetrics();
+        expect(metrics).toHaveLength(3);
+        expect(metrics[0].method).toBe('method1');
+        expect(metrics[1].method).toBe('method2');
+        expect(metrics[2].method).toBe('method3');
+    });
+
+    it('returns empty array when no metrics recorded', () => {
+        clearBudgetMetrics();
+        const metrics = getBudgetMetrics();
+        expect(metrics).toEqual([]);
+    });
+
+    it('evicts oldest entry when buffer reaches capacity', async () => {
+        const mockSimulate = vi.fn().mockImplementation((_, method) =>
+            Promise.resolve(makeSimulation('1000000', '512000')),
+        );
+
+        // Push MAX_STORED_METRICS + 1 entries
+        for (let i = 0; i < 1001; i++) {
+            await trackContractBudget(CONTRACT_ID, `method${i}`, [], SOURCE_KEY, {}, mockSimulate);
+        }
+
+        const metrics = getBudgetMetrics();
+        expect(metrics).toHaveLength(1000);
+        // First entry should be method1 (method0 was evicted)
+        expect(metrics[0].method).toBe('method1');
+        // Last entry should be method1000
+        expect(metrics[999].method).toBe('method1000');
+    });
+
+    it('maintains correct ordering (newest last) after circular wrap', async () => {
+        const mockSimulate = vi.fn().mockImplementation((_, method) =>
+            Promise.resolve(makeSimulation('1000000', '512000')),
+        );
+
+        // Fill buffer beyond capacity to force wrap-around
+        for (let i = 0; i < 1005; i++) {
+            await trackContractBudget(CONTRACT_ID, `m${i}`, [], SOURCE_KEY, {}, mockSimulate);
+        }
+
+        const metrics = getBudgetMetrics();
+        // Should have exactly 1000 entries (capacity)
+        expect(metrics).toHaveLength(1000);
+        // First should be m5 (since m0-m4 were evicted in circular wrap)
+        expect(metrics[0].method).toBe('m5');
+        // Last should be m1004
+        expect(metrics[999].method).toBe('m1004');
+
+        // Verify strict order
+        for (let i = 0; i < metrics.length; i++) {
+            const expectedNum = 5 + i;
+            expect(metrics[i].method).toBe(`m${expectedNum}`);
+        }
+    });
+
+    it('clears all metrics and resets circular buffer state', async () => {
+        const mockSimulate = vi.fn().mockResolvedValue(makeSimulation('1000000', '512000'));
+
+        await trackContractBudget(CONTRACT_ID, 'method1', [], SOURCE_KEY, {}, mockSimulate);
+        expect(getBudgetMetrics()).toHaveLength(1);
+
+        clearBudgetMetrics();
+        expect(getBudgetMetrics()).toHaveLength(0);
+
+        // Verify buffer is properly reset by adding new metrics
+        await trackContractBudget(CONTRACT_ID, 'method2', [], SOURCE_KEY, {}, mockSimulate);
+        const metrics = getBudgetMetrics();
+        expect(metrics).toHaveLength(1);
+        expect(metrics[0].method).toBe('method2');
+    });
+
+    it('handles sequential fills and clears correctly', async () => {
+        const mockSimulate = vi.fn().mockResolvedValue(makeSimulation('1000000', '512000'));
+
+        // Fill 10 entries
+        for (let i = 0; i < 10; i++) {
+            await trackContractBudget(CONTRACT_ID, `a${i}`, [], SOURCE_KEY, {}, mockSimulate);
+        }
+        expect(getBudgetMetrics()).toHaveLength(10);
+
+        // Clear
+        clearBudgetMetrics();
+        expect(getBudgetMetrics()).toHaveLength(0);
+
+        // Fill 5 more entries (should start from index 0 again)
+        for (let i = 0; i < 5; i++) {
+            await trackContractBudget(CONTRACT_ID, `b${i}`, [], SOURCE_KEY, {}, mockSimulate);
+        }
+        const metrics = getBudgetMetrics();
+        expect(metrics).toHaveLength(5);
+        expect(metrics[0].method).toBe('b0');
+        expect(metrics[4].method).toBe('b4');
+    });
+});

@@ -6,7 +6,8 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { HorizonClient, CircuitBreaker, computeBackoffMs, MAX_BACKOFF_DELAY_MS } from './horizon-client';
+import { HorizonClient, computeBackoffMs, MAX_BACKOFF_DELAY_MS } from './horizon-client';
+import { CircuitBreaker } from './circuit-breaker';
 
 const BASE_URL = 'https://horizon-testnet.stellar.org';
 
@@ -93,70 +94,75 @@ describe('computeBackoffMs', () => {
 
 describe('CircuitBreaker', () => {
   it('starts in closed state', () => {
-    const cb = new CircuitBreaker(5, 30_000, 60_000);
-    expect(cb.getState()).toBe('closed');
+    const cb = new CircuitBreaker({ name: 'test', failureThreshold: 5, resetTimeoutMs: 60_000 });
+    expect(cb.currentState).toBe('CLOSED');
     expect(cb.isOpen()).toBe(false);
   });
 
-  it('opens after threshold failures within the window', () => {
-    const cb = new CircuitBreaker(5, 30_000, 60_000);
+  it('opens after threshold failures', () => {
+    const cb = new CircuitBreaker({ name: 'test', failureThreshold: 5, resetTimeoutMs: 60_000 });
     for (let i = 0; i < 5; i++) cb.recordFailure();
-    expect(cb.getState()).toBe('open');
+    expect(cb.currentState).toBe('OPEN');
     expect(cb.isOpen()).toBe(true);
   });
 
   it('transitions to half-open after recovery period', () => {
     vi.useFakeTimers();
-    const cb = new CircuitBreaker(5, 30_000, 60_000);
+    const cb = new CircuitBreaker({
+      name: 'test',
+      failureThreshold: 5,
+      resetTimeoutMs: 60_000,
+      now: () => Date.now(),
+    });
     for (let i = 0; i < 5; i++) cb.recordFailure();
-    expect(cb.getState()).toBe('open');
+    expect(cb.currentState).toBe('OPEN');
 
     vi.advanceTimersByTime(60_001);
-    expect(cb.getState()).toBe('half-open');
+    expect(cb.getState()).toBe('HALF_OPEN');
     vi.useRealTimers();
   });
 
   it('closes on success after half-open', () => {
     vi.useFakeTimers();
-    const cb = new CircuitBreaker(5, 30_000, 60_000);
+    const cb = new CircuitBreaker({
+      name: 'test',
+      failureThreshold: 5,
+      resetTimeoutMs: 60_000,
+      now: () => Date.now(),
+    });
     for (let i = 0; i < 5; i++) cb.recordFailure();
     vi.advanceTimersByTime(60_001);
     cb.recordSuccess();
-    expect(cb.getState()).toBe('closed');
+    expect(cb.getState()).toBe('CLOSED');
     vi.useRealTimers();
   });
 
   it('reopens immediately on failure while half-open', () => {
     vi.useFakeTimers();
-    const cb = new CircuitBreaker(5, 30_000, 60_000);
+    const cb = new CircuitBreaker({
+      name: 'test',
+      failureThreshold: 5,
+      resetTimeoutMs: 60_000,
+      now: () => Date.now(),
+    });
     for (let i = 0; i < 5; i++) cb.recordFailure();
-    expect(cb.getState()).toBe('open');
+    expect(cb.currentState).toBe('OPEN');
 
     vi.advanceTimersByTime(60_001);
-    expect(cb.getState()).toBe('half-open');
+    expect(cb.getState()).toBe('HALF_OPEN');
 
     cb.recordFailure();
-    expect(cb.getState()).toBe('open');
+    expect(cb.getState()).toBe('OPEN');
     vi.useRealTimers();
   });
 
-  it('does not open when failures are outside the window', () => {
-    vi.useFakeTimers();
-    const cb = new CircuitBreaker(5, 30_000, 60_000);
-    for (let i = 0; i < 4; i++) cb.recordFailure();
-    vi.advanceTimersByTime(30_001); // slide past the window
-    cb.recordFailure(); // only 1 failure in new window
-    expect(cb.getState()).toBe('closed');
-    vi.useRealTimers();
-  });
-
-  it('resets failure list after success', () => {
-    const cb = new CircuitBreaker(5, 30_000, 60_000);
+  it('resets failure count after success', () => {
+    const cb = new CircuitBreaker({ name: 'test', failureThreshold: 5, resetTimeoutMs: 60_000 });
     for (let i = 0; i < 4; i++) cb.recordFailure();
     cb.recordSuccess();
-    // 4 more failures should not open because history was cleared
+    // 4 more failures should not open because failure count was reset
     for (let i = 0; i < 4; i++) cb.recordFailure();
-    expect(cb.getState()).toBe('closed');
+    expect(cb.currentState).toBe('CLOSED');
   });
 });
 
@@ -177,7 +183,7 @@ describe('HorizonClient – successful request', () => {
     const client = new HorizonClient({ baseUrl: BASE_URL, _fetch: mockFetch });
 
     await client.get('/ledgers');
-    expect(client.circuit.getState()).toBe('closed');
+    expect(client.circuit.currentState).toBe('CLOSED');
   });
 });
 
