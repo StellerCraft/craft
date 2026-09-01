@@ -636,6 +636,57 @@ const ERROR_GUIDANCE_MAP: Record<StellarErrorCode, StellarErrorGuidance> = {
 };
 
 /**
+ * Extract a Soroban contract error code (`scv…`) from an arbitrary text blob and
+ * categorize it against {@link SOROBAN_ERROR_CODES}.
+ *
+ * Shared by the `Error`-instance and structured-object branches of
+ * {@link parseStellarError} so a Soroban simulation failure resolves to the same
+ * specific, actionable guidance regardless of whether it arrived as a thrown
+ * `Error` message or as a structured RPC/Horizon-style response object.
+ *
+ * @param text - Any string that might contain a Soroban error token
+ * @returns The categorized error, or `null` when no known `scv…` code is present
+ */
+function categorizeSorobanError(text: string): {
+  errorCode: StellarErrorCode;
+  title: string;
+  message: string;
+  retryable: boolean;
+  resultCode: string;
+} | null {
+  const match = text.match(/\b(scv[A-Z][a-zA-Z]+)\b/);
+  if (!match || !SOROBAN_ERROR_CODES[match[1]]) {
+    return null;
+  }
+
+  const sorobanCode = match[1];
+  const mapping = SOROBAN_ERROR_CODES[sorobanCode];
+
+  let errorCode: StellarErrorCode;
+  if (sorobanCode.includes('Panic') || sorobanCode.includes('Unwrap') || sorobanCode.includes('Assertion')) {
+    errorCode = 'SOROBAN_CONTRACT_PANIC';
+  } else if (sorobanCode.includes('Limit') || sorobanCode.includes('Exhausted')) {
+    errorCode = 'SOROBAN_RESOURCE_LIMIT_EXCEEDED';
+  } else if (sorobanCode.includes('Storage')) {
+    errorCode = 'SOROBAN_STORAGE_ERROR';
+  } else if (sorobanCode.includes('Auth') || sorobanCode.includes('Signature')) {
+    errorCode = 'SOROBAN_AUTH_ERROR';
+  } else if (sorobanCode.includes('Wasm') || sorobanCode.includes('Trap')) {
+    errorCode = 'SOROBAN_WASM_ERROR';
+  } else {
+    errorCode = 'SOROBAN_CONTRACT_ERROR';
+  }
+
+  return {
+    errorCode,
+    title: mapping.title,
+    message: mapping.message,
+    retryable: mapping.retryable,
+    resultCode: sorobanCode,
+  };
+}
+
+/**
  * Parse a Stellar SDK error or Horizon response error into a structured error object.
  *
  * @param error - The error to parse (can be Error, string, or object)
@@ -698,30 +749,13 @@ export function parseStellarError(
       errorMessage.includes('scv') ||
       errorMessage.includes('Soroban')
     ) {
-      // Try to extract Soroban error code
-      const sorobanCodeMatch = errorMessage.match(/\b(scv[A-Z][a-zA-Z]+)\b/);
-      if (sorobanCodeMatch && SOROBAN_ERROR_CODES[sorobanCodeMatch[1]]) {
-        const sorobanCode = sorobanCodeMatch[1];
-        const mapping = SOROBAN_ERROR_CODES[sorobanCode];
-        title = mapping.title;
-        message = mapping.message;
-        retryable = mapping.retryable;
-        resultCode = sorobanCode;
-
-        // Categorize Soroban error
-        if (sorobanCode.includes('Panic') || sorobanCode.includes('Unwrap') || sorobanCode.includes('Assertion')) {
-          errorCode = 'SOROBAN_CONTRACT_PANIC';
-        } else if (sorobanCode.includes('Limit') || sorobanCode.includes('Exhausted')) {
-          errorCode = 'SOROBAN_RESOURCE_LIMIT_EXCEEDED';
-        } else if (sorobanCode.includes('Storage')) {
-          errorCode = 'SOROBAN_STORAGE_ERROR';
-        } else if (sorobanCode.includes('Auth') || sorobanCode.includes('Signature')) {
-          errorCode = 'SOROBAN_AUTH_ERROR';
-        } else if (sorobanCode.includes('Wasm') || sorobanCode.includes('Trap')) {
-          errorCode = 'SOROBAN_WASM_ERROR';
-        } else {
-          errorCode = 'SOROBAN_CONTRACT_ERROR';
-        }
+      const soroban = categorizeSorobanError(errorMessage);
+      if (soroban) {
+        title = soroban.title;
+        message = soroban.message;
+        retryable = soroban.retryable;
+        resultCode = soroban.resultCode;
+        errorCode = soroban.errorCode;
       } else {
         // Generic Soroban error without specific code
         errorCode = 'SOROBAN_CONTRACT_ERROR';
@@ -797,6 +831,37 @@ export function parseStellarError(
       details = errObj.message;
     } else if (typeof errObj.detail === 'string') {
       details = errObj.detail;
+    }
+
+    // A Soroban simulation failure can arrive as a structured object (a
+    // Horizon-style { status, type, ... } body, or a raw RPC error object) with
+    // the contract error code nested in a message/detail/code/resultCode field
+    // rather than a top-level Error message. Route these through the same
+    // guidance map as string / Error-instance Soroban errors. Only overrides
+    // when a known scv* code is actually present, so non-Soroban structured
+    // errors (404 / 429 / 502 / 503 / 400) are left untouched.
+    let sorobanText = [
+      errObj.message,
+      errObj.detail,
+      errObj.code,
+      errObj.resultCode,
+      errObj.result_code,
+    ]
+      .filter((v): v is string => typeof v === 'string')
+      .join(' ');
+    try {
+      sorobanText += ' ' + JSON.stringify(errObj);
+    } catch {
+      // Circular structure — the named fields above are still covered.
+    }
+
+    const structuredSoroban = categorizeSorobanError(sorobanText);
+    if (structuredSoroban) {
+      title = structuredSoroban.title;
+      message = structuredSoroban.message;
+      retryable = structuredSoroban.retryable;
+      resultCode = structuredSoroban.resultCode;
+      errorCode = structuredSoroban.errorCode;
     }
   }
   // Handle string errors

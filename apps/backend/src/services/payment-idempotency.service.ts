@@ -69,7 +69,10 @@ export class PaymentIdempotencyService {
       return existing.idempotency_key;
     }
 
-    // ── 2. No unexpired key found — mint and persist a new one ────────────────
+    // ── 2. Atomic upsert: mint a new key and insert with conflict handling ────
+    // If a concurrent call inserts the same (user_id, operation_type, request_fingerprint)
+    // first, our insert is silently ignored via ON CONFLICT DO NOTHING.
+    // We then re-select to get the key (ours or the concurrent winner's).
     const key = this.generateRandomKey();
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
 
@@ -92,7 +95,35 @@ export class PaymentIdempotencyService {
       throw new Error(`Failed to generate idempotency key: ${insertError.message}`);
     }
 
-    return key;
+    // ── 3. Re-select to get the key (ours or the concurrent winner's) ─────────
+    // After insert (which may have been silently ignored via ON CONFLICT DO NOTHING
+    // due to database constraints), re-select to ensure we always return a key.
+    // This handles the atomic upsert: if a concurrent call inserted first, we get its key.
+    let reSelectQuery = supabase
+      .from('payment_idempotency_keys')
+      .select('idempotency_key')
+      .eq('user_id', userId)
+      .eq('operation_type', operationType)
+      .gt('expires_at', now);
+
+    if (requestFingerprint) {
+      reSelectQuery = reSelectQuery.eq('request_fingerprint', requestFingerprint);
+    }
+
+    const { data: reselected, error: reselectError } = await reSelectQuery
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single();
+
+    if (reselectError && reselectError.code !== 'PGRST116') {
+      throw new Error(`Failed to retrieve generated idempotency key: ${reselectError.message}`);
+    }
+
+    if (reselected?.idempotency_key) {
+      return reselected.idempotency_key;
+    }
+
+    throw new Error('Idempotency key generation failed: unable to retrieve key after insert');
   }
 
   /**

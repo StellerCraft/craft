@@ -2,7 +2,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { withAuth } from '@/lib/api/with-auth';
 import { validateCustomizationConfig } from '@/lib/customization/validate';
 import { previewService } from '@/services/preview.service';
+<<<<<<< HEAD
 import { costEstimationService, PricingTier } from '@/services/billing/cost-estimation.service';
+=======
+import { costEstimationService } from '@/services/billing/cost-estimation.service';
+>>>>>>> d855263 (feat(cost-estimation): implement deployment cost estimation and complexity scoring)
 import type { CustomizationConfig, DeepPartial } from '@craft/types';
 
 function mapSubscriptionTier(tier?: string): PricingTier {
@@ -46,6 +50,7 @@ export const POST = withAuth(async (req: NextRequest, { user, supabase }) => {
 
     try {
         const payload = previewService.updatePreview(current, changes);
+<<<<<<< HEAD
 
         // Fetch user profile to get subscription tier
         const { data: profile } = await supabase
@@ -63,6 +68,16 @@ export const POST = withAuth(async (req: NextRequest, { user, supabase }) => {
         return NextResponse.json({
             ...payload,
             estimatedCost
+=======
+        const estimate = costEstimationService.estimateDeploymentCost({
+            customizationConfig: payload.customization,
+        });
+
+        return NextResponse.json({
+            ...payload,
+            estimate,
+            costEstimate: estimate,
+>>>>>>> d855263 (feat(cost-estimation): implement deployment cost estimation and complexity scoring)
         }, { status: 200 });
     } catch (error: any) {
         return NextResponse.json(

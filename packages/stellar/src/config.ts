@@ -124,10 +124,35 @@ export function getNetworkPassphrase(network?: Network): string {
   return NETWORK_PASSPHRASES[net];
 }
 
-/** Default config resolved from environment variables. */
-export const config = {
-  stellar: getNetworkConfig(),
-} as const;
+/**
+ * Default config object whose `stellar` property is resolved fresh on every
+ * access via a getter, so that changes to `STELLAR_NETWORK` /
+ * `NEXT_PUBLIC_STELLAR_NETWORK` after module load are always reflected.
+ *
+ * Callers that need a one-time snapshot can still call `getNetworkConfig()`
+ * directly; that remains the recommended approach for most use-cases.
+ *
+ * @example
+ * ```ts
+ * // Live read — always picks up the current env var:
+ * const { network } = config.stellar;
+ *
+ * // Snapshot — freeze the value at call-time:
+ * const snapshot = getNetworkConfig();
+ * ```
+ */
+export const config: { readonly stellar: ReturnType<typeof getNetworkConfig> } = Object.defineProperties(
+  {} as { readonly stellar: ReturnType<typeof getNetworkConfig> },
+  {
+    stellar: {
+      get(): ReturnType<typeof getNetworkConfig> {
+        return getNetworkConfig();
+      },
+      enumerable: true,
+      configurable: false,
+    },
+  },
+);
 
 export default config;
 

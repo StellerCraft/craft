@@ -168,9 +168,9 @@ export function checkMergeAllowed(
     accountState: AccountState,
     expectedDestination?: string,
 ): MergeDecision {
-    // Check open trustlines (non-zero balance or limit)
+    // Check open trustlines (limit > 0 AND balance > 0, per module documentation)
     const openTrustlines = accountState.trustlines.filter(
-        (t) => Number(t.limit) > 0,
+        (t) => Number(t.limit) > 0 && Number(t.balance) > 0,
     );
     if (openTrustlines.length > 0) {
         return {

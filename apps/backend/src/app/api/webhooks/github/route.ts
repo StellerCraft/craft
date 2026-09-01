@@ -13,13 +13,36 @@ const SUPPORTED_EVENTS = new Set([
 
 const MAX_ATTEMPTS = 3;
 
+/**
+ * Processes a GitHub webhook event payload according to its eventType.
+ */
+export async function processGitHubWebhookEvent(
+    eventType: string,
+    payload: unknown,
+    log: ReturnType<typeof createLogger>
+): Promise<void> {
+    if (eventType === 'push') {
+        await handlePushEvent(payload, log);
+    } else if (eventType === 'ping') {
+        log.info('Ping event received');
+    } else if (eventType === 'installation') {
+        await handleInstallationEvent(payload, log);
+    } else if (eventType === 'installation_repositories') {
+        await handleInstallationRepositoriesEvent(payload, log);
+    }
+}
+
 // Register a reprocessing handler so DLQ entries can be retried via the admin endpoint.
 webhookDLQ.registerProcessor('github', async (entry) => {
     const payload = JSON.parse(entry.payload);
-    if (entry.eventType === 'push') {
-        const log = createLogger({ correlationId: 'dlq-reprocess', service: 'github-webhook' });
-        await handlePushEvent(payload, log);
-    }
+    const log = createLogger({ correlationId: 'dlq-reprocess', service: 'github-webhook' });
+    await processGitHubWebhookEvent(entry.eventType, payload, log);
+});
+
+// Register a processor so replayed deliveries in WebhookDeliveryService re-trigger downstream processing.
+webhookDeliveryService.registerProcessor(async (delivery) => {
+    const log = createLogger({ correlationId: `replay-${delivery.deliveryId}`, service: 'github-webhook' });
+    await processGitHubWebhookEvent(delivery.eventType, delivery.payload, log);
 });
 
 /**
@@ -127,15 +150,7 @@ export async function POST(req: NextRequest) {
     // 9. Process the webhook event
     let lastError: Error | undefined;
     try {
-        if (eventType === 'push') {
-            await handlePushEvent(payload, log);
-        } else if (eventType === 'ping') {
-            log.info('Ping event received');
-        } else if (eventType === 'installation') {
-            await handleInstallationEvent(payload, log);
-        } else if (eventType === 'installation_repositories') {
-            await handleInstallationRepositoriesEvent(payload, log);
-        }
+        await processGitHubWebhookEvent(eventType, payload, log);
 
         // Mark delivery as processed
         if (deliveryId) {

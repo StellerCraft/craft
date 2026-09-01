@@ -63,8 +63,13 @@ describe('exponential-backoff', () => {
         });
 
         it('should respect max delay', () => {
-            const delay = calculateBackoffDelay(10, 100, 500, 2);
-            expect(delay).toBeLessThanOrEqual(550); // 500 + 10% jitter
+            const delay = calculateBackoffDelay(10, 100, 500, 2, () => 1);
+            expect(delay).toBe(500);
+        });
+
+        it('should honor a custom random function', () => {
+            expect(calculateBackoffDelay(0, 100, 1000, 2, () => 0)).toBe(90);
+            expect(calculateBackoffDelay(0, 100, 1000, 2, () => 1)).toBe(110);
         });
 
         it('should add jitter', () => {

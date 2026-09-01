@@ -11,8 +11,8 @@
  *   - If the hash is unchanged → cache hit → skip the build.
  *
  * The hash is stored in the `deployments` table under the
- * `customization_config` JSONB column at key `_buildCacheHash` so no
- * schema migration is required.
+ * `customization_config` JSONB column at key `_buildCacheHash`. Writes use a
+ * database-side JSONB merge so concurrent stages preserve other fields.
  *
  * Cache status is surfaced in deployment logs via DeploymentLogsService.
  */
@@ -85,21 +85,10 @@ export class BuildCacheService {
         deploymentId: string,
         contentHash: string,
     ): Promise<void> {
-        // Merge _buildCacheHash into the existing customization_config JSONB
-        const { data } = await supabase
-            .from('deployments')
-            .select('customization_config')
-            .eq('id', deploymentId)
-            .single();
-
-        const existing = (data?.customization_config as Record<string, unknown>) ?? {};
-
-        await supabase
-            .from('deployments')
-            .update({
-                customization_config: { ...existing, _buildCacheHash: contentHash },
-            })
-            .eq('id', deploymentId);
+        await supabase.rpc('set_deployment_build_cache_hash', {
+            p_deployment_id: deploymentId,
+            p_hash: contentHash,
+        });
     }
 }
 

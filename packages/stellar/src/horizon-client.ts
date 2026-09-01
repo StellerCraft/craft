@@ -8,6 +8,8 @@
  * - Logging: each retry is logged to the analytics service
  */
 
+import { CircuitBreaker } from './circuit-breaker';
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface HorizonResponse<T = unknown> {
@@ -50,67 +52,24 @@ export interface RequestOptions {
 /** Request body type (same as fetch BodyInit). */
 export type BodyInit = string | Uint8Array | ReadableStream<Uint8Array> | FormData | URLSearchParams;
 
-type CircuitState = 'closed' | 'open' | 'half-open';
-
-// ── Circuit breaker state machine ─────────────────────────────────────────────
-
-export class CircuitBreaker {
-  private state: CircuitState = 'closed';
-  private failureTimes: number[] = [];
-  private openedAt = 0;
-
-  constructor(
-    private readonly threshold: number,
-    private readonly windowMs: number,
-    private readonly recoveryMs: number,
-  ) {}
-
-  getState(): CircuitState {
-    if (this.state === 'open') {
-      if (Date.now() - this.openedAt >= this.recoveryMs) {
-        this.state = 'half-open';
-      }
-    }
-    return this.state;
-  }
-
-  /** Call after a successful request. */
-  recordSuccess(): void {
-    this.state = 'closed';
-    this.failureTimes = [];
-  }
-
-  /** Call after a failed request. Opens circuit when threshold is reached. */
-  recordFailure(): void {
-    const now = Date.now();
-
-    // If half-open, immediately trip back to open on any failure
-    if (this.state === 'half-open') {
-      this.state = 'open';
-      this.openedAt = now;
-      return;
-    }
-
-    this.failureTimes = this.failureTimes.filter((t) => now - t < this.windowMs);
-    this.failureTimes.push(now);
-
-    if (this.failureTimes.length >= this.threshold) {
-      this.state = 'open';
-      this.openedAt = now;
-    }
-  }
-
-  isOpen(): boolean {
-    return this.getState() === 'open';
-  }
-}
-
 // ── Adaptive retry helper ──────────────────────────────────────────────────────
+
+/**
+ * Upper bound for the rate-limit-derived backoff delay.
+ *
+ * The X-RateLimit-Reset header is server-supplied and can be far in the future
+ * because of a Horizon anomaly, a misbehaving proxy, or clock drift between the
+ * client and the server. Without a ceiling, a single retry attempt could block
+ * the caller for minutes or hours. Cap it at a few seconds so a retry never
+ * outlives a reasonable request timeout.
+ */
+export const MAX_BACKOFF_DELAY_MS = 5_000;
 
 /**
  * Computes the backoff delay in ms for a given response.
  *
- * - If X-RateLimit-Remaining < 10, delays until X-RateLimit-Reset (epoch seconds).
+ * - If X-RateLimit-Remaining < 10, delays until X-RateLimit-Reset (epoch seconds),
+ *   clamped to {@link MAX_BACKOFF_DELAY_MS}.
  * - Otherwise uses exponential backoff: 200 * 2^attempt ms.
  */
 export function computeBackoffMs(
@@ -122,8 +81,13 @@ export function computeBackoffMs(
 
   if (remaining < 10 && reset > 0) {
     const nowSec = Math.floor(Date.now() / 1000);
-    const delayMs = Math.max(0, (reset - nowSec) * 1000);
-    return { delayMs, reason: `rate_limit_low_remaining (${remaining} left, reset in ${reset - nowSec}s)` };
+    const uncappedDelayMs = Math.max(0, (reset - nowSec) * 1000);
+    const delayMs = Math.min(uncappedDelayMs, MAX_BACKOFF_DELAY_MS);
+    const capped = delayMs < uncappedDelayMs;
+    const reason =
+      `rate_limit_low_remaining (${remaining} left, reset in ${reset - nowSec}s` +
+      (capped ? `, capped ${uncappedDelayMs}ms->${delayMs}ms)` : `)`);
+    return { delayMs, reason };
   }
 
   const delayMs = 200 * Math.pow(2, attempt);
@@ -144,11 +108,11 @@ export class HorizonClient {
     this.maxRetries = options.maxRetries ?? 3;
     this.onRetry = options.onRetry;
     this._fetch = options._fetch ?? globalThis.fetch;
-    this.circuit = new CircuitBreaker(
-      options.circuitOpenThreshold ?? 5,
-      options.circuitWindowMs ?? 30_000,
-      options.circuitRecoveryMs ?? 60_000,
-    );
+    this.circuit = new CircuitBreaker({
+      name: 'horizon',
+      failureThreshold: options.circuitOpenThreshold ?? 5,
+      resetTimeoutMs: options.circuitRecoveryMs ?? 60_000,
+    });
   }
 
   /**

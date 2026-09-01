@@ -61,6 +61,33 @@ describe('Canary rollout - traffic percentage controls', () => {
         expect(() => engine.setTrafficPercent(-1)).toThrow(RangeError);
         expect(() => engine.setTrafficPercent(101)).toThrow(RangeError);
     });
+
+    it('routes deterministically and stickily for the same identity across repeated calls', () => {
+        engine.setTrafficPercent(30);
+
+        const userA = 'user-123-abc';
+        const userB = 'user-456-def';
+
+        const resultA1 = engine.routeRequest(userA);
+        const resultA2 = engine.routeRequest(userA);
+        const resultA3 = engine.routeRequest(userA);
+
+        const resultB1 = engine.routeRequest(userB);
+        const resultB2 = engine.routeRequest(userB);
+
+        // Same user always gets same assignment at a fixed percentage
+        expect(resultA1.id).toBe(resultA2.id);
+        expect(resultA2.id).toBe(resultA3.id);
+        expect(resultB1.id).toBe(resultB2.id);
+    });
+
+    it('falls back to request counter when identity is not provided', () => {
+        engine.setTrafficPercent(50);
+        const r1 = engine.routeRequest();
+        const r2 = engine.routeRequest();
+        expect(r1).toBeDefined();
+        expect(r2).toBeDefined();
+    });
 });
 
 describe('Canary rollout - automatic rollback', () => {

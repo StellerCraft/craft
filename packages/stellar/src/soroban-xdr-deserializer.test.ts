@@ -282,6 +282,40 @@ describe('deserializeScValAs', () => {
         const val = xdr.ScVal.scvBool(false);
         expect(deserializeScValAs(val)).toBe(false);
     });
+
+    it('names the ScVal discriminant in the message when JS typeof is ambiguous (#1117)', () => {
+        // A scvMap deserializes to an object, so `typeof value` is just "object" —
+        // useless for telling a map apart from a vec. The message must say scvMap.
+        const mapVal = xdr.ScVal.scvMap([
+            new xdr.ScMapEntry({ key: xdr.ScVal.scvSymbol('k'), val: xdr.ScVal.scvU32(1) }),
+        ]);
+        try {
+            deserializeScValAs<string>(mapVal, (v): v is string => typeof v === 'string');
+            expect.unreachable('guard should have failed');
+        } catch (e) {
+            expect(e).toBeInstanceOf(SorobanDeserializationError);
+            const err = e as SorobanDeserializationError;
+            expect(err.message).toContain('scvMap');
+            // The diagnostic property is still populated as before.
+            expect(err.scvType).toBe('scvMap');
+        }
+    });
+
+    it('names the ScVal discriminant for an ambiguous bigint variant (#1117)', () => {
+        // Every 64/128/256-bit integer variant is `bigint` at runtime; the message
+        // must disambiguate which one (scvI128 here).
+        const i128Val = xdr.ScVal.scvI128(
+            new xdr.Int128Parts({ hi: new xdr.Int64(0n), lo: new xdr.Uint64(1000n) }),
+        );
+        try {
+            deserializeScValAs<number>(i128Val, (v): v is number => typeof v === 'number');
+            expect.unreachable('guard should have failed');
+        } catch (e) {
+            const err = e as SorobanDeserializationError;
+            expect(err.message).toContain('scvI128');
+            expect(err.scvType).toBe('scvI128');
+        }
+    });
 });
 
 // ── Serialization (inverse of deserialization) ────────────────────────────────
@@ -398,6 +432,109 @@ describe('serializeScVal – round-trip tests', () => {
     });
 });
 
+// ── Regression: #1103 – scvBytes / scvAddress as distinct map keys ────────────
+
+describe('scvMap with scvBytes keys (regression #1103)', () => {
+    it('deserializes multiple distinct scvBytes keys as separate entries', () => {
+        const key1 = Buffer.from([0x01, 0x02, 0x03]);
+        const key2 = Buffer.from([0xaa, 0xbb, 0xcc]);
+        const key3 = Buffer.from([0x00]);
+
+        const mapVal = xdr.ScVal.scvMap([
+            new xdr.ScMapEntry({ key: xdr.ScVal.scvBytes(key1), val: xdr.ScVal.scvU32(1) }),
+            new xdr.ScMapEntry({ key: xdr.ScVal.scvBytes(key2), val: xdr.ScVal.scvU32(2) }),
+            new xdr.ScMapEntry({ key: xdr.ScVal.scvBytes(key3), val: xdr.ScVal.scvU32(3) }),
+        ]);
+
+        const result = deserializeScVal(mapVal) as Record<string, unknown>;
+
+        // All three entries must survive — none should collapse to the same key
+        expect(Object.keys(result)).toHaveLength(3);
+        expect(result['0x010203']).toBe(1);
+        expect(result['0xaabbcc']).toBe(2);
+        expect(result['0x00']).toBe(3);
+    });
+
+    it('encodes scvBytes keys as hex with 0x prefix', () => {
+        const mapVal = xdr.ScVal.scvMap([
+            new xdr.ScMapEntry({
+                key: xdr.ScVal.scvBytes(Buffer.from([0xde, 0xad, 0xbe, 0xef])),
+                val: xdr.ScVal.scvBool(true),
+            }),
+        ]);
+
+        const result = deserializeScVal(mapVal) as Record<string, unknown>;
+        expect(result['0xdeadbeef']).toBe(true);
+    });
+
+    it('treats empty bytes as a valid distinct key', () => {
+        const mapVal = xdr.ScVal.scvMap([
+            new xdr.ScMapEntry({ key: xdr.ScVal.scvBytes(Buffer.alloc(0)), val: xdr.ScVal.scvU32(99) }),
+        ]);
+
+        const result = deserializeScVal(mapVal) as Record<string, unknown>;
+        expect(result['0x']).toBe(99);
+    });
+});
+
+describe('scvMap with scvAddress keys (regression #1103)', () => {
+    it('deserializes multiple distinct scvAddress keys as separate entries', () => {
+        const addr1 = xdr.ScAddress.scAddressTypeAccount(
+            xdr.AccountId.publicKeyTypeEd25519(Buffer.alloc(32, 0x01)),
+        );
+        const addr2 = xdr.ScAddress.scAddressTypeAccount(
+            xdr.AccountId.publicKeyTypeEd25519(Buffer.alloc(32, 0x02)),
+        );
+
+        const mapVal = xdr.ScVal.scvMap([
+            new xdr.ScMapEntry({ key: xdr.ScVal.scvAddress(addr1), val: xdr.ScVal.scvU32(10) }),
+            new xdr.ScMapEntry({ key: xdr.ScVal.scvAddress(addr2), val: xdr.ScVal.scvU32(20) }),
+        ]);
+
+        const result = deserializeScVal(mapVal) as Record<string, unknown>;
+
+        // Both entries must survive — distinct addresses must not collapse
+        expect(Object.keys(result)).toHaveLength(2);
+        const keys = Object.keys(result);
+        // Keys must be StrKey-encoded G... addresses
+        expect(keys[0]).toMatch(/^G/);
+        expect(keys[1]).toMatch(/^G/);
+        expect(keys[0]).not.toBe(keys[1]);
+        expect(result[keys[0]]).toBe(10);
+        expect(result[keys[1]]).toBe(20);
+    });
+
+    it('renders contract address keys as C... StrKey strings', () => {
+        const contractAddr = xdr.ScAddress.scAddressTypeContract(Buffer.alloc(32, 0xab));
+
+        const mapVal = xdr.ScVal.scvMap([
+            new xdr.ScMapEntry({ key: xdr.ScVal.scvAddress(contractAddr), val: xdr.ScVal.scvBool(false) }),
+        ]);
+
+        const result = deserializeScVal(mapVal) as Record<string, unknown>;
+        const keys = Object.keys(result);
+        expect(keys).toHaveLength(1);
+        expect(keys[0]).toMatch(/^C/);
+        expect(result[keys[0]]).toBe(false);
+    });
+});
+
+describe('scvMap key – unsupported type throws (regression #1103)', () => {
+    it('throws SorobanDeserializationError for unrecognized key types', () => {
+        // scvVec is not a valid map key type
+        const mapVal = xdr.ScVal.scvMap([
+            new xdr.ScMapEntry({
+                key: xdr.ScVal.scvVec([xdr.ScVal.scvU32(1)]),
+                val: xdr.ScVal.scvBool(true),
+            }),
+        ]);
+
+        expect(() => deserializeScVal(mapVal)).toThrow(SorobanDeserializationError);
+    });
+});
+
+// ── End regression #1103 ─────────────────────────────────────────────────────
+
 describe('serializeScVal – error handling', () => {
     it('throws for unsupported type', () => {
         const obj = new Date();
@@ -417,5 +554,49 @@ describe('serializeScVal – error handling', () => {
     it('throws for invalid type hint', () => {
         const value = 123n;
         expect(() => serializeScVal(value, 'invalid' as any)).toThrow(SorobanSerializationError);
+    });
+});
+
+// ── Regression: #1102 – explicit hint must throw instead of silently wrapping ─
+
+describe('regression #1102 – out-of-range values with explicit hint throw SorobanSerializationError', () => {
+    it('throws when hint is i32 and value exceeds i32 max (2147483647)', () => {
+        // 3_000_000_000 is a valid u32 but out of i32 range — must throw, not wrap
+        expect(() => serializeScVal(3_000_000_000, 'i32')).toThrow(SorobanSerializationError);
+    });
+
+    it('throws when hint is i32 and value is exactly i32 max + 1', () => {
+        expect(() => serializeScVal(2_147_483_648, 'i32')).toThrow(SorobanSerializationError);
+    });
+
+    it('throws when hint is u32 and value is negative', () => {
+        expect(() => serializeScVal(-1, 'u32')).toThrow(SorobanSerializationError);
+    });
+
+    it('throws when hint is u32 and value is -2147483648 (valid i32, invalid u32)', () => {
+        expect(() => serializeScVal(-2_147_483_648, 'u32')).toThrow(SorobanSerializationError);
+    });
+
+    it('does NOT throw for a value that legitimately fits i32 with hint i32', () => {
+        // 2_147_483_647 is INT32_MAX — must succeed
+        expect(() => serializeScVal(2_147_483_647, 'i32')).not.toThrow();
+        expect(() => serializeScVal(-2_147_483_648, 'i32')).not.toThrow();
+    });
+
+    it('does NOT throw for a value that legitimately fits u32 with hint u32', () => {
+        expect(() => serializeScVal(4_294_967_295, 'u32')).not.toThrow();
+        expect(() => serializeScVal(0, 'u32')).not.toThrow();
+    });
+
+    it('the thrown error is SorobanSerializationError not a silent wrap', () => {
+        // Without the fix, scvI32(3_000_000_000 | 0) would silently produce -1294967296
+        let caughtError: unknown;
+        try {
+            serializeScVal(3_000_000_000, 'i32');
+        } catch (e) {
+            caughtError = e;
+        }
+        expect(caughtError).toBeInstanceOf(SorobanSerializationError);
+        expect((caughtError as SorobanSerializationError).valueType).toBe('number');
     });
 });

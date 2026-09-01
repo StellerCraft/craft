@@ -90,13 +90,11 @@ export function calculateBackoffDelay(
     const random = randomFn ?? Math.random;
     // Exponential backoff: initial * (multiplier ^ attempt)
     const exponential = initialDelayMs * Math.pow(multiplier, attempt);
+    const delay = Math.min(exponential, maxDelayMs);
 
-    // Add jitter: ±10% of the pre-cap exponential value
-    const jitter = exponential * 0.1 * (Math.random() - 0.5) * 2;
-
-    // Add jitter: ±10% of the delay
+    // Add jitter: ±10% of the capped delay
     const jitter = delay * 0.1 * (random() - 0.5) * 2;
-    return Math.max(0, delay + jitter);
+    return Math.min(maxDelayMs, Math.max(0, delay + jitter));
 }
 
 /**

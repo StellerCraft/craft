@@ -16,6 +16,7 @@
  * to that endpoint are paused for 1 hour.
  */
 
+import { randomUUID } from 'crypto';
 import { calculateBackoffDelay, sleep } from '../retry/exponential-backoff';
 
 export type WebhookSource = 'stripe' | 'github';
@@ -69,7 +70,7 @@ let _stripeProcessor: ProcessorFn | null = null;
 let _githubProcessor: ProcessorFn | null = null;
 
 function generateId(): string {
-    return `dlq_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    return `dlq_${Date.now()}_${randomUUID()}`;
 }
 
 /**
@@ -210,6 +211,8 @@ export const webhookDLQ = {
             entry.reprocessedAt = new Date();
             entry.reprocessStatus = 'succeeded';
             store.set(id, entry);
+            const dedupKey = deriveDedupKey(entry.source, entry.eventType, entry.payload);
+            dedupIndex.delete(dedupKey);
             return { success: true };
         } catch (err: any) {
             entry.reprocessedAt = new Date();
@@ -286,6 +289,8 @@ export const webhookDLQ = {
                 afterSleep.reprocessStatus = 'succeeded';
                 afterSleep.attempts += 1;
                 store.set(id, afterSleep);
+                const dedupKey = deriveDedupKey(afterSleep.source, afterSleep.eventType, afterSleep.payload);
+                dedupIndex.delete(dedupKey);
                 if (endpoint !== null) recordSuccess(endpoint);
                 console.log('[DLQ] Retry audit', {
                     id,
@@ -332,6 +337,11 @@ export const webhookDLQ = {
 
     size(): number {
         return store.size;
+    },
+
+    /** Exposed for testing only. */
+    _dedupIndexSize(): number {
+        return dedupIndex.size;
     },
 
     /** Exposed for testing only. */

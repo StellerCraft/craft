@@ -258,3 +258,65 @@ describe('Stellar Config — Snapshot Regression Tests (#540)', () => {
         });
     });
 });
+
+// ---------------------------------------------------------------------------
+// Regression #1106 – config.stellar must re-resolve on env change
+// ---------------------------------------------------------------------------
+
+describe('config.stellar live getter (regression #1106)', () => {
+    let originalNetwork: string | undefined;
+
+    beforeEach(() => {
+        originalNetwork = process.env.STELLAR_NETWORK;
+    });
+
+    afterEach(() => {
+        if (originalNetwork === undefined) {
+            delete process.env.STELLAR_NETWORK;
+        } else {
+            process.env.STELLAR_NETWORK = originalNetwork;
+        }
+    });
+
+    it('reflects a change to STELLAR_NETWORK made after module load', async () => {
+        // Dynamically import so the getter is exercised at call-time, not frozen
+        const { config } = await import('./config');
+
+        process.env.STELLAR_NETWORK = 'testnet';
+        const first = config.stellar.network;
+
+        process.env.STELLAR_NETWORK = 'mainnet';
+        const second = config.stellar.network;
+
+        expect(first).toBe('testnet');
+        expect(second).toBe('mainnet');
+        // The critical assertion: the two reads must differ
+        expect(first).not.toBe(second);
+    });
+
+    it('returns testnet after switching back from mainnet', async () => {
+        const { config } = await import('./config');
+
+        process.env.STELLAR_NETWORK = 'mainnet';
+        expect(config.stellar.network).toBe('mainnet');
+
+        process.env.STELLAR_NETWORK = 'testnet';
+        expect(config.stellar.network).toBe('testnet');
+    });
+
+    it('config.stellar always returns the same shape as getNetworkConfig()', async () => {
+        const { config, getNetworkConfig: getConfig } = await import('./config');
+
+        process.env.STELLAR_NETWORK = 'mainnet';
+        const live = config.stellar;
+        const snapshot = getConfig();
+
+        expect(live.network).toBe(snapshot.network);
+        expect(live.horizonUrl).toBe(snapshot.horizonUrl);
+        expect(live.networkPassphrase).toBe(snapshot.networkPassphrase);
+        expect(live.sorobanRpcUrl).toBe(snapshot.sorobanRpcUrl);
+    });
+});
+// ---------------------------------------------------------------------------
+// End regression #1106
+// ---------------------------------------------------------------------------

@@ -64,6 +64,20 @@ export interface ComplianceCheckResult {
  * are injected via `COMPLIANCE_BLOCKLIST_JSON` / `COMPLIANCE_JURISDICTION_JSON`
  * environment variables (serialised JSON arrays).
  */
+/**
+ * Emit a warning-level log identifying a compliance env var that failed to
+ * parse. The caller still falls back to an empty list, so this is the only
+ * signal that compliance checks have been silently degraded by a bad config.
+ */
+function warnMalformedConfig(envVar: string, error: unknown): void {
+  const reason = error instanceof Error ? error.message : String(error);
+  console.warn(
+    `[asset-compliance] Failed to parse ${envVar}: ${reason}. ` +
+      `Falling back to an empty list — compliance checks relying on this ` +
+      `variable are now disabled until the configuration is fixed.`,
+  );
+}
+
 export function loadComplianceConfig(override?: Partial<ComplianceConfig>): ComplianceConfig {
   let blocklist: BlocklistEntry[] = override?.blocklist ?? [];
   let jurisdictionRules: JurisdictionRule[] = override?.jurisdictionRules ?? [];
@@ -72,8 +86,12 @@ export function loadComplianceConfig(override?: Partial<ComplianceConfig>): Comp
     try {
       const raw = process.env.COMPLIANCE_BLOCKLIST_JSON;
       if (raw) blocklist = JSON.parse(raw) as BlocklistEntry[];
-    } catch {
-      // Malformed env var — treat as empty blocklist
+    } catch (error) {
+      // Malformed env var — fall back to an empty blocklist so a config typo
+      // does not block deployments, but make the failure observable: a silent
+      // fallback here disables issuer compliance checks platform-wide with no
+      // diagnostic signal.
+      warnMalformedConfig('COMPLIANCE_BLOCKLIST_JSON', error);
     }
   }
 
@@ -81,8 +99,9 @@ export function loadComplianceConfig(override?: Partial<ComplianceConfig>): Comp
     try {
       const raw = process.env.COMPLIANCE_JURISDICTION_JSON;
       if (raw) jurisdictionRules = JSON.parse(raw) as JurisdictionRule[];
-    } catch {
-      // Malformed env var — treat as empty rules
+    } catch (error) {
+      // Malformed env var — fall back to empty rules (see note above).
+      warnMalformedConfig('COMPLIANCE_JURISDICTION_JSON', error);
     }
   }
 

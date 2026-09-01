@@ -8,7 +8,7 @@
  *   Requires a valid session (401) and ownership of the deployment (403).
  *
  * Responses:
- *   200 — Domain removed successfully
+ *   200 — Domain removed successfully; includes `aliasesMatched` count
  *   404 — Deployment not found or no Vercel project configured
  *   401 — Not authenticated
  *   403 — Not authorized for this deployment
@@ -19,9 +19,9 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { withDeploymentAuth } from '@/lib/api/with-auth';
-import { VercelService } from '@/services/vercel.service';
+import { VercelDomainLifecycleService } from '@/services/vercel-domain-lifecycle.service';
 
-const vercel = new VercelService();
+const lifecycleService = new VercelDomainLifecycleService();
 
 export const DELETE = withDeploymentAuth<{ id: string; domain: string }>(
     async (_req: NextRequest, { params, supabase }) => {
@@ -42,11 +42,14 @@ export const DELETE = withDeploymentAuth<{ id: string; domain: string }>(
             );
         }
 
-        try {
-            await vercel.removeDomain(params.domain, deployment.vercel_project_id);
-        } catch (err: unknown) {
+        const result = await lifecycleService.removeDomainWithCleanup(
+            params.domain,
+            deployment.vercel_project_id,
+        );
+
+        if (!result.success) {
             return NextResponse.json(
-                { error: (err as Error).message ?? 'Failed to remove domain' },
+                { error: result.partialFailureReason ?? 'Failed to remove domain' },
                 { status: 500 },
             );
         }
@@ -59,6 +62,14 @@ export const DELETE = withDeploymentAuth<{ id: string; domain: string }>(
                 .eq('id', params.id);
         }
 
-        return NextResponse.json({ domain: params.domain, deleted: true });
+        return NextResponse.json({
+            domain: params.domain,
+            deleted: true,
+            aliasesMatched: result.aliasesMatched,
+            ...(result.partialFailure && {
+                partialFailure: true,
+                partialFailureReason: result.partialFailureReason,
+            }),
+        });
     },
 );

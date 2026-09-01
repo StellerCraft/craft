@@ -61,7 +61,7 @@ describe('DeploymentLogBatcher', () => {
         expect(insert).toHaveBeenCalledOnce();
     });
 
-    it('applies backpressure when pending flushes exceed limit', async () => {
+    it('waits for in-flight flushes when pending flushes reach the limit', async () => {
         const { supabase, from } = makeSupabase();
         let resolveInsert!: () => void;
         const blocked = new Promise<void>((res) => { resolveInsert = res; });
@@ -74,9 +74,15 @@ describe('DeploymentLogBatcher', () => {
         for (let i = 0; i < 11; i++) {
             appends.push(batcher.append({ deploymentId: 'd1', level: 'info', message: `m${i}` }));
         }
-        // The 11th append should wait; resolve the blocked inserts
+
+        let eleventhSettled = false;
+        appends[10].then(() => { eleventhSettled = true; });
+        await Promise.resolve();
+        expect(eleventhSettled).toBe(false);
+
         resolveInsert();
         await Promise.all(appends);
+        expect(eleventhSettled).toBe(true);
     });
 
     it('does not double-flush on explicit flush() when timer already fired', async () => {

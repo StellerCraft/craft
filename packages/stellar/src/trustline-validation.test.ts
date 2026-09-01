@@ -618,4 +618,43 @@ describe('verifyIssuerExists', () => {
     // In production, this prevents OOM in long-running services
     expect(true).toBe(true); // Implicit: no crash or memory exhaustion
   });
+
+  it('evicts the oldest-first entry when cache reaches capacity', async () => {
+    const MAX_CACHE_SIZE = 1_000; // From trustline-validation.ts
+    const spy = vi.spyOn(Horizon.Server.prototype, 'loadAccount').mockResolvedValue({
+      flags: { auth_required: false },
+    } as unknown as Horizon.ServerApi.AccountRecord);
+
+    // Create a list to track the order of issuers we insert
+    const issuers: string[] = [];
+    const firstIssuer = Keypair.random().publicKey();
+    issuers.push(firstIssuer);
+
+    // Fill cache to exactly MAX_CACHE_SIZE
+    await verifyIssuerExists(firstIssuer, HORIZON);
+    for (let i = 1; i < MAX_CACHE_SIZE; i++) {
+      const uniqueIssuer = Keypair.random().publicKey();
+      issuers.push(uniqueIssuer);
+      await verifyIssuerExists(uniqueIssuer, HORIZON);
+    }
+
+    // Verify the first issuer is cached (call count = 1 so far)
+    expect(spy).toHaveBeenCalledTimes(MAX_CACHE_SIZE);
+    const callCountBeforeEviction = spy.mock.calls.length;
+
+    // Add one more issuer – this should trigger eviction of the oldest (first) one
+    const newIssuer = Keypair.random().publicKey();
+    await verifyIssuerExists(newIssuer, HORIZON);
+
+    // Verify that a Horizon call was made for the new issuer
+    expect(spy).toHaveBeenCalledTimes(callCountBeforeEviction + 1);
+
+    // Now query the original first issuer again – it should have been evicted,
+    // so this should trigger a fresh Horizon call (2 calls for firstIssuer total)
+    await verifyIssuerExists(firstIssuer, HORIZON);
+
+    // Verify that the first issuer triggered a new Horizon call (not a cache hit)
+    expect(spy).toHaveBeenCalledTimes(callCountBeforeEviction + 2);
+    expect(spy).toHaveBeenCalledWith(firstIssuer);
+  });
 });

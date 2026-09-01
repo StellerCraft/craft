@@ -10,10 +10,14 @@
  *
  * Returns 402 Payment Required with an upgrade URL when the user's tier
  * is below the required minimum.
+ *
+ * See "Rate Limiting, Idempotency, and Tier Enforcement" in CONTRIBUTING.md
+ * for the full reference of FEATURE_GATES and TIER_ORDER.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import { createLogger, resolveCorrelationId } from '@/lib/api/logger';
 import type { SubscriptionTier } from '@craft/types';
 
 // ── Tier ordering ─────────────────────────────────────────────────────────────
@@ -71,11 +75,22 @@ export function withTierEnforcement<TParams = {}>(
         }
 
         // Re-read tier from DB — intentionally not trusting the JWT claim.
-        const { data: profile } = await supabase
+        const { data: profile, error: profileError } = await supabase
             .from('profiles')
             .select('subscription_tier')
             .eq('id', user.id)
             .single();
+
+        if (profileError) {
+            const correlationId = resolveCorrelationId(req);
+            const log = createLogger({ correlationId, userId: user.id });
+            log.error('Database error during subscription tier lookup; failing closed to free tier', profileError, {
+                path: req.nextUrl?.pathname || req.url,
+                method: req.method,
+                requiredTier,
+                errorMessage: profileError.message,
+            });
+        }
 
         const userTier = (profile?.subscription_tier ?? 'free') as SubscriptionTier;
 

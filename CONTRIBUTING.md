@@ -17,6 +17,43 @@ npm run build
 
 5. Link the PR to the relevant issue.
 
+## Rate Limiting, Idempotency, and Tier Enforcement
+
+Several backend middleware modules read tunable behavior from environment
+variables or module-level constants. This section is the single reference
+for all of them; each source file below points back here.
+
+### `RATE_LIMIT_DISABLED`
+
+- **Read by:** `apps/backend/src/lib/api/with-rate-limit.ts`, `apps/backend/src/lib/api/tier-rate-limit.ts`
+- **Default:** unset (rate limiting enforced)
+- **Effect:** when set to the string `"true"`, bypasses sliding-window and tier-based rate limiting entirely. Intended for local development and CI, where generous production limits would otherwise add friction.
+
+### `IDEMPOTENCY_TTL_MS`
+
+- **Read by:** `apps/backend/src/lib/api/idempotency.ts`
+- **Default:** `86400000` (24 hours)
+- **Effect:** how long a cached response for a given `(userId, Idempotency-Key)` pair is replayed instead of re-executing the handler. Falls back to the default when unset, non-numeric, or `<= 0`.
+
+### `SCOPE_VALIDATION_CACHE_TTL_MS`
+
+- **Read by:** `apps/backend/src/lib/github/scope-validator.ts`
+- **Default:** `300000` (5 minutes)
+- **Effect:** how long a validated GitHub token-scope result is cached (keyed by a SHA-256 hash of the token) before being re-checked against the GitHub API.
+
+### Tier-limit constants
+
+These are not environment variables — they are constants defined directly in
+source, listed here so all tunable rate-limiting/tier behavior has one
+reference page.
+
+- `apps/backend/src/lib/api/tier-rate-limit.ts`:
+  - `GENERAL_TIER_LIMITS` — per-tier request budget for regular endpoints: free 100/min, pro 1000/min, enterprise 10000/min.
+  - `SENSITIVE_TIER_LIMITS` — stricter per-tier budget applied to endpoints matched by `isSensitiveEndpoint()` (auth, payments, checkout, subscription, deployment creation): free 10/min, pro 100/min, enterprise 1000/min.
+- `apps/backend/src/lib/tier-enforcement.middleware.ts`:
+  - `TIER_ORDER` — numeric ordering used to compare a user's tier against a route's required tier (`free: 0`, `pro: 1`, `enterprise: 2`).
+  - `FEATURE_GATES` — declarative map from route-pattern substrings to the minimum subscription tier required to access them.
+
 ## Snapshot Testing (Stellar Configuration)
 
 Snapshot tests capture and diff configuration outputs to catch unintended changes in network settings, RPC endpoints, and serialization.

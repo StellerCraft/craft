@@ -273,4 +273,60 @@ describe('CronFailureTrackerService', () => {
         // Should not call fetch again (alert already sent)
         expect(fetchSpy).not.toHaveBeenCalled();
     });
+
+    it('falls back to optimistic-concurrency update when RPC is unavailable and retries on conflict', async () => {
+        const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        const svc = await load();
+
+        let attempt = 0;
+        const mock = {
+            rpc: vi.fn().mockImplementation((fn: string) => {
+                if (fn === 'increment_cron_failure') {
+                    return Promise.resolve({ data: null, error: { message: 'RPC not available' } });
+                }
+                if (fn === 'mark_cron_alert_sent') {
+                    return Promise.resolve({ data: null, error: null });
+                }
+                return Promise.resolve({ data: null, error: null });
+            }),
+            from: vi.fn().mockReturnValue({
+                select: vi.fn().mockReturnThis(),
+                update: vi.fn().mockReturnThis(),
+                insert: vi.fn().mockReturnThis(),
+                eq: vi.fn().mockReturnThis(),
+                maybeSingle: vi.fn().mockImplementation(() => {
+                    attempt++;
+                    if (attempt === 1) {
+                        // First read: existing row has consecutive_failures = 1
+                        return Promise.resolve({ data: { consecutive_failures: 1 }, error: null });
+                    } else if (attempt === 2) {
+                        // First update attempt fails (simulating concurrent write that bumped count to 2)
+                        return Promise.resolve({ data: null, error: null });
+                    } else if (attempt === 3) {
+                        // Second read: existing row now has consecutive_failures = 2
+                        return Promise.resolve({ data: { consecutive_failures: 2 }, error: null });
+                    } else {
+                        // Second update succeeds and returns updated row with consecutive_failures = 3
+                        return Promise.resolve({ data: { consecutive_failures: 3 }, error: null });
+                    }
+                }),
+                single: vi.fn().mockResolvedValue({
+                    data: { slack_alert_sent: false, email_alert_sent: false },
+                    error: null,
+                }),
+                upsert: vi.fn().mockResolvedValue({ error: null }),
+            }),
+        };
+
+        mockCreateClient.mockReturnValue(mock as any);
+
+        await svc.recordFailure('fallback-job', 'simulated failure');
+
+        expect(mock.rpc).toHaveBeenCalledWith('increment_cron_failure', {
+            p_job_name: 'fallback-job',
+            p_error: 'simulated failure',
+        });
+        expect(consoleErrorSpy).toHaveBeenCalled();
+    });
 });
+

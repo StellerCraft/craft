@@ -198,7 +198,8 @@ describe('diffAbiSchemas', () => {
     expect(report.changes.find((c) => c.type === 'added')?.key).toBe('new_flag');
     expect(report.changes.find((c) => c.type === 'removed')?.key).toBe('admin');
     expect(report.changes.find((c) => c.type === 'type_changed')?.key).toBe('balance');
-    expect(report.breakingChanges).toHaveLength(2);
+    // admin removed (required) + balance type changed + new_flag added (required) = 3 breaking
+    expect(report.breakingChanges).toHaveLength(3);
   });
 
   // ── Function signature diffing (Issue #969) ────────────────────────────────
@@ -377,6 +378,22 @@ describe('orchestrateContractUpgrade', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error).toContain('dryRun');
+    }
+  });
+
+  it('returns specific error message with populated diffReport when dryRun=true without upgradeTransactionXdr', async () => {
+    const result = await orchestrateContractUpgrade({
+      currentSchema,
+      newSchema: makeSchema(),
+      dryRun: true,
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBe('dryRun requires upgradeTransactionXdr to simulate the transaction.');
+      expect(result.diffReport).toBeDefined();
+      expect(result.diffReport?.safe).toBe(true);
+      expect(result.diffReport?.changes).toHaveLength(0);
     }
   });
 

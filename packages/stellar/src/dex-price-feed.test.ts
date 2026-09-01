@@ -6,8 +6,9 @@ import {
     detectOutliers,
     computeEnrichedDexPrice,
     subscribeLedgerPriceFeed,
+    verifyOrderBookConsistency,
 } from './dex-price-feed';
-import type { OrderBookSnapshot, OrderBookLevel, LedgerEventEmitter, OrderBookFetcher } from './dex-price-feed';
+import type { OrderBookSnapshot, OrderBookLevel, LedgerEventEmitter, OrderBookFetcher, SnapshotWithMeta } from './dex-price-feed';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -109,6 +110,69 @@ describe('computeEnrichedDexPrice', () => {
     });
 });
 
+// ── verifyOrderBookConsistency ─────────────────────────────────────────────────
+
+describe('verifyOrderBookConsistency', () => {
+    function snapshot(bids: OrderBookLevel[], asks: OrderBookLevel[], ledgerSeq: number): SnapshotWithMeta {
+        return {
+            snapshot: { bids, asks },
+            ledgerSequence: ledgerSeq,
+        };
+    }
+
+    it('defaults to primary snapshot when primary has no mid-price (empty book) (#1129)', () => {
+        const primarySnapshot = snapshot([], [], 1000);
+        const secondarySnapshot = snapshot(
+            [level('1.0', '100')],
+            [level('1.1', '100')],
+            1001,
+        );
+
+        const result = verifyOrderBookConsistency(primarySnapshot, secondarySnapshot);
+
+        expect(result.consistent).toBe(true);
+        expect(result.divergencePercent).toBeUndefined();
+        expect(result.selectedSnapshot).toBe(primarySnapshot.snapshot);
+        expect(result.reason).toContain('Cannot compute mid-price');
+    });
+
+    it('defaults to primary snapshot when secondary has no mid-price (empty book) (#1129)', () => {
+        const primarySnapshot = snapshot(
+            [level('1.0', '100')],
+            [level('1.1', '100')],
+            1000,
+        );
+        const secondarySnapshot = snapshot([], [], 1001);
+
+        const result = verifyOrderBookConsistency(primarySnapshot, secondarySnapshot);
+
+        expect(result.consistent).toBe(true);
+        expect(result.divergencePercent).toBeUndefined();
+        expect(result.selectedSnapshot).toBe(primarySnapshot.snapshot);
+        expect(result.reason).toContain('Cannot compute mid-price');
+    });
+
+    it('reports zero divergence when both endpoints are within tolerance', () => {
+        const primarySnapshot = snapshot(
+            [level('1.0', '100')],
+            [level('1.1', '100')],
+            1000,
+        );
+        const secondarySnapshot = snapshot(
+            [level('1.001', '100')],
+            [level('1.099', '100')],
+            1001,
+        );
+
+        const result = verifyOrderBookConsistency(primarySnapshot, secondarySnapshot);
+
+        expect(result.consistent).toBe(true);
+        expect(result.divergencePercent).toBeDefined();
+        expect(result.divergencePercent!).toBeLessThan(1);
+        expect(result.selectedSnapshot).toBe(primarySnapshot.snapshot);
+    });
+});
+
 // ── subscribeLedgerPriceFeed ──────────────────────────────────────────────────
 
 describe('subscribeLedgerPriceFeed', () => {
@@ -176,5 +240,83 @@ describe('subscribeLedgerPriceFeed', () => {
         await new Promise(r => setTimeout(r, 20));
 
         expect(onUpdate).toHaveBeenCalledTimes(3);
+    });
+
+    it('surfaces a sustained fetch failure through onError on every ledger while staying subscribed (#1116)', async () => {
+        const { emitter, emit, handlers } = makeEmitter();
+        const failure = new Error('expired credentials');
+        const fetcher: OrderBookFetcher = { fetch: vi.fn().mockRejectedValue(failure) };
+        const onUpdate = vi.fn();
+        const onError = vi.fn();
+
+        const unsubscribe = subscribeLedgerPriceFeed(emitter, fetcher, onUpdate, onError);
+
+        emit(2000);
+        emit(2001);
+        emit(2002);
+        await new Promise(r => setTimeout(r, 20));
+
+        // Observability: onError fired once per failed ledger with the error + triggering event.
+        expect(onError).toHaveBeenCalledTimes(3);
+        expect(onError.mock.calls[0][0]).toBe(failure);
+        expect(onError.mock.calls[0][1]).toEqual({ sequence: 2000 });
+        expect(onError.mock.calls[2][1]).toEqual({ sequence: 2002 });
+
+        // Resilience unchanged: no price updates, subscription still active.
+        expect(onUpdate).not.toHaveBeenCalled();
+        expect(handlers.size).toBe(1);
+
+        unsubscribe();
+    });
+
+    it('does not require an onError callback (#1116)', async () => {
+        const { emitter, emit } = makeEmitter();
+        const fetcher: OrderBookFetcher = { fetch: vi.fn().mockRejectedValue(new Error('network')) };
+        const onUpdate = vi.fn();
+
+        expect(() => subscribeLedgerPriceFeed(emitter, fetcher, onUpdate)).not.toThrow();
+        emit(3000);
+        await new Promise(r => setTimeout(r, 10));
+
+        expect(onUpdate).not.toHaveBeenCalled();
+    });
+});
+
+// ── #1109 – self-masking outlier regression test ─────────────────────────────
+
+describe('detectOutliers – self-masking regression (#1109)', () => {
+    it('detects a single extreme outlier that would have masked itself under naive mean/stdDev', () => {
+        // Classic self-masking scenario: one extreme value inflates the classical
+        // stdDev enough that the outlier's own |price - mean| < 3 * stdDev,
+        // causing the naive test to miss it.  The MAD-based test must flag it.
+        //
+        // Cluster: 6 prices tightly around 1.00 (± 0.05), plus one spike at 50.0
+        const clusterPrices = ['1.00', '1.02', '0.98', '1.01', '0.99', '1.03'];
+        const levels = clusterPrices.map((p) => level(p)).concat([level('50.0')]);
+
+        const outliers = detectOutliers(levels);
+
+        // The MAD-based test must identify 50.0 as an outlier.
+        expect(outliers).toContain(50.0);
+    });
+
+    it('does not flag tightly-clustered prices as outliers', () => {
+        // All prices within ±5 % of each other — nothing should be flagged.
+        const levels = ['1.00', '1.01', '0.99', '1.02', '0.98', '1.005'].map((p) => level(p));
+
+        const outliers = detectOutliers(levels);
+
+        expect(outliers).toHaveLength(0);
+    });
+
+    it('computeEnrichedDexPrice sets hasOutlier=true for self-masking outlier scenario', () => {
+        const clusterLevels = ['1.00', '1.02', '0.98', '1.01', '0.99', '1.03'].map((p) => level(p));
+        const spikedLevels = clusterLevels.concat([level('50.0')]);
+
+        const snapshot: OrderBookSnapshot = { bids: spikedLevels, asks: [] };
+        const result = computeEnrichedDexPrice(snapshot);
+
+        expect(result.bidAnalysis.hasOutlier).toBe(true);
+        expect(result.bidAnalysis.outliers).toContain(50.0);
     });
 });

@@ -7,9 +7,13 @@
  * - Query parameter: ?api-version=2
  */
 
-export const CURRENT_API_VERSION = 1;
 export const SUPPORTED_VERSIONS = [1, 2] as const;
 export type APIVersion = typeof SUPPORTED_VERSIONS[number];
+
+/** Unversioned requests use v2, the current internal API representation. */
+export const DEFAULT_API_VERSION: APIVersion = 2;
+/** @deprecated Use DEFAULT_API_VERSION for new callers. */
+export const CURRENT_API_VERSION = DEFAULT_API_VERSION;
 
 interface VersionInfo {
     version: APIVersion;
@@ -75,6 +79,9 @@ export function parseVersionFromHeader(acceptHeader: string): APIVersion | null 
  * Expects: ?api-version=2
  */
 export function parseVersionFromQuery(queryParam: string): APIVersion | null {
+    if (!/^\d+$/.test(queryParam)) {
+        return null;
+    }
     const version = parseInt(queryParam, 10) as APIVersion;
     if (SUPPORTED_VERSIONS.includes(version)) {
         return version;
@@ -113,8 +120,7 @@ export function negotiateVersion(
         }
     }
 
-    // Default to current version
-    return { version: CURRENT_API_VERSION, source: 'default' };
+    return { version: DEFAULT_API_VERSION, source: 'default' };
 }
 
 /**

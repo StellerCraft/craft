@@ -17,7 +17,9 @@ vi.mock('@/lib/supabase/server', () => ({
 
 // ── Analytics mock ────────────────────────────────────────────────────────────
 
-const mockRecordUptimeCheck = vi.fn().mockResolvedValue(undefined);
+const { mockRecordUptimeCheck } = vi.hoisted(() => ({
+    mockRecordUptimeCheck: vi.fn().mockResolvedValue(undefined),
+}));
 
 vi.mock('./analytics.service', () => ({
     analyticsService: { recordUptimeCheck: mockRecordUptimeCheck },

@@ -1,14 +1,16 @@
 /**
  * Tests for AutomaticTTLRenewer — ledger-aware automated TTL renewal (#792)
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { xdr, Account } from 'stellar-sdk';
 import {
     AutomaticTTLRenewer,
     createAutoRenewer,
     buildContractInstanceKey,
+    buildContractDataKey,
     RENEWAL_QUEUE_THRESHOLD,
     RENEWAL_TRIGGER_LEDGERS,
+    MAX_RENEWAL_BATCH_SIZE,
 } from './soroban-ttl-manager';
 
 const CONTRACT_A = 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM';
@@ -172,6 +174,80 @@ describe('AutomaticTTLRenewer._tick', () => {
     });
 });
 
+// ── Batch-size cap (oversized queue) ──────────────────────────────────────────
+
+describe('AutomaticTTLRenewer._tick — renewal batch size cap', () => {
+    /** Build an at-risk ttlClient mock returning one entry per key at the trigger threshold. */
+    function makeAtRiskTtlClient(keys: xdr.LedgerKey[], currentLedger: number) {
+        return {
+            getLatestLedger: vi.fn().mockResolvedValue({ sequence: currentLedger }),
+            getLedgerEntries: vi.fn().mockResolvedValue({
+                entries: keys.map((key) => ({
+                    key,
+                    xdr: {} as xdr.LedgerEntry,
+                    liveUntilLedgerSeq: currentLedger + RENEWAL_TRIGGER_LEDGERS,
+                })),
+                latestLedger: currentLedger,
+            }),
+        };
+    }
+
+    it('MAX_RENEWAL_BATCH_SIZE is a positive cap', () => {
+        expect(MAX_RENEWAL_BATCH_SIZE).toBeGreaterThan(0);
+    });
+
+    it('splits an oversized queue into multiple capped renewal transactions rather than one', async () => {
+        const currentLedger = 1000;
+        const keyCount = MAX_RENEWAL_BATCH_SIZE * 2 + 3; // exceeds a single batch
+        const keys = Array.from({ length: keyCount }, (_, i) =>
+            buildContractDataKey(CONTRACT_A, xdr.ScVal.scvU32(i)),
+        );
+        const ttlClient = makeAtRiskTtlClient(keys, currentLedger);
+        const txClient = makeTxClient();
+
+        const renewer = new AutomaticTTLRenewer(SOURCE_KEY, { ttlClient, txClient });
+        keys.forEach((k) => renewer.watch(k));
+        await renewer._tick();
+
+        const expectedBatches = Math.ceil(keyCount / MAX_RENEWAL_BATCH_SIZE);
+        expect(expectedBatches).toBeGreaterThan(1);
+        // One built transaction per sub-batch — never a single oversized batch.
+        expect(txClient.getAccount).toHaveBeenCalledTimes(expectedBatches);
+        expect(txClient.prepareTransaction).toHaveBeenCalledTimes(expectedBatches);
+    });
+
+    it('continues attempting later sub-batches after one sub-batch fails, alerting per failure', async () => {
+        const currentLedger = 1000;
+        const keyCount = MAX_RENEWAL_BATCH_SIZE * 3;
+        const keys = Array.from({ length: keyCount }, (_, i) =>
+            buildContractDataKey(CONTRACT_A, xdr.ScVal.scvU32(i)),
+        );
+        const ttlClient = makeAtRiskTtlClient(keys, currentLedger);
+
+        const fakeTx = { toXDR: vi.fn().mockReturnValue('renewal-tx-xdr') };
+        const fakeAccount = new Account(SOURCE_KEY, '1');
+        const prepareTransaction = vi
+            .fn()
+            .mockRejectedValueOnce(new Error('footprint resource limit exceeded'))
+            .mockResolvedValue(fakeTx);
+        const txClient = {
+            getAccount: vi.fn().mockResolvedValue(fakeAccount),
+            prepareTransaction,
+        };
+        const onAlert = vi.fn();
+
+        const renewer = new AutomaticTTLRenewer(SOURCE_KEY, { ttlClient, txClient, onAlert });
+        keys.forEach((k) => renewer.watch(k));
+        await renewer._tick();
+
+        // All 3 sub-batches attempted despite the first failing.
+        expect(prepareTransaction).toHaveBeenCalledTimes(3);
+        // Exactly one alert — for the sub-batch that failed, not the whole tick.
+        expect(onAlert).toHaveBeenCalledOnce();
+        expect(onAlert.mock.calls[0][0].keys).toHaveLength(MAX_RENEWAL_BATCH_SIZE);
+    });
+});
+
 // ── start / stop ──────────────────────────────────────────────────────────────
 
 describe('AutomaticTTLRenewer start/stop', () => {
@@ -201,6 +277,154 @@ describe('AutomaticTTLRenewer start/stop', () => {
         await Promise.resolve();
 
         expect(tickSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('calling start() twice in polling mode does not register a second timer', async () => {
+        const renewer = new AutomaticTTLRenewer(SOURCE_KEY, { pollIntervalMs: 1000 });
+        const tickSpy = vi.spyOn(renewer, '_tick').mockResolvedValue(undefined);
+
+        renewer.start();
+        renewer.start(); // idempotent — should not add a second timer
+        vi.advanceTimersByTime(2000);
+        await Promise.resolve();
+
+        expect(tickSpy).toHaveBeenCalledTimes(2);
+        renewer.stop();
+    });
+
+    it('stop followed by start correctly re-arms polling', async () => {
+        const renewer = new AutomaticTTLRenewer(SOURCE_KEY, { pollIntervalMs: 1000 });
+        const tickSpy = vi.spyOn(renewer, '_tick').mockResolvedValue(undefined);
+
+        renewer.start();
+        vi.advanceTimersByTime(1500);
+        renewer.stop();
+        vi.advanceTimersByTime(500);
+        expect(tickSpy).toHaveBeenCalledTimes(1);
+
+        renewer.start(); // re-arm
+        vi.advanceTimersByTime(1500);
+        await Promise.resolve();
+
+        expect(tickSpy).toHaveBeenCalledTimes(2);
+        renewer.stop();
+    });
+});
+
+// ── start / stop in event-driven mode ──────────────────────────────────────────
+
+describe('AutomaticTTLRenewer start/stop – event-driven mode', () => {
+    it('calling start() twice in event-driven mode does not register a second listener', async () => {
+        const mockEmitter = {
+            on: vi.fn().mockReturnThis(),
+            off: vi.fn().mockReturnThis(),
+        };
+
+        const renewer = new AutomaticTTLRenewer(SOURCE_KEY, { ledgerEmitter: mockEmitter });
+        const tickSpy = vi.spyOn(renewer, '_tick').mockResolvedValue(undefined);
+
+        renewer.start();
+        renewer.start(); // idempotent — should not add a second listener
+
+        expect(mockEmitter.on).toHaveBeenCalledTimes(1);
+        expect(mockEmitter.on).toHaveBeenCalledWith('ledger', expect.any(Function));
+
+        renewer.stop();
+    });
+
+    it('stop removes the ledger event listener', async () => {
+        const mockEmitter = {
+            on: vi.fn().mockReturnThis(),
+            off: vi.fn().mockReturnThis(),
+        };
+
+        const renewer = new AutomaticTTLRenewer(SOURCE_KEY, { ledgerEmitter: mockEmitter });
+        renewer.start();
+        expect(mockEmitter.on).toHaveBeenCalledOnce();
+
+        renewer.stop();
+        expect(mockEmitter.off).toHaveBeenCalledOnce();
+        expect(mockEmitter.off).toHaveBeenCalledWith('ledger', expect.any(Function));
+    });
+
+    it('stop followed by start correctly re-arms event-driven mode', async () => {
+        const mockEmitter = {
+            on: vi.fn().mockReturnThis(),
+            off: vi.fn().mockReturnThis(),
+        };
+
+        const renewer = new AutomaticTTLRenewer(SOURCE_KEY, { ledgerEmitter: mockEmitter });
+
+        renewer.start();
+        expect(mockEmitter.on).toHaveBeenCalledTimes(1);
+
+        renewer.stop();
+        expect(mockEmitter.off).toHaveBeenCalledTimes(1);
+
+        renewer.start(); // re-arm
+        expect(mockEmitter.on).toHaveBeenCalledTimes(2);
+        expect(mockEmitter.off).toHaveBeenCalledTimes(1);
+
+        renewer.stop();
+    });
+
+    it('event listener is called when ledger event is fired', async () => {
+        let capturedHandler: ((ledger: any) => void) | null = null;
+
+        const mockEmitter = {
+            on: vi.fn((event: string, handler: (ledger: any) => void) => {
+                if (event === 'ledger') {
+                    capturedHandler = handler;
+                }
+                return mockEmitter;
+            }),
+            off: vi.fn().mockReturnThis(),
+        };
+
+        const ttlClient = makeTtlClient([], 1000);
+        const renewer = new AutomaticTTLRenewer(SOURCE_KEY, { ledgerEmitter: mockEmitter, ttlClient });
+        const tickSpy = vi.spyOn(renewer, '_tick').mockResolvedValue(undefined);
+
+        renewer.start();
+        expect(capturedHandler).not.toBeNull();
+
+        await capturedHandler!({ sequence: 1001 });
+        expect(tickSpy).toHaveBeenCalledOnce();
+
+        renewer.stop();
+    });
+
+    it('calling stop() when not started is idempotent', async () => {
+        const mockEmitter = {
+            on: vi.fn().mockReturnThis(),
+            off: vi.fn().mockReturnThis(),
+        };
+
+        const renewer = new AutomaticTTLRenewer(SOURCE_KEY, { ledgerEmitter: mockEmitter });
+
+        renewer.stop(); // not started yet
+        renewer.stop(); // idempotent
+
+        expect(mockEmitter.off).not.toHaveBeenCalled();
+    });
+
+    it('polling mode stop() followed by event-driven restart respects the configuration change', async () => {
+        const tickSpy = vi.spyOn(AutomaticTTLRenewer.prototype as any, '_tick').mockResolvedValue(undefined);
+
+        const pollingRenewer = new AutomaticTTLRenewer(SOURCE_KEY, { pollIntervalMs: 1000 });
+        pollingRenewer.start();
+        pollingRenewer.stop();
+
+        const mockEmitter = {
+            on: vi.fn().mockReturnThis(),
+            off: vi.fn().mockReturnThis(),
+        };
+
+        const eventRenewer = new AutomaticTTLRenewer(SOURCE_KEY, { ledgerEmitter: mockEmitter });
+        eventRenewer.start();
+
+        expect(mockEmitter.on).toHaveBeenCalledOnce();
+        eventRenewer.stop();
     });
 });
 

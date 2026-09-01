@@ -232,9 +232,15 @@ export function deserializeScValAs<T extends SorobanValue>(
 ): T {
     const value = deserializeScVal(scVal);
     if (guard && !guard(value)) {
+        const scvType = scVal.switch().name;
         throw new SorobanDeserializationError(
-            `Deserialized value did not match expected type (got ${typeof value})`,
-            scVal.switch().name,
+            // Report the ScVal discriminant (e.g. scvMap, scvI128), not just the
+            // JS runtime type — `typeof value` is `object` for both maps and vecs
+            // and `bigint` for every 64/128/256-bit integer variant, so it can't
+            // tell you which shape actually came back.
+            `Deserialized value did not match expected type ` +
+                `(got ScVal ${scvType}, JS typeof ${typeof value})`,
+            scvType,
         );
     }
     return value as T;
@@ -278,8 +284,20 @@ export function serializeScVal(value: SorobanValue, hint?: ScValTypeHint): xdr.S
             );
         }
         if (hint === 'u32') {
+            if (value < 0 || value > 4_294_967_295) {
+                throw new SorobanSerializationError(
+                    `Number ${value} is out of range for u32 (0 to 4294967295)`,
+                    'number',
+                );
+            }
             return xdr.ScVal.scvU32(value >>> 0);
         } else if (hint === 'i32') {
+            if (value < -2_147_483_648 || value > 2_147_483_647) {
+                throw new SorobanSerializationError(
+                    `Number ${value} is out of range for i32 (-2147483648 to 2147483647)`,
+                    'number',
+                );
+            }
             return xdr.ScVal.scvI32(value | 0);
         } else if (value >= 0) {
             return xdr.ScVal.scvU32(value >>> 0);
@@ -332,13 +350,13 @@ function serializeBigInt(value: bigint, hint?: ScValTypeHint): xdr.ScVal {
         } else if (value >= -0x8000000000000000n && value <= 0x7FFFFFFFFFFFFFFFn) {
             return xdr.ScVal.scvI64(bigintToInt64(value));
         } else if (value >= 0n && value <= 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFn) {
-            return xdr.ScVal.scvU128(bigintToUint128(value));
+            return xdr.ScVal.scvU128(new xdr.UInt128Parts(bigintToUint128(value)));
         } else if (value >= -0x80000000000000000000000000000000n && value <= 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFn) {
-            return xdr.ScVal.scvI128(bigintToInt128(value));
+            return xdr.ScVal.scvI128(new xdr.Int128Parts(bigintToInt128(value)));
         } else if (value >= 0n && value <= 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFn) {
-            return xdr.ScVal.scvU256(bigintToUint256(value));
+            return xdr.ScVal.scvU256(new xdr.UInt256Parts(bigintToUint256(value)));
         } else if (value >= -0x8000000000000000000000000000000000000000000000000000000000000000n && value <= 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFn) {
-            return xdr.ScVal.scvI256(bigintToInt256(value));
+            return xdr.ScVal.scvI256(new xdr.Int256Parts(bigintToInt256(value)));
         }
         throw new SorobanSerializationError(
             `BigInt ${value} is out of range for all integer types`,
@@ -353,13 +371,13 @@ function serializeBigInt(value: bigint, hint?: ScValTypeHint): xdr.ScVal {
         case 'i64':
             return xdr.ScVal.scvI64(bigintToInt64(value));
         case 'u128':
-            return xdr.ScVal.scvU128(bigintToUint128(value));
+            return xdr.ScVal.scvU128(new xdr.UInt128Parts(bigintToUint128(value)));
         case 'i128':
-            return xdr.ScVal.scvI128(bigintToInt128(value));
+            return xdr.ScVal.scvI128(new xdr.Int128Parts(bigintToInt128(value)));
         case 'u256':
-            return xdr.ScVal.scvU256(bigintToUint256(value));
+            return xdr.ScVal.scvU256(new xdr.UInt256Parts(bigintToUint256(value)));
         case 'i256':
-            return xdr.ScVal.scvI256(bigintToInt256(value));
+            return xdr.ScVal.scvI256(new xdr.Int256Parts(bigintToInt256(value)));
         default:
             throw new SorobanSerializationError(
                 `Invalid hint for bigint: ${hint}`,
@@ -423,6 +441,16 @@ function decodeAddress(addr: xdr.ScAddress): string {
  * Convert a ScVal map key to a string for use as an object property name.
  * Symbols and strings are used verbatim; numeric and other types are
  * rendered as their string representation.
+ *
+ * scvBytes keys are hex-encoded (prefixed with "0x") to guarantee distinct
+ * strings for distinct byte sequences.
+ *
+ * scvAddress keys are decoded via `decodeAddress` to their canonical StrKey
+ * representation (G..., C..., M..., etc.) so that each distinct address
+ * maps to a unique string.
+ *
+ * For genuinely unrecognised key types a `SorobanDeserializationError` is
+ * thrown rather than silently collapsing all such keys to the same placeholder.
  */
 function mapKeyToString(key: xdr.ScVal): string {
     const typeName = key.switch().name as string;
@@ -434,9 +462,13 @@ function mapKeyToString(key: xdr.ScVal): string {
         case 'scvU64':    return uint64ToBigInt(key.u64()).toString();
         case 'scvI64':    return int64ToBigInt(key.i64()).toString();
         case 'scvBool':   return String(key.b());
+        case 'scvBytes':  return '0x' + (key.bytes() as Buffer).toString('hex');
+        case 'scvAddress': return decodeAddress(key.address());
         default:
-            // Fall back to a recognisable placeholder rather than silently losing data.
-            return `[${typeName}]`;
+            throw new SorobanDeserializationError(
+                `Unsupported ScVal map key type: ${typeName}`,
+                typeName,
+            );
     }
 }
 

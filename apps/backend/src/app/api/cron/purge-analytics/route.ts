@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { analyticsService } from '@/services/analytics.service';
 import { withCronAuth } from '@/lib/api/cron-auth';
+import { getRetentionPolicyWindows, readRetentionDays, validateRetentionWindows } from '@/lib/retention-policy';
 
 /**
  * Cron: purge old deployment_analytics rows
@@ -14,7 +15,8 @@ import { withCronAuth } from '@/lib/api/cron-auth';
  * Scheduled daily via vercel.json. Protected by CRON_SECRET.
  */
 async function handleAnalyticsPurge(req: NextRequest) {
-    const retentionDays = parseInt(process.env.ANALYTICS_RETENTION_DAYS ?? '90', 10);
+    const retentionDays = readRetentionDays('analyticsPurge');
+    validateRetentionWindows(getRetentionPolicyWindows());
 
     try {
         const deleted = await analyticsService.applyRetentionPolicy(retentionDays);

@@ -123,4 +123,78 @@ describe('AuditLogCompactionService', () => {
             expect.objectContaining({ email: null, ip_address: null, pii_redacted: true }),
         );
     });
+
+    it('warns and skips re-archiving rows that failed redaction recently', async () => {
+        const rows = [makeRow('r1', 100), makeRow('r2', 99)];
+        const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+        const failedPayload = JSON.stringify({ ids: ['r1', 'r2'], timestamp: Date.now() - 60_000 });
+        const failedDownload = vi.fn().mockResolvedValue({
+            data: { text: async () => failedPayload },
+            error: null,
+        });
+
+        const upload = vi.fn().mockResolvedValue({ error: null });
+        const list = vi.fn().mockResolvedValue({ data: [{ name: 'batch.ndjson' }], error: null });
+        const storage = { from: vi.fn().mockReturnValue({ upload, list, download: failedDownload }) };
+
+        const update = vi.fn().mockReturnValue({ error: null });
+        const inFn = vi.fn().mockReturnValue({ error: null });
+        const eqFn = vi.fn().mockReturnThis();
+        const ltFn = vi.fn().mockReturnThis();
+        const limitFn = vi.fn().mockResolvedValue({ data: rows, error: null });
+        const select = vi.fn().mockReturnValue({ lt: ltFn, eq: eqFn, limit: limitFn });
+        ltFn.mockReturnValue({ eq: eqFn });
+        eqFn.mockReturnValue({ limit: limitFn });
+        const from = vi.fn().mockReturnValue({ select, update: vi.fn().mockReturnValue({ in: inFn }) });
+
+        const supabase = { from, storage } as any;
+        const svc = new AuditLogCompactionService(supabase, { now: fixedNow });
+        const result = await svc.compact();
+
+        expect(result.errors).toBe(2);
+        expect(result.archived).toBe(0);
+        expect(result.redacted).toBe(0);
+        expect(consoleWarn).toHaveBeenCalled();
+        expect(upload).not.toHaveBeenCalled();
+
+        consoleWarn.mockRestore();
+        consoleError.mockRestore();
+    });
+
+    it('re-archives rows after the failed-redaction window expires', async () => {
+        const rows = [makeRow('r1', 100)];
+        const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+        const failedPayload = JSON.stringify({ ids: ['r1'], timestamp: Date.now() - 25 * 60 * 60 * 1000 });
+        const failedDownload = vi.fn().mockResolvedValue({
+            data: { text: async () => failedPayload },
+            error: null,
+        });
+
+        const upload = vi.fn().mockResolvedValue({ error: null });
+        const list = vi.fn().mockResolvedValue({ data: [{ name: 'batch.ndjson' }], error: null });
+        const storage = { from: vi.fn().mockReturnValue({ upload, list, download: failedDownload }) };
+
+        const update = vi.fn().mockReturnValue({ error: null });
+        const inFn = vi.fn().mockReturnValue({ error: null });
+        const eqFn = vi.fn().mockReturnThis();
+        const ltFn = vi.fn().mockReturnThis();
+        const limitFn = vi.fn().mockResolvedValue({ data: rows, error: null });
+        const select = vi.fn().mockReturnValue({ lt: ltFn, eq: eqFn, limit: limitFn });
+        ltFn.mockReturnValue({ eq: eqFn });
+        eqFn.mockReturnValue({ limit: limitFn });
+        const from = vi.fn().mockReturnValue({ select, update: vi.fn().mockReturnValue({ in: inFn }) });
+
+        const supabase = { from, storage } as any;
+        const svc = new AuditLogCompactionService(supabase, { now: fixedNow });
+        const result = await svc.compact();
+
+        expect(result.archived).toBe(1);
+        expect(result.redacted).toBe(1);
+        expect(upload).toHaveBeenCalledOnce();
+
+        consoleWarn.mockRestore();
+    });
 });

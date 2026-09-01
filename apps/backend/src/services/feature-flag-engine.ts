@@ -1,9 +1,12 @@
 /**
- * Deployment Rollout Strategy & Feature Flag Targeting Rules Engine
+ * Feature Flag Targeting Rules Engine
  *
- * Implements canary, blue-green, and percentage-based rollout strategies,
- * plus a feature flag evaluation engine with user-segment targeting
- * and deterministic percentage-based rollouts.
+ * Feature flag evaluation engine with user-segment targeting and
+ * deterministic percentage-based rollouts.
+ *
+ * Not to be confused with `./rollout-strategy.service.ts`, which implements
+ * the canary/blue-green deployment rollout classes (`RolloutEngine`,
+ * `BlueGreenSwitcher`).
  */
 
 import { createHmac } from 'crypto';

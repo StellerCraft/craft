@@ -17,6 +17,7 @@
 
 import { createClient } from '@/lib/supabase/server';
 import { createLogger } from '@/lib/api/logger';
+import { randomUUID } from 'node:crypto';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -81,6 +82,8 @@ export interface ReplayDeliveryResult {
     error?: string;
 }
 
+export type WebhookDeliveryProcessor = (delivery: WebhookDelivery) => Promise<void>;
+
 // ── Service ───────────────────────────────────────────────────────────────────
 
 export class WebhookDeliveryService {
@@ -88,6 +91,21 @@ export class WebhookDeliveryService {
         correlationId: 'webhook-delivery-service',
         service: 'webhook-delivery',
     });
+    private processor: WebhookDeliveryProcessor | null = null;
+
+    /**
+     * Registers a processor function to handle downstream processing of replayed webhook deliveries.
+     */
+    registerProcessor(processor: WebhookDeliveryProcessor): void {
+        this.processor = processor;
+    }
+
+    /**
+     * Returns the registered processor, if any.
+     */
+    getProcessor(): WebhookDeliveryProcessor | null {
+        return this.processor;
+    }
 
     /**
      * Records a new webhook delivery in the database.
@@ -292,7 +310,7 @@ export class WebhookDeliveryService {
             }
 
             // Generate a new delivery ID for the replay
-            const newDeliveryId = `replay-${Date.now()}-${crypto.randomUUID().substring(0, 8)}`;
+            const newDeliveryId = `replay-${Date.now()}-${randomUUID().substring(0, 8)}`;
 
             // Create a new delivery record for the replay
             const { data: replayed, error: insertError } = await supabase
@@ -321,6 +339,24 @@ export class WebhookDeliveryService {
                 newDeliveryId,
                 eventType: original.event_type,
             });
+
+            // Re-trigger downstream processing if a processor is registered
+            if (this.processor) {
+                const replayedDelivery = this.mapToWebhookDelivery(replayed);
+                try {
+                    await this.processor(replayedDelivery);
+                    await this.markProcessed(newDeliveryId);
+                } catch (procErr: any) {
+                    this.log.error('Failed to process replayed webhook delivery', procErr, {
+                        newDeliveryId,
+                        originalDeliveryId,
+                    });
+                    await this.markFailed(
+                        newDeliveryId,
+                        procErr?.message || 'Replay processing failed'
+                    );
+                }
+            }
 
             return { success: true, newDeliveryId };
         } catch (error: any) {

@@ -10,11 +10,29 @@
  * never collide even if the raw key string is identical.
  *
  * Configuration:
- *   IDEMPOTENCY_TTL_MS — Cache TTL in milliseconds. Default: 86_400_000 (24 h)
+ *   IDEMPOTENCY_TTL_MS      — Cache TTL in milliseconds. Default: 86_400_000 (24 h)
+ *   IDEMPOTENCY_MAX_ENTRIES — Hard cap on cached entries; when exceeded the
+ *                             oldest entry (by storedAt) is evicted. Default: 10_000
+ *   IDEMPOTENCY_SWEEP_MS    — Interval at which a background sweep evicts
+ *                             expired entries independently of new keyed
+ *                             requests, bounding memory even for one-shot keys.
+ *                             Default: 60_000 (60 s). Disabled under NODE_ENV=test.
+ *
+ * Eviction strategy:
+ *   - Every keyed request that misses the cache prunes expired entries first
+ *     (lazy sweep), so a hot key never accumulates stale data.
+ *   - A periodic background sweep runs on an interval to evict entries that
+ *     have fully expired even when no further request arrives on that key
+ *     (the common one-shot checkout case), preventing unbounded growth.
+ *   - A max-size cap provides a hard backstop: if the sweep lags, the oldest
+ *     stored entry is evicted on write.
  *
  * Usage:
  *   const handler = withIdempotency(userId, async (req) => { ... });
  *   return handler(req);
+ *
+ * See "Rate Limiting, Idempotency, and Tier Enforcement" in CONTRIBUTING.md
+ * for the full env-var reference.
  */
 
 import { NextResponse } from 'next/server';
@@ -36,16 +54,61 @@ function ttlMs(): number {
     return Number.isFinite(val) && val > 0 ? val : 86_400_000;
 }
 
+function maxEntries(): number {
+    const val = parseInt(process.env.IDEMPOTENCY_MAX_ENTRIES ?? '10000', 10);
+    return Number.isFinite(val) && val > 0 ? val : 10_000;
+}
+
+function sweepIntervalMs(): number {
+    const val = parseInt(process.env.IDEMPOTENCY_SWEEP_MS ?? '60000', 10);
+    return Number.isFinite(val) && val > 0 ? val : 60_000;
+}
+
 function cacheKey(userId: string, idempotencyKey: string): string {
     return `${userId}:${idempotencyKey}`;
 }
 
-function evictExpired(): void {
+/** Remove every cache entry whose TTL has elapsed. */
+export function evictExpired(): void {
     const now = Date.now();
     const ttl = ttlMs();
     for (const [key, entry] of cache) {
         if (now - entry.storedAt > ttl) cache.delete(key);
     }
+}
+
+/**
+ * Bound the cache size by evicting the oldest entry when over the cap. Used as
+ * a backstop so memory stays bounded even if the periodic sweep has not yet
+ * reclaimed entries.
+ */
+function enforceMaxSize(): void {
+    const cap = maxEntries();
+    if (cache.size <= cap) return;
+    let oldestKey: string | null = null;
+    let oldestTime = Infinity;
+    for (const [key, entry] of cache) {
+        if (entry.storedAt < oldestTime) {
+            oldestTime = entry.storedAt;
+            oldestKey = key;
+        }
+    }
+    if (oldestKey) cache.delete(oldestKey);
+}
+
+// ── Periodic sweep ────────────────────────────────────────────────────────────
+// Evicts expired entries on a timer so the cache cannot grow without bound for
+// one-shot keys that are never re-requested. Disabled under test environments
+// to avoid open-handle leaks in the test runner.
+
+let sweepHandle: ReturnType<typeof setInterval> | null = null;
+
+function startSweep(): void {
+    if (sweepHandle) return;
+    if (process.env.NODE_ENV === 'test' || process.env.VITEST) return;
+    sweepHandle = setInterval(() => {
+        evictExpired();
+    }, sweepIntervalMs());
 }
 
 export type IdempotentHandler = (req: NextRequest) => Promise<NextResponse>;
@@ -61,6 +124,7 @@ export function withIdempotency(
     handler: IdempotentHandler,
 ): IdempotentHandler {
     return async (req: NextRequest): Promise<NextResponse> => {
+        startSweep();
         const rawKey = req.headers.get(IDEMPOTENCY_KEY_HEADER);
         if (!rawKey) return handler(req);
 
@@ -80,7 +144,9 @@ export function withIdempotency(
 
         if (response.status >= 200 && response.status < 300) {
             const body = await response.clone().json().catch(() => null);
+            if (cache.size >= maxEntries()) evictExpired();
             cache.set(key, { status: response.status, body, storedAt: Date.now() });
+            enforceMaxSize();
         }
 
         return response;
@@ -90,4 +156,9 @@ export function withIdempotency(
 /** Exposed for testing — clears all cached entries. */
 export function clearIdempotencyCache(): void {
     cache.clear();
+}
+
+/** Exposed for testing — returns the current number of cached entries. */
+export function _cacheSize(): number {
+    return cache.size;
 }

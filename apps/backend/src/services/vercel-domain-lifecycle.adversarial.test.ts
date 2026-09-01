@@ -139,7 +139,7 @@ describe('VercelDomainLifecycleService — adversarial parallel tests', () => {
 
             // Remove is unaffected
             expect(removeResult.success).toBe(true);
-            expect(removeResult.aliasesRemoved).toBe(0);
+            expect(removeResult.aliasesMatched).toBe(0);
         });
     });
 
@@ -358,7 +358,7 @@ describe('VercelDomainLifecycleService — adversarial parallel tests', () => {
             );
 
             expect(removeResult.success).toBe(true);
-            expect(removeResult.aliasesRemoved).toBe(1);
+            expect(removeResult.aliasesMatched).toBe(1);
             expect(mockClient.removeDomain).toHaveBeenCalledTimes(1);
         });
     });

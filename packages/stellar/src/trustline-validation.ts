@@ -9,8 +9,14 @@ import { Asset, Horizon } from 'stellar-sdk';
 
 // ── Issuer existence verification (#789) ─────────────────────────────────────
 
-/** Cache TTL: 5 minutes in milliseconds. */
-const ISSUER_CACHE_TTL_MS = 5 * 60 * 1000;
+/** Cache TTL for successful issuer verification: 5 minutes in milliseconds. */
+const ISSUER_CACHE_SUCCESS_TTL_MS = 5 * 60 * 1000;
+
+/** Cache TTL for "not found" results: 1 minute in milliseconds.
+ *  Shorter TTL minimizes false negatives from eventual consistency delays
+ *  when a user creates an issuer account and immediately deploys an asset.
+ */
+const ISSUER_CACHE_NOT_FOUND_TTL_MS = 1 * 60 * 1000;
 
 /** Maximum number of entries held at once. Older entries are evicted first. */
 const MAX_ISSUER_CACHE_ENTRIES = 1_000;
@@ -30,6 +36,14 @@ function evictOldestIssuerEntry(): void {
   }
 }
 
+/** Get the appropriate TTL for a verification result. */
+function getCacheTtlForResult(result: IssuerVerificationResult): number {
+  if (!result.valid && result.reason === 'issuer_not_found') {
+    return ISSUER_CACHE_NOT_FOUND_TTL_MS;
+  }
+  return ISSUER_CACHE_SUCCESS_TTL_MS;
+}
+
 export type IssuerFailureReason = 'issuer_not_found' | 'auth_required' | 'account_merged';
 
 export interface IssuerVerificationResult {
@@ -39,21 +53,28 @@ export interface IssuerVerificationResult {
 
 /**
  * Verifies that an issuer account exists on the Stellar network and checks
- * whether AUTH_REQUIRED_FLAG is set. Results are cached for 5 minutes.
+ * whether AUTH_REQUIRED_FLAG is set. Results are cached with differentiated TTLs:
+ * - Valid results: 5 minutes
+ * - "Not found" results: 1 minute (shorter to minimize false negatives from eventual consistency)
  *
  * @param issuer - The issuer account public key
  * @param horizonUrl - Horizon base URL for the target network
  * @param requiresKyc - When true, fail if AUTH_REQUIRED_FLAG is not set
+ * @param forceRefresh - When true, skip cache reads (but still write fresh results to cache)
  */
 export async function verifyIssuerExists(
   issuer: string,
   horizonUrl: string,
   requiresKyc = false,
+  forceRefresh = false,
 ): Promise<IssuerVerificationResult> {
   const cacheKey = `${horizonUrl}:${issuer}:${requiresKyc}`;
-  const cached = issuerCache.get(cacheKey);
-  if (cached && Date.now() < cached.expiresAt) {
-    return cached.result;
+
+  if (!forceRefresh) {
+    const cached = issuerCache.get(cacheKey);
+    if (cached && Date.now() < cached.expiresAt) {
+      return cached.result;
+    }
   }
 
   const server = new Horizon.Server(horizonUrl);
@@ -87,7 +108,8 @@ export async function verifyIssuerExists(
     evictOldestIssuerEntry();
   }
 
-  issuerCache.set(cacheKey, { result, expiresAt: Date.now() + ISSUER_CACHE_TTL_MS });
+  const ttl = getCacheTtlForResult(result);
+  issuerCache.set(cacheKey, { result, expiresAt: Date.now() + ttl });
   return result;
 }
 

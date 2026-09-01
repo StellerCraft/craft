@@ -3,6 +3,56 @@ import { costEstimationService, PricingTier, ResourceUsage } from '../../src/ser
 import type { CustomizationConfig } from '@craft/types';
 
 describe('CostEstimationService', () => {
+    describe('Template Complexity Estimation', () => {
+        it('should score deployment complexity from Soroban invocations, enabled features, and compute usage', () => {
+            const result = costEstimationService.calculateTemplateComplexityScore({
+                customizationConfig: {
+                    branding: {
+                        appName: 'Alpha DEX',
+                        primaryColor: '#111827',
+                        secondaryColor: '#7c3aed',
+                        fontFamily: 'Inter',
+                    },
+                    features: {
+                        enableCharts: true,
+                        enableTransactionHistory: true,
+                        enableAnalytics: true,
+                        enableNotifications: false,
+                    },
+                    stellar: {
+                        network: 'mainnet',
+                        horizonUrl: 'https://horizon.stellar.org',
+                        contractAddresses: {
+                            amm: 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+                        },
+                    },
+                },
+                sorobanInvocationCount: 3,
+                vercelComputeUnits: 2.5,
+            });
+
+            expect(result.baseCost).toBe(12.5);
+            expect(result.sorobanInvocations).toBe(3);
+            expect(result.enabledFeatureCount).toBe(3);
+            expect(result.totalCost).toBeCloseTo(31.25, 2);
+            expect(result.complexityScore).toBeCloseTo(31.25, 2);
+        });
+
+        it('should estimate a deployment using default template complexity factors when data is incomplete', () => {
+            const result = costEstimationService.estimateDeploymentCost({
+                customizationConfig: {
+                    branding: { appName: 'Demo', primaryColor: '#000000', secondaryColor: '#ffffff', fontFamily: 'Inter' },
+                    features: { enableCharts: true, enableTransactionHistory: false, enableAnalytics: false, enableNotifications: false },
+                    stellar: { network: 'testnet', horizonUrl: 'https://horizon-testnet.stellar.org' },
+                },
+            });
+
+            expect(result.totalCost).toBeGreaterThan(0);
+            expect(result.currency).toBe('USD');
+            expect(result.breakdown.total).toBeCloseTo(result.totalCost, 2);
+        });
+    });
+
     describe('Pricing Tier Calculation', () => {
         const usage: ResourceUsage = {
             cpuCores: 1,

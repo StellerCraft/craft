@@ -112,17 +112,31 @@ function makeSupabaseMock(
                             select: vi.fn().mockImplementation(() =>
                                 Promise.resolve({ data: apply(), error: null }),
                             ),
+                            then: vi.fn((resolve: (result: unknown) => unknown) =>
+                                Promise.resolve(resolve({ data: apply(), error: null }))),
                         };
                     }),
                     select: vi.fn().mockImplementation(() =>
                         Promise.resolve({ data: apply(), error: null }),
                     ),
+                    then: vi.fn((resolve: (result: unknown) => unknown) =>
+                        Promise.resolve(resolve({ data: apply(), error: null }))),
                 };
                 return chain;
             };
             return makeChain(jobs);
         }),
         eq: vi.fn().mockReturnThis(),
+        lt: vi.fn((_col: string, value: unknown) => ({
+            then: vi.fn((resolve: (result: unknown) => unknown) => Promise.resolve(resolve({
+                data: jobs.filter((job) =>
+                    job.status === 'running' &&
+                    job.started_at !== null &&
+                    new Date(job.started_at).getTime() < new Date(value as string).getTime(),
+                ),
+                error: null,
+            }))),
+        })),
         order: vi.fn().mockReturnThis(),
         then: vi.fn().mockImplementation((cb: any) => Promise.resolve(cb({ data: jobs, error: null }))),
     };
@@ -673,6 +687,7 @@ describe('recoverStalledJobs', () => {
         const supabase = makeSupabaseMock([job]);
         vi.mocked(createClient).mockReturnValue(supabase as any);
         const service = new JobQueueService(1);
+        const staleWorkerSnapshot = { ...job };
 
         // Step 1: recover the stalled job (sets status back to pending, worker_id to null)
         await service.recoverStalledJobs();
@@ -685,22 +700,59 @@ describe('recoverStalledJobs', () => {
         const { data: claimedData } = await supabase.rpc('claim_next_job', { p_worker_id: 'worker-b' });
         expect(claimedData).toBeTruthy();
         const attemptsAfterClaim = claimedData?.[0]?.attempts;
-        // The original worker had attempts=1; claim bumps to 2
-        expect(attemptsAfterClaim).toBe(2);
+        // Recovery consumes an attempt, then worker B's claim consumes another.
+        expect(attemptsAfterClaim).toBe(3);
 
         // Step 3: worker A (original) tries to complete with its stale attempts value
         // _executeJob's completion UPDATE now includes .eq('attempts', job.attempts)
         // where job.attempts is still 1 (the stale value from when worker A claimed it)
         // The DB row now has attempts=2, so the UPDATE should affect 0 rows
         // We call _executeJob directly with the original job object (still has attempts=1)
-        await (service as any)._executeJob(job);
+        await (service as any)._executeJob(staleWorkerSnapshot);
 
         // Verify: the job should still be running (claimed by worker B), not completed
         const finalJob = supabase._jobs.find((j: JobRecord) => j.id === 'job-fencing');
         // Worker B claimed it, so it should be running (not completed by stale worker A)
         expect(finalJob?.status).toBe('running');
         expect(finalJob?.worker_id).toBe('worker-b');
-        expect(finalJob?.attempts).toBe(2);
+        expect(finalJob?.attempts).toBe(3);
+    });
+
+    it('moves a repeatedly stalled job to the DLQ after max_attempts recoveries', async () => {
+        const stalledAt = new Date(Date.now() - STALLED_JOB_TIMEOUT_MS - 1000).toISOString();
+        const job: JobRecord = {
+            id: 'job-repeatedly-stalled',
+            job_type: 'test',
+            priority: 'normal',
+            status: 'running',
+            payload: {},
+            attempts: 0,
+            max_attempts: 3,
+            scheduled_at: stalledAt,
+            started_at: stalledAt,
+            worker_id: 'dead-worker',
+            created_at: stalledAt,
+            updated_at: stalledAt,
+            result: null,
+            error_message: null,
+            completed_at: null,
+            dead_at: null,
+        };
+        const supabase = makeSupabaseMock([job]);
+        vi.mocked(createClient).mockReturnValue(supabase as any);
+        const service = new JobQueueService(1);
+
+        for (let recovery = 0; recovery < job.max_attempts; recovery++) {
+            job.status = 'running';
+            job.started_at = stalledAt;
+            await service.recoverStalledJobs();
+        }
+
+        expect(supabase._dlq).toHaveLength(1);
+        expect(supabase._dlq[0].original_job_id).toBe(job.id);
+        expect(supabase._dlq[0].failure_reason).toContain('stalled');
+        expect(job.status).toBe('dead');
+        expect(job.attempts).toBe(job.max_attempts);
     });
 });
 

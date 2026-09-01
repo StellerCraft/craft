@@ -274,9 +274,23 @@ export interface EnrichedDexPriceResult extends DexPriceResult {
 }
 
 /**
- * Detect outlier prices in a list of order book levels.
- * A price is an outlier when it deviates more than 3 standard deviations
- * from the population mean.
+ * Detect outlier prices in a list of order book levels using a robust
+ * median / median-absolute-deviation (MAD) statistic.
+ *
+ * Unlike a naive population mean/stdDev test, a single extreme value cannot
+ * inflate the detection threshold and thereby mask its own detection
+ * (the so-called "self-masking" flaw of the classical 3-sigma test).
+ *
+ * A price is classified as an outlier when
+ *   |price − median| > 3 × (MAD / 0.6745)
+ * where the 0.6745 factor makes the normalised MAD a consistent estimator of
+ * the standard deviation for a Gaussian distribution (same scale as the
+ * classical 3-sigma rule for well-behaved data).
+ *
+ * When MAD = 0 (i.e. more than half the values share the same price) but the
+ * data is not all identical, the function falls back to the mean absolute
+ * deviation (MAD_mean) as the spread estimator so that lone extreme values
+ * are still correctly flagged in "majority-tie" distributions.
  *
  * @param levels - Order book price levels
  * @returns Array of outlier price values (empty when none detected)
@@ -288,13 +302,43 @@ export function detectOutliers(levels: OrderBookLevel[]): number[] {
 
     if (prices.length < 2) return [];
 
-    const mean = prices.reduce((s, p) => s + p, 0) / prices.length;
-    const variance = prices.reduce((s, p) => s + (p - mean) ** 2, 0) / prices.length;
-    const stdDev = Math.sqrt(variance);
+    // Compute median
+    const sorted = [...prices].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    const median =
+        sorted.length % 2 === 1
+            ? sorted[mid]
+            : (sorted[mid - 1] + sorted[mid]) / 2;
 
-    if (stdDev === 0) return [];
+    // Compute MAD (median of absolute deviations from the median)
+    const deviations = prices.map((p) => Math.abs(p - median));
+    const sortedDev = [...deviations].sort((a, b) => a - b);
+    const madMid = Math.floor(sortedDev.length / 2);
+    const mad =
+        sortedDev.length % 2 === 1
+            ? sortedDev[madMid]
+            : (sortedDev[madMid - 1] + sortedDev[madMid]) / 2;
 
-    return prices.filter((p) => Math.abs(p - mean) > 3 * stdDev);
+    // Normalise MAD to the same scale as a standard deviation (Gaussian assumption)
+    let normalisedMad = mad / 0.6745;
+
+    if (normalisedMad === 0) {
+        // MAD is zero when more than half the values share the same price.
+        // Check whether all values are identical — if so, nothing is an outlier.
+        if (sorted[0] === sorted[sorted.length - 1]) return [];
+
+        // Fall back to the mean absolute deviation so lone extreme values are
+        // still detected in majority-tie distributions (e.g. 20 × 1.0 + 1 × 10).
+        const meanAbsDev =
+            deviations.reduce((s, d) => s + d, 0) / deviations.length;
+        normalisedMad = meanAbsDev / 0.6745;
+
+        // If the fallback is still zero (can't happen given the all-equal check
+        // above, but guard defensively), nothing is an outlier.
+        if (normalisedMad === 0) return [];
+    }
+
+    return prices.filter((p) => Math.abs(p - median) > 3 * normalisedMad);
 }
 
 /**
@@ -344,22 +388,42 @@ export interface OrderBookFetcher {
  * Subscribe to ledger-close events and call `onUpdate` with a freshly
  * computed `EnrichedDexPriceResult` on every new ledger.
  *
+ * A single failing `fetcher.fetch()` never tears the subscription down — the
+ * stream stays alive and keeps trying on the next ledger. That resilience,
+ * however, previously made a *persistent* failure (expired credentials, a
+ * renamed Horizon endpoint, a network partition) indistinguishable from a quiet
+ * market: the subscription stops producing updates while remaining technically
+ * active, with nothing logged. Pass `onError` to observe and alert on sustained
+ * failures; it is invoked once per failed ledger event with the thrown error and
+ * the triggering `LedgerEvent`, and its own exceptions are ignored so a broken
+ * handler cannot break the feed.
+ *
  * @param emitter  - Source of `'ledger'` events (e.g. Horizon SSE stream)
  * @param fetcher  - Fetches the current order book snapshot on demand
  * @param onUpdate - Called with the enriched price result after each ledger
+ * @param onError  - Optional; called with `(error, ledger)` each time a per-ledger
+ *                   fetch fails. Does not change the resilience behaviour — the
+ *                   subscription stays alive regardless.
  * @returns Unsubscribe function – call it to stop receiving updates
  */
 export function subscribeLedgerPriceFeed(
     emitter: LedgerEventEmitter,
     fetcher: OrderBookFetcher,
     onUpdate: PriceFeedUpdateHandler,
+    onError?: (error: unknown, ledger: LedgerEvent) => void,
 ): () => void {
-    const handler = async (_ledger: LedgerEvent) => {
+    const handler = async (ledger: LedgerEvent) => {
         try {
             const book = await fetcher.fetch();
             onUpdate(computeEnrichedDexPrice(book));
-        } catch {
-            // Swallow individual fetch errors; the stream stays alive
+        } catch (error) {
+            // Swallow individual fetch errors; the stream stays alive.
+            // Surface them through onError so callers can alert on sustained failures.
+            try {
+                onError?.(error, ledger);
+            } catch {
+                // A misbehaving error handler must not break the feed.
+            }
         }
     };
 
