@@ -83,12 +83,17 @@ export class MeteringService {
     userId: string,
     operationType: string,
     quantity: number = 1,
-    metadata: Record<string, unknown> = {}
+    metadata: Record<string, unknown> = {},
+    idempotencyKey?: string
   ): Promise<UsageRecord> {
     const supabase = createClient();
     const now = new Date();
     const billingPeriod = this.getBillingPeriod(now);
-    const idempotencyKey = this.generateIdempotencyKey(userId, operationType);
+    // When a caller supplies a stable logical key (e.g. the payment idempotency key
+    // for a checkout), use it for deduplication. Otherwise fall back to the legacy
+    // one-second-granularity key for non-billable API-call metering.
+    const dedupKey =
+      idempotencyKey ?? this.generateIdempotencyKey(userId, operationType);
 
     try {
       const { data: record, error: upsertError } = await supabase

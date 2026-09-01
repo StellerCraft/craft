@@ -112,7 +112,8 @@ export class MeteringPaymentIntegration {
     userId: string,
     operationType: string,
     quantity: number = 1,
-    timestamp?: number
+    timestamp?: number,
+    idempotencyKey?: string
   ): Promise<{ success: boolean; error?: string }> {
     try {
       // Record usage locally first
