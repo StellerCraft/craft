@@ -22,6 +22,7 @@ interface UsageRecord {
   idempotency_key: string;
   reported_to_stripe: boolean;
   created_at: string;
+  updated_at?: string;
 }
 
 const store: UsageRecord[] = [];
@@ -34,6 +35,40 @@ function createQueryBuilder(records: UsageRecord[]) {
   let onConflictCol: string | null = null;
 
   const builder: any = {
+    rpc(name: string, args: any) {
+      if (name !== 'increment_usage_record_quantity') {
+        return { data: null, error: { code: 'PGRST202', message: `Unsupported RPC: ${name}` } };
+      }
+
+      const existing = records.find((r: UsageRecord) => r.idempotency_key === args.p_idempotency_key);
+      const mergedMetadata = {
+        ...(existing?.metadata ?? {}),
+        ...(args.p_metadata ?? {}),
+      };
+
+      if (existing) {
+        existing.quantity = (existing.quantity || 0) + Number(args.p_quantity || 0);
+        existing.metadata = mergedMetadata;
+        existing.updated_at = new Date().toISOString();
+        return { data: existing, error: null };
+      }
+
+      const record = {
+        id: `id-${++idCounter}`,
+        created_at: new Date().toISOString(),
+        user_id: args.p_user_id,
+        operation_type: args.p_operation_type,
+        quantity: Number(args.p_quantity || 0),
+        metadata: args.p_metadata ?? {},
+        billing_period_start: args.p_billing_period_start,
+        billing_period_end: args.p_billing_period_end,
+        idempotency_key: args.p_idempotency_key,
+        reported_to_stripe: false,
+      } as UsageRecord;
+
+      records.push(record);
+      return { data: record, error: null };
+    },
     select(_cols?: string, _opts?: unknown) {
       isSelect = true;
       return builder;
@@ -76,8 +111,10 @@ function createQueryBuilder(records: UsageRecord[]) {
 
       const existing = matching[0];
       if (upsertData && onConflictCol) {
-        Object.assign(existing, upsertData);
-        return { data: existing, error: null };
+        return {
+          data: null,
+          error: { code: '23505', message: 'duplicate key value violates unique constraint' },
+        };
       }
 
       return { data: existing, error: null };
