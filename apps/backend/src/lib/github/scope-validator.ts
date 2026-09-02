@@ -134,6 +134,28 @@ export function clearScopeValidationCache(): void {
 }
 
 /**
+ * Invalidate the cache entry for a specific access token.
+ *
+ * Call this when a GitHub provider connection is disconnected so that any
+ * subsequent scope-validation call for the same raw token value is forced to
+ * re-fetch from GitHub instead of serving a stale `valid: true` result.
+ *
+ * Background: token values can repeat across a disconnect/reconnect cycle in
+ * test and staging environments (deterministic mock tokens) and, rarely, in
+ * production when GitHub issues the same OAuth token for the same client/user
+ * combination within a short window. Without this targeted invalidation a
+ * reconnect with an identical token would skip the live check and inherit the
+ * previous session's scope result for up to SCOPE_VALIDATION_CACHE_TTL_MS.
+ *
+ * The entry is keyed by a SHA-256 hash of the token, so no plaintext token is
+ * ever stored in the cache.
+ */
+export function clearScopeValidationCacheEntry(accessToken: string): void {
+    const tokenHash = hashToken(accessToken);
+    scopeValidationCache.delete(tokenHash);
+}
+
+/**
  * Fetch the X-OAuth-Scopes header from GitHub by making an authenticated
  * request to GET /user and reading the response headers.
  *

@@ -384,3 +384,175 @@ describe('Deployment Log Streaming SSE Connection Management', () => {
     });
   });
 });
+
+// ── #1146: Sustained-throughput backpressure integration test ────────────────
+//
+// Verifies that the real LogStreamBuffer + DeploymentLogBatcher pipeline does
+// NOT buffer entries unboundedly when the Supabase insert is deliberately slow.
+//
+// The test drives pendingFlushes toward and past MAX_PENDING_BATCHES by injecting
+// a Supabase client whose `insert` resolves only after an artificial delay, then
+// asserts:
+//   a) The LogStreamBuffer's pending size stays within its configured capacity.
+//   b) The DeploymentLogBatcher's `pendingFlushes` counter stays ≤ MAX_PENDING_BATCHES.
+//   c) The burst completes without throwing (backpressure blocks rather than throws).
+
+import {
+    LogStreamBuffer,
+    type LogStreamBufferOptions,
+} from '@/lib/sse/log-stream-buffer';
+import { DeploymentLogBatcher, type LogEntry } from '@/services/deployment-log-batcher.service';
+import type { SupabaseClient } from '@supabase/supabase-js';
+
+describe('Sustained-throughput backpressure — LogStreamBuffer + DeploymentLogBatcher (#1146)', () => {
+    /**
+     * Build a Supabase client stub whose `from().insert()` resolves after
+     * `delayMs`.  This forces in-flight flush promises to pile up, driving
+     * `pendingFlushes` toward MAX_PENDING_BATCHES.
+     */
+    function makeSlowSupabase(delayMs: number): SupabaseClient {
+        return {
+            from: () => ({
+                insert: (_rows: unknown[]) =>
+                    new Promise<{ error: null }>((resolve) =>
+                        setTimeout(() => resolve({ error: null }), delayMs),
+                    ),
+            }),
+        } as unknown as SupabaseClient;
+    }
+
+    it('LogStreamBuffer pending size stays within capacity under a high-throughput burst', () => {
+        const CAPACITY = 20;
+        const buffer = new LogStreamBuffer({ capacity: CAPACITY, historyLimit: CAPACITY });
+
+        const TOTAL_EVENTS = 200;
+
+        for (let i = 0; i < TOTAL_EVENTS; i++) {
+            buffer.enqueue('log', { message: `burst message ${i}`, seq: i });
+
+            // The buffer must never hold more than CAPACITY pending entries.
+            expect(buffer.size).toBeLessThanOrEqual(CAPACITY);
+        }
+
+        // Excess events are dropped; the buffer should be at capacity.
+        expect(buffer.size).toBeLessThanOrEqual(CAPACITY);
+
+        // Overflow was detected.
+        expect(buffer.totalDroppedCount).toBeGreaterThan(0);
+        expect(buffer.totalDroppedCount).toBe(TOTAL_EVENTS - CAPACITY);
+    });
+
+    it('LogStreamBuffer drain() clears pending entries and records them in history', () => {
+        const CAPACITY = 10;
+        const buffer = new LogStreamBuffer({ capacity: CAPACITY, historyLimit: CAPACITY });
+
+        for (let i = 0; i < CAPACITY; i++) {
+            buffer.enqueue('log', { message: `msg ${i}` });
+        }
+        expect(buffer.size).toBe(CAPACITY);
+
+        const drained = buffer.drain();
+        expect(drained).toHaveLength(CAPACITY);
+        expect(buffer.size).toBe(0);
+
+        // History is populated after drain.
+        expect(buffer.replayFrom(0)).toHaveLength(CAPACITY);
+    });
+
+    it('DeploymentLogBatcher pendingFlushes never exceeds MAX_PENDING_BATCHES under slow Supabase', async () => {
+        // Use a tiny batch size so many flushes are triggered quickly.
+        const BATCH_SIZE = 5;
+        const FLUSH_INTERVAL_MS = 9999; // disable timer-based flushes
+        const MAX_PENDING = 10; // matches the constant inside the batcher
+
+        // Insert delay long enough that all 10 batches are in-flight simultaneously.
+        const SUPABASE_DELAY_MS = 200;
+
+        const slowSupa = makeSlowSupabase(SUPABASE_DELAY_MS);
+        const batcher = new DeploymentLogBatcher(slowSupa, BATCH_SIZE, FLUSH_INTERVAL_MS);
+
+        // Track the maximum observed pendingFlushes by monkey-patching the private field.
+        // We access it via the bracket notation accepted by TypeScript's `noPropertyAccessFromIndexSignature: false`.
+        let maxObservedPending = 0;
+
+        const entry: LogEntry = {
+            deploymentId: 'dep-backpressure-test',
+            level: 'info',
+            message: 'backpressure burst',
+        };
+
+        // Append enough entries to trigger MAX_PENDING_BATCHES flushes.
+        // Each group of BATCH_SIZE entries triggers one _flush() call.
+        // After MAX_PENDING_BATCHES in-flight flushes, backpressure kicks in
+        // and `append` awaits a flush before continuing.
+        const TOTAL_ENTRIES = BATCH_SIZE * (MAX_PENDING + 5); // intentionally exceeds limit
+
+        const appendPromises: Promise<void>[] = [];
+        for (let i = 0; i < TOTAL_ENTRIES; i++) {
+            // Snapshot the pending counter after each append to find the max.
+            const p = batcher.append({ ...entry, message: `burst ${i}` }).then(() => {
+                const current = (batcher as any).pendingFlushes as number;
+                if (current > maxObservedPending) maxObservedPending = current;
+            });
+            appendPromises.push(p);
+        }
+
+        await Promise.all(appendPromises);
+        // Drain any remaining entries.
+        await batcher.flush();
+
+        // The pendingFlushes counter must never have exceeded MAX_PENDING_BATCHES.
+        expect(maxObservedPending).toBeLessThanOrEqual(MAX_PENDING);
+    }, 10_000 /* generous timeout for slow mock */);
+
+    it('DeploymentLogBatcher completes all appends without throwing under backpressure', async () => {
+        const BATCH_SIZE = 3;
+        const FLUSH_INTERVAL_MS = 9999;
+        const SUPABASE_DELAY_MS = 50;
+
+        const slowSupa = makeSlowSupabase(SUPABASE_DELAY_MS);
+        const batcher = new DeploymentLogBatcher(slowSupa, BATCH_SIZE, FLUSH_INTERVAL_MS);
+
+        const entry: LogEntry = {
+            deploymentId: 'dep-no-throw-test',
+            level: 'info',
+            message: 'no-throw burst',
+        };
+
+        // 60 entries = 20 batches — well past MAX_PENDING_BATCHES (10)
+        const appends = Array.from({ length: 60 }, (_, i) =>
+            batcher.append({ ...entry, message: `no-throw ${i}` }),
+        );
+
+        // Must resolve without rejection.
+        await expect(Promise.all(appends)).resolves.toBeDefined();
+        await batcher.flush();
+    }, 10_000);
+
+    it('LogStreamBuffer hasOverflow() and consumeDropped() track drops correctly', () => {
+        const CAPACITY = 5;
+        const buffer = new LogStreamBuffer({ capacity: CAPACITY });
+
+        // Fill to capacity — no overflow yet.
+        for (let i = 0; i < CAPACITY; i++) buffer.enqueue('log', { i });
+        expect(buffer.hasOverflow()).toBe(false);
+
+        // One extra entry triggers an overflow drop.
+        buffer.enqueue('log', { i: CAPACITY });
+        expect(buffer.hasOverflow()).toBe(true);
+        expect(buffer.consumeDropped()).toBe(1);
+        // Counter resets after consume.
+        expect(buffer.hasOverflow()).toBe(false);
+        expect(buffer.consumeDropped()).toBe(0);
+    });
+
+    it('LogStreamBuffer replayFrom() returns only events after the given sequence', () => {
+        const buffer = new LogStreamBuffer({ capacity: 20, historyLimit: 20 });
+        for (let i = 0; i < 10; i++) buffer.enqueue('log', { i });
+        buffer.drain(); // moves to history
+
+        const replayed = buffer.replayFrom(5);
+        expect(replayed.every((e) => e.seq > 5)).toBe(true);
+        expect(replayed.length).toBe(5); // seqs 6-10
+    });
+});

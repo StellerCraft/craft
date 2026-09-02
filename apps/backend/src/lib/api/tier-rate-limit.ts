@@ -18,6 +18,33 @@ import { createLogger, resolveCorrelationId } from './logger';
  *
  * See "Rate Limiting, Idempotency, and Tier Enforcement" in CONTRIBUTING.md
  * for the full reference of tier limits and the RATE_LIMIT_DISABLED env var.
+ *
+ * ── Shared store (#1147 audit) ─────────────────────────────────────────────
+ *
+ * withTierRateLimit delegates to checkRateLimit() from rate-limit.ts. Both
+ * middlewares therefore share the same module-level in-memory `store` (a
+ * Map<key, timestamps[]>).  Consequently:
+ *
+ *   - A rejection from withTierRateLimit increments the shared store entry.
+ *   - Wrapping the SAME route with BOTH withTierRateLimit AND withRateLimit
+ *     (or calling checkRateLimit directly in the same handler) would cause
+ *     a rejected request to consume quota in both limiters simultaneously —
+ *     double-counting the hit.
+ *
+ * Audit result (apps/backend/src/app/api — 2026-08-28):
+ *   No route currently applies both withTierRateLimit AND withRateLimit /
+ *   checkRateLimit to the same request path.  Routes audited:
+ *     - auth/signin, auth/signup, auth/reset-password: withRateLimit only
+ *     - deployments/route: checkDeploymentRateLimit only (own store)
+ *     - payments/checkout: withAuth only, no plain rate limit
+ *     - error-reports/route: withRateLimit only
+ *   No double-wrapped routes were found.
+ *
+ * IMPORTANT: To preserve this invariant, do NOT add withRateLimit or a direct
+ * checkRateLimit call to any route that already uses withTierRateLimit, and
+ * vice-versa.  If quota isolation between the two middlewares is required in
+ * the future, introduce a second, independent store (or a namespaced key
+ * prefix) before combining them on the same route.
  */
 
 export interface TierRateLimitConfig {
