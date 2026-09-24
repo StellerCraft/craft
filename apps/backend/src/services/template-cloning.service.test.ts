@@ -429,4 +429,95 @@ describe('TemplateCloningService', () => {
       expect(content).toBe('body { color: red; }');
     });
   });
+
+  describe('binary file handling', () => {
+    it('skips placeholder injection for PNG files and preserves bytes exactly', async () => {
+      const srcBase = `${ALLOWED_SOURCE}/my-template`;
+      // Simulate a PNG file with binary content
+      const pngContent = '\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x10{{APP_NAME}}';
+      const state: MockFsState = {
+        dirs: new Set(),
+        files: new Map([
+          [`${srcBase}/favicon.png`, pngContent],
+        ]),
+      };
+      const svc = makeService(state);
+      const result = await svc.clone(makeRequest({
+        placeholders: { APP_NAME: 'MyApp' },
+      }));
+
+      expect(result.success).toBe(true);
+      const ws = result.workspacePath!;
+      const content = state.files.get(`${ws}/favicon.png`);
+      // Binary file should not be modified even though it contains {{APP_NAME}}
+      expect(content).toBe(pngContent);
+    });
+
+    it('skips placeholder injection for WOFF2 font files', async () => {
+      const srcBase = `${ALLOWED_SOURCE}/my-template`;
+      const fontContent = 'WOFF2\x00\x01\x00\x00{{FONT_NAME}}';
+      const state: MockFsState = {
+        dirs: new Set(),
+        files: new Map([
+          [`${srcBase}/font.woff2`, fontContent],
+        ]),
+      };
+      const svc = makeService(state);
+      const result = await svc.clone(makeRequest({
+        placeholders: { FONT_NAME: 'CustomFont' },
+      }));
+
+      expect(result.success).toBe(true);
+      const ws = result.workspacePath!;
+      const content = state.files.get(`${ws}/font.woff2`);
+      expect(content).toBe(fontContent);
+    });
+
+    it('skips placeholder injection for ICO files', async () => {
+      const srcBase = `${ALLOWED_SOURCE}/my-template`;
+      const icoContent = '\x00\x00\x01\x00\x01\x00{{ICON}}';
+      const state: MockFsState = {
+        dirs: new Set(),
+        files: new Map([
+          [`${srcBase}/favicon.ico`, icoContent],
+        ]),
+      };
+      const svc = makeService(state);
+      const result = await svc.clone(makeRequest({
+        placeholders: { ICON: 'icon' },
+      }));
+
+      expect(result.success).toBe(true);
+      const ws = result.workspacePath!;
+      const content = state.files.get(`${ws}/favicon.ico`);
+      expect(content).toBe(icoContent);
+    });
+
+    it('preserves binary files while processing text files in the same directory', async () => {
+      const srcBase = `${ALLOWED_SOURCE}/my-template`;
+      const pngContent = '\x89PNG\r\n{{SHOULD_NOT_REPLACE}}';
+      const state: MockFsState = {
+        dirs: new Set(),
+        files: new Map([
+          [`${srcBase}/public/logo.png`, pngContent],
+          [`${srcBase}/public/config.json`, '{"appName":"{{APP_NAME}}"}'],
+        ]),
+      };
+      const svc = makeService(state);
+      const result = await svc.clone(makeRequest({
+        placeholders: { APP_NAME: 'MyApp', SHOULD_NOT_REPLACE: 'Binary' },
+      }));
+
+      expect(result.success).toBe(true);
+      const ws = result.workspacePath!;
+
+      // Binary file should be unchanged
+      const pngResult = state.files.get(`${ws}/public/logo.png`);
+      expect(pngResult).toBe(pngContent);
+
+      // Text file should have placeholders replaced
+      const jsonResult = state.files.get(`${ws}/public/config.json`);
+      expect(jsonResult).toBe('{"appName":"MyApp"}');
+    });
+  });
 });
