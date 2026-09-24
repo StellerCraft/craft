@@ -37,9 +37,14 @@ describe('withAuth', () => {
         expect(res.status).toBe(401);
     });
 
-    it('calls the handler with user and supabase when authenticated', async () => {
+    it('calls the handler with user and supabase when authenticated and not soft-deleted', async () => {
         const fakeUser = { id: 'user-1', email: 'a@b.com' };
         mockGetUser.mockResolvedValue({ data: { user: fakeUser }, error: null });
+        mockFrom.mockImplementation(() => ({
+            select: () => ({
+                eq: () => ({ is: () => ({ single: () => Promise.resolve({ data: { id: 'user-1' } }) }) }),
+            }),
+        }));
 
         const inner = vi.fn().mockResolvedValue(NextResponse.json({ ok: true }));
         const handler = withAuth(inner);
@@ -49,6 +54,22 @@ describe('withAuth', () => {
         expect(inner).toHaveBeenCalledOnce();
         expect(inner.mock.calls[0][1].user).toEqual(fakeUser);
         expect(inner.mock.calls[0][1].supabase).toBeDefined();
+    });
+
+    it('returns 401 when user is soft-deleted', async () => {
+        const fakeUser = { id: 'user-1', email: 'a@b.com' };
+        mockGetUser.mockResolvedValue({ data: { user: fakeUser }, error: null });
+        mockFrom.mockImplementation(() => ({
+            select: () => ({
+                eq: () => ({ is: () => ({ single: () => Promise.resolve({ data: null }) }) }),
+            }),
+        }));
+
+        const handler = withAuth(async () => NextResponse.json({ ok: true }));
+        const res = await handler(makeRequest(), { params: {} });
+
+        expect(res.status).toBe(401);
+        expect(await res.json()).toEqual({ error: 'Unauthorized' });
     });
 });
 
@@ -61,8 +82,15 @@ describe('withDeploymentAuth', () => {
     });
 
     it('returns 403 when deployment not found', async () => {
-        mockFrom.mockReturnValue({
-            select: () => ({ eq: () => ({ single: () => Promise.resolve({ data: null }) }) }),
+        mockFrom.mockImplementation((table: string) => {
+            if (table === 'profiles') {
+                return {
+                    select: () => ({ eq: () => ({ is: () => ({ single: () => Promise.resolve({ data: { id: 'user-1' } } ) }) }) }),
+                };
+            }
+            return {
+                select: () => ({ eq: () => ({ single: () => Promise.resolve({ data: null }) }) }),
+            };
         });
 
         const handler = withDeploymentAuth(async () => NextResponse.json({ ok: true }));
@@ -73,10 +101,17 @@ describe('withDeploymentAuth', () => {
     });
 
     it('returns 403 when deployment belongs to a different user', async () => {
-        mockFrom.mockReturnValue({
-            select: () => ({
-                eq: () => ({ single: () => Promise.resolve({ data: { user_id: 'other-user' } }) }),
-            }),
+        mockFrom.mockImplementation((table: string) => {
+            if (table === 'profiles') {
+                return {
+                    select: () => ({ eq: () => ({ is: () => ({ single: () => Promise.resolve({ data: { id: 'user-1' } } ) }) }) }),
+                };
+            }
+            return {
+                select: () => ({
+                    eq: () => ({ single: () => Promise.resolve({ data: { user_id: 'other-user' } }) }),
+                }),
+            };
         });
 
         const handler = withDeploymentAuth(async () => NextResponse.json({ ok: true }));
@@ -86,10 +121,17 @@ describe('withDeploymentAuth', () => {
     });
 
     it('calls the handler when user owns the deployment', async () => {
-        mockFrom.mockReturnValue({
-            select: () => ({
-                eq: () => ({ single: () => Promise.resolve({ data: { user_id: fakeUser.id } }) }),
-            }),
+        mockFrom.mockImplementation((table: string) => {
+            if (table === 'profiles') {
+                return {
+                    select: () => ({ eq: () => ({ is: () => ({ single: () => Promise.resolve({ data: { id: 'user-1' } } ) }) }) }),
+                };
+            }
+            return {
+                select: () => ({
+                    eq: () => ({ single: () => Promise.resolve({ data: { user_id: fakeUser.id } }) }),
+                }),
+            };
         });
 
         const inner = vi.fn().mockResolvedValue(NextResponse.json({ ok: true }));
@@ -102,6 +144,27 @@ describe('withDeploymentAuth', () => {
 
     it('returns 401 when unauthenticated (inherits withAuth behaviour)', async () => {
         mockGetUser.mockResolvedValue({ data: { user: null }, error: null });
+
+        const handler = withDeploymentAuth(async () => NextResponse.json({ ok: true }));
+        const res = await handler(makeRequest(), { params: { id: 'dep-1' } });
+
+        expect(res.status).toBe(401);
+    });
+
+    it('returns 401 when user is soft-deleted (inherits withAuth behaviour)', async () => {
+        mockGetUser.mockResolvedValue({ data: { user: fakeUser }, error: null });
+        mockFrom.mockImplementation((table: string) => {
+            if (table === 'profiles') {
+                return {
+                    select: () => ({ eq: () => ({ is: () => ({ single: () => Promise.resolve({ data: null }) }) }) }),
+                };
+            }
+            return {
+                select: () => ({
+                    eq: () => ({ single: () => Promise.resolve({ data: { user_id: fakeUser.id } }) }),
+                }),
+            };
+        });
 
         const handler = withDeploymentAuth(async () => NextResponse.json({ ok: true }));
         const res = await handler(makeRequest(), { params: { id: 'dep-1' } });
