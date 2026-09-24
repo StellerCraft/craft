@@ -92,6 +92,23 @@ const GUIDANCE_MAP: Record<GuidanceKey, ErrorGuidance> = {
     ],
   },
 
+  'github:UNKNOWN': {
+    template: {
+      title: 'GitHub integration error',
+      message: 'An error occurred while interacting with GitHub. Check the error details and try again.',
+      retryable: true,
+    },
+    steps: [
+      'Verify your GitHub token or App installation is still valid.',
+      'Check the GitHub status page for any ongoing incidents.',
+      'Retry the operation.',
+    ],
+    links: [
+      { label: 'GitHub status', url: 'https://www.githubstatus.com' },
+      { label: 'CRAFT GitHub integration', url: `${DOCS_BASE}/integrations/github` },
+    ],
+  },
+
   // ── Vercel ───────────────────────────────────────────────────────────────
   'vercel:AUTH_FAILED': {
     template: {
@@ -156,6 +173,23 @@ const GUIDANCE_MAP: Record<GuidanceKey, ErrorGuidance> = {
     ],
   },
 
+  'vercel:UNKNOWN': {
+    template: {
+      title: 'Vercel integration error',
+      message: 'An error occurred while interacting with Vercel. Check the error details and try again.',
+      retryable: true,
+    },
+    steps: [
+      'Verify your Vercel API token is valid and has the required permissions.',
+      'Check the Vercel status page for any ongoing incidents.',
+      'Retry the operation.',
+    ],
+    links: [
+      { label: 'Vercel status', url: 'https://www.vercel-status.com' },
+      { label: 'CRAFT Vercel integration', url: `${DOCS_BASE}/integrations/vercel` },
+    ],
+  },
+
   // ── Stripe ───────────────────────────────────────────────────────────────
   'stripe:CARD_DECLINED': {
     template: {
@@ -204,6 +238,23 @@ const GUIDANCE_MAP: Record<GuidanceKey, ErrorGuidance> = {
     ],
     links: [
       { label: 'CRAFT pricing', url: 'https://craft.app/pricing' },
+      { label: 'Contact support', url: SUPPORT_URL },
+    ],
+  },
+
+  'stripe:UNKNOWN': {
+    template: {
+      title: 'Stripe integration error',
+      message: 'An error occurred while processing your payment or interacting with Stripe.',
+      retryable: true,
+    },
+    steps: [
+      'Check the error details for more information.',
+      'Verify your payment method is valid and has sufficient funds.',
+      'Contact support if the issue persists.',
+    ],
+    links: [
+      { label: 'CRAFT billing', url: `${DOCS_BASE}/billing` },
       { label: 'Contact support', url: SUPPORT_URL },
     ],
   },
