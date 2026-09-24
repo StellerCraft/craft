@@ -88,4 +88,46 @@ describe('RetryButton', () => {
     await waitFor(() => expect(onRetry).toHaveBeenCalledTimes(1));
     resolve!();
   });
+
+  // #1329 — rapid double-click guard -------------------------------------------
+
+  it('fires onRetry exactly once when the button is double-clicked rapidly', async () => {
+    // Simulate a slow network: the promise doesn't resolve immediately.
+    let resolveFirst: () => void;
+    const onRetry = vi.fn(
+      () => new Promise<void>((r) => { resolveFirst = r; }),
+    );
+
+    render(<RetryButton onRetry={onRetry} />);
+    const btn = screen.getByRole('button');
+
+    // Rapid double-click — both arrive before the first promise resolves.
+    fireEvent.click(btn);
+    fireEvent.click(btn);
+
+    // Only one invocation should have been made.
+    expect(onRetry).toHaveBeenCalledTimes(1);
+
+    // Settle the in-flight call and confirm the count stays at one.
+    resolveFirst!();
+    await waitFor(() => {
+      expect(onRetry).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('button is semantically disabled (not just CSS) during in-flight call', async () => {
+    let resolve: () => void;
+    const onRetry = vi.fn(() => new Promise<void>((r) => { resolve = r; }));
+
+    render(<RetryButton onRetry={onRetry} />);
+    const btn = screen.getByRole('button') as HTMLButtonElement;
+
+    fireEvent.click(btn);
+
+    // The HTML `disabled` attribute must be present — not just pointer-events:none.
+    await waitFor(() => expect(btn.disabled).toBe(true));
+
+    resolve!();
+    await waitFor(() => expect(btn.disabled).toBe(false));
+  });
 });
