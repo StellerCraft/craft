@@ -21,6 +21,13 @@
  * `checkContractTtl(contractId)` wraps steps 1–3 for the common case of
  * managing a contract's own instance entry.
  *
+ * ## Timing Source & Clock-Skew Safety
+ * Every renewal-timing decision in this module is driven strictly by Stellar ledger
+ * sequence numbers (comparing `liveUntilLedgerSeq` against the network's current
+ * ledger sequence `latestLedger.sequence`), rather than local wall-clock time (`Date.now()`).
+ * This design guarantees immunity from host clock skew between the renewing process's
+ * host machine and the Stellar network's actual ledger close times.
+ *
  * @see https://developers.stellar.org/docs/smart-contracts/storage-and-ttl
  */
 
