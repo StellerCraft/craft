@@ -5,6 +5,19 @@
  * deployments, and payments.
  */
 
+export type SubscriptionTier = 'free' | 'pro' | 'enterprise';
+
+export type DeploymentStatusType =
+  | 'pending'
+  | 'generating'
+  | 'validating'
+  | 'signing'
+  | 'creating_repo'
+  | 'pushing_code'
+  | 'deploying'
+  | 'completed'
+  | 'failed';
+
 /**
  * Configuration options for CraftClient.
  * @property baseUrl - The base URL of the CRAFT API (e.g., https://craft.app)

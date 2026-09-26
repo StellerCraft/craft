@@ -10,12 +10,7 @@
 
 import { serve } from 'https://deno.land/std@0.208.0/http/server.ts';
 import { SUPPORTED_REGIONS, getRegionalEndpointConfig, detectRegionFromRequest } from '../_shared/regions.ts';
-
-interface RegionEndpoint {
-  region: string;
-  baseUrl: string;
-  priority: number;
-}
+import { NoHealthyRegionsError, orderHealthyEndpoints, type RegionEndpoint } from './routing-policy.ts';
 
 interface RoutingDecision {
   targetRegion: string;
@@ -86,22 +81,7 @@ async function makeRoutingDecision(
   // Get health status of regions
   const healthStatus = await getRegionHealthStatus();
 
-  // Sort endpoints by health and then by whether they match detected region
-  const sortedEndpoints = [...endpoints].sort((a, b) => {
-    const aHealthy = healthStatus.get(a.region) ?? false;
-    const bHealthy = healthStatus.get(b.region) ?? false;
-
-    // Prioritize healthy regions
-    if (aHealthy !== bHealthy) {
-      return aHealthy ? -1 : 1;
-    }
-
-    // Among healthy/unhealthy, prioritize detected region
-    const aMatches = a.region === detectedRegion ? 1 : 0;
-    const bMatches = b.region === detectedRegion ? 1 : 0;
-
-    return bMatches - aMatches;
-  });
+  const sortedEndpoints = orderHealthyEndpoints(endpoints, healthStatus, detectedRegion);
 
   const selectedEndpoint = sortedEndpoints[0];
   const reason =
@@ -192,7 +172,10 @@ async function handleRouting(req: Request): Promise<Response> {
         error: 'Routing failed',
         details: String(error),
       }),
-      { status: 502, headers: { 'Content-Type': 'application/json' } }
+      {
+        status: error instanceof NoHealthyRegionsError ? 503 : 502,
+        headers: { 'Content-Type': 'application/json' },
+      }
     );
   }
 }
@@ -217,7 +200,10 @@ async function handleRoutingInfo(req: Request): Promise<Response> {
         error: 'Failed to get routing information',
         details: String(error),
       }),
-      { status: 500, headers: { 'Content-Type': 'application/json' } }
+      {
+        status: error instanceof NoHealthyRegionsError ? 503 : 500,
+        headers: { 'Content-Type': 'application/json' },
+      }
     );
   }
 }
