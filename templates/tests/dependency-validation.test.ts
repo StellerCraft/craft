@@ -67,6 +67,21 @@ function allDeps(pkg: PackageJson): Record<string, string> {
   return { ...pkg.dependencies, ...pkg.devDependencies, ...pkg.peerDependencies };
 }
 
+function sharedDependencyMismatches(packages: Record<string, PackageJson>): string[] {
+  const rangesByDependency = new Map<string, Set<string>>();
+  for (const pkg of Object.values(packages)) {
+    for (const [dependency, range] of Object.entries(allDeps(pkg))) {
+      const ranges = rangesByDependency.get(dependency) ?? new Set<string>();
+      ranges.add(range);
+      rangesByDependency.set(dependency, ranges);
+    }
+  }
+
+  return [...rangesByDependency]
+    .filter(([, ranges]) => ranges.size > 1)
+    .map(([dependency]) => dependency);
+}
+
 /** Strip leading range operators to get a representative version for satisfies(). */
 function representativeVersion(range: string): string | null {
   // e.g. "^18.2.0" → "18.2.0", "14.0.4" → "14.0.4"
@@ -167,6 +182,18 @@ describe('Template dependency validation — peer dependency requirements', () =
 });
 
 describe('Template dependency validation — dependency resolution', () => {
+  it('uses identical version constraints for dependencies shared across templates', () => {
+    expect(sharedDependencyMismatches(PACKAGES)).toEqual([]);
+  });
+
+  it('detects a mismatched shared dependency range', () => {
+    const fixture = {
+      first: { name: 'first', version: '1.0.0', dependencies: { next: '14.1.1' } },
+      second: { name: 'second', version: '1.0.0', dependencies: { next: '^14.1.1' } },
+    };
+    expect(sharedDependencyMismatches(fixture)).toEqual(['next']);
+  });
+
   it('no template declares the same package in both dependencies and devDependencies', () => {
     for (const name of TEMPLATE_NAMES) {
       const pkg = PACKAGES[name];

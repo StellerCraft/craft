@@ -228,6 +228,33 @@ describe('Auth methods', () => {
   });
 });
 
+describe('Rate limit retries', () => {
+  it('waits for the Retry-After duration before retrying a 429 response', async () => {
+    const client = new CraftClient({ baseUrl: BASE_URL });
+    const fetch = vi.fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 429,
+        headers: new Headers({ 'Retry-After': '5' }),
+        text: () => Promise.resolve('Rate limited'),
+        statusText: '429',
+      })
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(USER_PROFILE) });
+    vi.stubGlobal('fetch', fetch);
+    vi.useFakeTimers();
+
+    const request = client.getUser();
+    await vi.advanceTimersByTimeAsync(4999);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(request).resolves.toEqual(USER_PROFILE);
+    expect(fetch).toHaveBeenCalledTimes(2);
+
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+});
+
 describe('Template methods', () => {
   let client: CraftClient;
 

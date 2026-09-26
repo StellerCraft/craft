@@ -119,6 +119,19 @@ export class CraftApiError extends Error {
   }
 }
 
+const MAX_RATE_LIMIT_ATTEMPTS = 3;
+const DEFAULT_RATE_LIMIT_DELAY_MS = 200;
+
+function retryAfterDelayMs(value: string | null): number | null {
+  if (value === null || value.trim() === '') return null;
+
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+
+  const retryAt = Date.parse(value);
+  return Number.isNaN(retryAt) ? null : Math.max(0, retryAt - Date.now());
+}
+
 export class CraftClient {
   private baseUrl: string;
   private accessToken?: string;
@@ -157,30 +170,40 @@ export class CraftClient {
    * When the error body is JSON matching ApiErrorResponse, the parsed message is used.
    */
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+    let attempt = 0;
     try {
-      const res = await fetch(`${this.baseUrl}${path}`, {
-        method,
-        headers: this.headers(),
-        body: body !== undefined ? JSON.stringify(body) : undefined,
-      });
-      if (!res.ok) {
-        const text = await res.text().catch(() => res.statusText);
-        let message = text;
-        let code: string | undefined;
-        try {
-          const errorBody = JSON.parse(text) as Record<string, unknown>;
-          if (errorBody.message && typeof errorBody.message === 'string') {
-            message = errorBody.message;
-          }
-          if (errorBody.code && typeof errorBody.code === 'string') {
-            code = errorBody.code;
-          }
-        } catch {
-          // text is not JSON; use raw text as message
+      while (true) {
+        const res = await fetch(`${this.baseUrl}${path}`, {
+          method,
+          headers: this.headers(),
+          body: body !== undefined ? JSON.stringify(body) : undefined,
+        });
+        if (res.status === 429 && attempt < MAX_RATE_LIMIT_ATTEMPTS - 1) {
+          const retryAfter = retryAfterDelayMs(res.headers.get('Retry-After'));
+          const delay = retryAfter ?? DEFAULT_RATE_LIMIT_DELAY_MS * (2 ** attempt);
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          attempt++;
+          continue;
         }
-        throw new CraftApiError(res.status, message, code);
+        if (!res.ok) {
+          const text = await res.text().catch(() => res.statusText);
+          let message = text;
+          let code: string | undefined;
+          try {
+            const errorBody = JSON.parse(text) as Record<string, unknown>;
+            if (errorBody.message && typeof errorBody.message === 'string') {
+              message = errorBody.message;
+            }
+            if (errorBody.code && typeof errorBody.code === 'string') {
+              code = errorBody.code;
+            }
+          } catch {
+            // text is not JSON; use raw text as message
+          }
+          throw new CraftApiError(res.status, message, code);
+        }
+        return res.json() as Promise<T>;
       }
-      return res.json() as Promise<T>;
     } catch (error) {
       if (error instanceof CraftApiError) throw error;
       throw new CraftApiError(0, `Network request failed: ${error instanceof Error ? error.message : String(error)}`, undefined);

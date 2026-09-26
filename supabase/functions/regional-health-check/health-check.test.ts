@@ -6,6 +6,16 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { deriveRegionHealthState } from '../_shared/health-status.ts';
+
+describe('Regional health state classification', () => {
+  it('distinguishes healthy, degraded, and down regions', () => {
+    expect(deriveRegionHealthState(true, true, 100)).toBe('healthy');
+    expect(deriveRegionHealthState(true, true, 1500)).toBe('degraded');
+    expect(deriveRegionHealthState(true, false, 100)).toBe('degraded');
+    expect(deriveRegionHealthState(false, false, 100)).toBe('down');
+  });
+});
 
 describe('Regional Health Checks', () => {
   describe('Health Check Endpoint', () => {
