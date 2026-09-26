@@ -283,11 +283,29 @@ function escapeDoc(doc: string, indent: string = ''): string {
   return [`${indent}/**`, ...lines, `${indent} */`].join('\n');
 }
 
+const TYPESCRIPT_RESERVED_WORDS = new Set([
+  'abstract', 'any', 'as', 'asserts', 'await', 'bigint', 'boolean', 'break',
+  'case',
+  'catch', 'class', 'const', 'continue', 'debugger', 'declare', 'default',
+  'delete', 'do', 'else', 'enum', 'export', 'extends', 'false', 'finally',
+  'for', 'function', 'if', 'implements', 'import', 'in', 'infer',
+  'instanceof', 'interface', 'is', 'keyof', 'let', 'module', 'namespace',
+  'never', 'new', 'null', 'number', 'object', 'package', 'private',
+  'protected', 'public', 'readonly', 'return', 'static', 'string', 'super',
+  'switch', 'symbol', 'this', 'throw', 'true', 'try', 'type', 'typeof',
+  'undefined', 'unique', 'unknown', 'var', 'void', 'while', 'with', 'yield',
+]);
+
 /**
  * Sanitise a name so it can be used as a TypeScript identifier.
  */
 function safeIdent(name: string): string {
-  return name.replace(/[^a-zA-Z0-9_$]/g, '_').replace(/^(\d)/, '_$1');
+  const identifier = name
+    .replace(/[^a-zA-Z0-9_$]/g, '_')
+    .replace(/^(\d)/, '_$1') || '_';
+  return TYPESCRIPT_RESERVED_WORDS.has(identifier)
+    ? `_${identifier}`
+    : identifier;
 }
 
 /**
