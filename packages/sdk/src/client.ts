@@ -5,6 +5,8 @@
  * deployments, and payments.
  */
 
+export type { DeploymentStatusType } from '@craft/types';
+
 /**
  * Configuration options for CraftClient.
  * @property baseUrl - The base URL of the CRAFT API (e.g., https://craft.app)

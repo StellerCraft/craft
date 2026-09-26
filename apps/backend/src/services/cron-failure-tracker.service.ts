@@ -42,9 +42,9 @@ export class CronFailureTrackerService {
     }
 
     /**
-     * Record a failed cron run with atomic counter increment, then trigger
-     * escalation alerts. Uses Postgres RPC for atomicity to prevent lost
-     * increments under concurrent calls.
+    * Record a failed cron run with the increment_cron_failure RPC, then
+    * trigger escalation alerts. The RPC prevents lost increments under
+    * concurrent calls.
      */
     async recordFailure(jobName: string, error: string): Promise<void> {
         const supabase = createClient();
