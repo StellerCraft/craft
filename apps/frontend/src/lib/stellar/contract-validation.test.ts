@@ -5,27 +5,25 @@ import {
     validateContractAddresses,
     type ContractValidationResult,
 } from './contract-validation';
+import {
+    INVALID_CONTRACT_ADDRESSES,
+    VALID_CONTRACT_ADDRESSES,
+} from '@craft/stellar';
 
 // ── Valid Contract Addresses ─────────────────────────────────────────────────
 
 const VALID_TESTNET_CONTRACTS = {
-    usdcContract: 'CBQWI64FZ2NKSJC7D45HJZVVMQZ3T7KHXOJSLZPZ5LHKQM7FFWVGNQST', // 56 chars
-    nativeTokenContract: 'CATPNZ2SJRSVZJBWXGFSMZQHQ47JM5PXNQRVJLGHGHVKPZ2OVH3FHPAA', // 56 chars
+    usdcContract: VALID_CONTRACT_ADDRESSES.testnetUsdc,
+    nativeTokenContract: VALID_CONTRACT_ADDRESSES.testnetNativeToken,
 };
 
 const VALID_MAINNET_CONTRACTS = {
-    someContract: 'CATHQD7JDJFQ4WVQXVJDAJX4CSJM3XDYPRMHMV35FVPVLCZDWJYC5WDA', // 56 chars
+    someContract: VALID_CONTRACT_ADDRESSES.mainnetExample,
 };
 
 // ── Invalid Contract Addresses ───────────────────────────────────────────────
 
-const INVALID_CONTRACTS = {
-    tooShort: 'CBQWI64FZ2NKSJC7D45HJZVVMQZ3T7KHXOJSLZPZ5LHK',
-    tooLong: 'CBQWI64FZ2NKSJC7D45HJZVVMQZ3T7KHXOJSLZPZ5LHKQM7FFWVGNQSTX',
-    wrongPrefix: 'GBQWI64FZ2NKSJC7D45HJZVVMQZ3T7KHXOJSLZPZ5LHKQM7FFWVGNQST',
-    invalidCharacters: 'CBQWI64FZ2NKSJC7D45HJZVVMQZ3T7KHXOJSLZPZ5LHKQM7-FWVGNQST',
-    invalidChars2: 'CBQWI64FZ2NKSJC7D45HJZVVMQZ3T7KHXOJSLZPZ5LHKQM7FFWVGNQSI', // I is invalid (not base32)
-};
+const INVALID_CONTRACTS = INVALID_CONTRACT_ADDRESSES;
 
 // ── Arbitraries for Property-Based Tests ─────────────────────────────────────
 
@@ -124,15 +122,20 @@ describe('validateContractAddress', () => {
         });
 
         it('rejects address with I (invalid base32)', () => {
-            const result = validateContractAddress(INVALID_CONTRACTS.invalidChars2);
+            const result = validateContractAddress(INVALID_CONTRACTS.invalidCharacterI);
             expect(result.valid).toBe(false);
             expect(result.code).toBe('CONTRACT_ADDRESS_INVALID_CHARSET');
         });
 
         it('rejects address with O (invalid base32)', () => {
-            const result = validateContractAddress('CBQWI64FZ2NKSJC7D45HJZVVMQZ3T7KHXOJSLZPZ5LHKQM7OFWVGNQST');
+            const result = validateContractAddress(INVALID_CONTRACTS.invalidCharacterO);
             expect(result.valid).toBe(false);
             expect(result.code).toBe('CONTRACT_ADDRESS_INVALID_CHARSET');
+        });
+
+        it('rejects address with a valid format but invalid checksum', () => {
+            const result = validateContractAddress(INVALID_CONTRACTS.invalidChecksum);
+            expect(result).toMatchObject({ valid: false, code: 'CONTRACT_ADDRESS_INVALID_CHECKSUM' });
         });
     });
 });

@@ -18,3 +18,4 @@ export * from './account-merge-protection';
 export * from './asset-compliance';
 export * from './circuit-breaker';
 export * from './horizon-client';
+export * from './fixtures/strkey-addresses';
