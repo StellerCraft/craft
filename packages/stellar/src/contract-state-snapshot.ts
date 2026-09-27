@@ -183,7 +183,7 @@ export class ContractStateSnapshotService {
 
         const entries: LedgerEntryRecord[] = rawEntries.map((entry) => ({
             keyXdr: entry.key.toXDR('base64'),
-            valueXdr: entry.xdr.toXDR('base64'),
+            valueXdr: entry.val.toXDR('base64'),
             liveUntilLedgerSeq: entry.liveUntilLedgerSeq,
         }));
 

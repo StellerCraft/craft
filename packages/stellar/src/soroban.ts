@@ -443,7 +443,7 @@ export async function buildFeeBumpTransaction(
 ): Promise<FeeBumpResult> {
     try {
         // Query network fee statistics to determine an appropriate fee.
-        const feeStats = await client.getFeeStats();
+        const feeStats = await (client as any).getFeeStats();
         const p90Fee = Number(feeStats.sorobanInclusionFee?.p90 ?? feeStats.inclusionFee?.p90 ?? BASE_FEE);
 
         // Apply multiplier then enforce the cap.

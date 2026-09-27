@@ -220,13 +220,18 @@ export function parseAbi(
         doc: u.doc().toString(),
         cases: Array.from(u.cases() as xdr.ScSpecUdtUnionCaseV0[]).map(
           (c, idx) => {
-            const caseType = c.type();
+            const inner = c.value();
+            const kind = c.switch().name;
+            const isTuple = kind === 'scSpecUdtUnionCaseTupleV0';
+            const caseType = isTuple ? (inner as xdr.ScSpecUdtUnionCaseTupleV0).type() : undefined;
             return {
-              name: c.name().toString(),
-              doc: c.doc().toString(),
+              name: inner.name().toString(),
+              doc: inner.doc().toString(),
               value: idx,
               type: caseType
-                ? xdrTypeToTypeScript(caseType, udtNames)
+                ? (caseType.length === 1
+                    ? xdrTypeToTypeScript(caseType[0], udtNames)
+                    : `[${caseType.map((t) => xdrTypeToTypeScript(t, udtNames)).join(', ')}]`)
                 : undefined,
             };
           },

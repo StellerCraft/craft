@@ -413,22 +413,22 @@ function decodeAddress(addr: xdr.ScAddress): string {
     }
 
     if (typeName === 'scAddressTypeMuxedAccount') {
-        const muxed = addr.muxedAccount();
+        const muxed = (addr as any).muxedAccount();
         const ed25519Bytes = muxed.ed25519().v0();
         const id = muxed.id();
-        return StrKey.encodeMed25519PublicKey(ed25519Bytes, id);
+        return (StrKey as any).encodeMed25519PublicKey(ed25519Bytes, id);
     }
 
     if (typeName === 'scAddressTypeClaimableBalance') {
-        const claimBalanceId = addr.claimableBalanceId();
+        const claimBalanceId = (addr as any).claimableBalanceId();
         const hashedId = claimBalanceId.v0();
-        return StrKey.encodeClaimableBalanceId(hashedId);
+        return (StrKey as any).encodeClaimableBalanceId(hashedId);
     }
 
     if (typeName === 'scAddressTypeLiquidityPool') {
-        const poolId = addr.liquidityPoolId();
+        const poolId = (addr as any).liquidityPoolId();
         const hashedId = poolId.v0();
-        return StrKey.encodeLiquidityPoolId(hashedId);
+        return (StrKey as any).encodeLiquidityPoolId(hashedId);
     }
 
     throw new SorobanDeserializationError(
@@ -475,61 +475,43 @@ function mapKeyToString(key: xdr.ScVal): string {
 // ── Serialization helpers ──────────────────────────────────────────────────────
 
 /** BigInt → Unsigned 64-bit XDR integer. */
-function bigintToUint64(value: bigint): { high: number; low: number } {
-    const hi = Number((value >> 32n) & 0xFFFFFFFFn);
-    const lo = Number(value & 0xFFFFFFFFn);
-    return { high: hi >>> 0, low: lo >>> 0 };
+function bigintToUint64(value: bigint): xdr.Uint64 {
+    return new xdr.Uint64(value);
 }
 
 /** BigInt → Signed 64-bit XDR integer. */
-function bigintToInt64(value: bigint): { high: number; low: number } {
-    const unsigned = bigintToUint64(value);
-    if (value < 0n) {
-        unsigned.high = unsigned.high | 0;
-    }
-    return unsigned;
+function bigintToInt64(value: bigint): xdr.Int64 {
+    return new xdr.Int64(value);
 }
 
 /** BigInt → Unsigned 128-bit XDR integer. */
-function bigintToUint128(value: bigint): { hi: { high: number; low: number }; lo: { high: number; low: number } } {
-    const hi = bigintToUint64(value >> 64n);
-    const lo = bigintToUint64(value & 0xFFFFFFFFFFFFFFFFn);
-    return { hi, lo };
+function bigintToUint128(value: bigint): xdr.UInt128Parts {
+    const hi = new xdr.Uint64(value >> 64n);
+    const lo = new xdr.Uint64(value & 0xFFFFFFFFFFFFFFFFn);
+    return new xdr.UInt128Parts({ hi, lo });
 }
 
 /** BigInt → Signed 128-bit XDR integer. */
-function bigintToInt128(value: bigint): { hi: { high: number; low: number }; lo: { high: number; low: number } } {
-    const u128 = bigintToUint128(value);
-    if (value < 0n) {
-        u128.hi.high = u128.hi.high | 0;
-    }
-    return u128;
+function bigintToInt128(value: bigint): xdr.Int128Parts {
+    const hi = new xdr.Int64(value >> 64n);
+    const lo = new xdr.Uint64(value & 0xFFFFFFFFFFFFFFFFn);
+    return new xdr.Int128Parts({ hi, lo });
 }
 
 /** BigInt → Unsigned 256-bit XDR integer. */
-function bigintToUint256(value: bigint): {
-    hiHi: { high: number; low: number };
-    hiLo: { high: number; low: number };
-    loHi: { high: number; low: number };
-    loLo: { high: number; low: number };
-} {
-    const hiHi = bigintToUint64(value >> 192n);
-    const hiLo = bigintToUint64((value >> 128n) & 0xFFFFFFFFFFFFFFFFn);
-    const loHi = bigintToUint64((value >> 64n) & 0xFFFFFFFFFFFFFFFFn);
-    const loLo = bigintToUint64(value & 0xFFFFFFFFFFFFFFFFn);
-    return { hiHi, hiLo, loHi, loLo };
+function bigintToUint256(value: bigint): xdr.UInt256Parts {
+    const hiHi = new xdr.Uint64(value >> 192n);
+    const hiLo = new xdr.Uint64((value >> 128n) & 0xFFFFFFFFFFFFFFFFn);
+    const loHi = new xdr.Uint64((value >> 64n) & 0xFFFFFFFFFFFFFFFFn);
+    const loLo = new xdr.Uint64(value & 0xFFFFFFFFFFFFFFFFn);
+    return new xdr.UInt256Parts({ hiHi, hiLo, loHi, loLo });
 }
 
 /** BigInt → Signed 256-bit XDR integer. */
-function bigintToInt256(value: bigint): {
-    hiHi: { high: number; low: number };
-    hiLo: { high: number; low: number };
-    loHi: { high: number; low: number };
-    loLo: { high: number; low: number };
-} {
-    const u256 = bigintToUint256(value);
-    if (value < 0n) {
-        u256.hiHi.high = u256.hiHi.high | 0;
-    }
-    return u256;
+function bigintToInt256(value: bigint): xdr.Int256Parts {
+    const hiHi = new xdr.Int64(value >> 192n);
+    const hiLo = new xdr.Uint64((value >> 128n) & 0xFFFFFFFFFFFFFFFFn);
+    const loHi = new xdr.Uint64((value >> 64n) & 0xFFFFFFFFFFFFFFFFn);
+    const loLo = new xdr.Uint64(value & 0xFFFFFFFFFFFFFFFFn);
+    return new xdr.Int256Parts({ hiHi, hiLo, loHi, loLo });
 }

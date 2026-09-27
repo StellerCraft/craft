@@ -259,7 +259,7 @@ export function validateConfigurationConsistency(
     errors.push('Horizon URL must use HTTPS');
   }
 
-  if (!config.sorobanRpcUrl.startsWith('https://')) {
+  if (config.sorobanRpcUrl && !config.sorobanRpcUrl.startsWith('https://')) {
     errors.push('Soroban RPC URL must use HTTPS');
   }
 

@@ -170,7 +170,7 @@ export async function validateTrustlines(
   if (!resolvedAccountData && horizonUrl) {
     try {
       const server = new Horizon.Server(horizonUrl);
-      resolvedAccountData = await server.loadAccount(accountId);
+      resolvedAccountData = (await server.loadAccount(accountId)) as any;
     } catch (err: unknown) {
       const status = (err as { response?: { status?: number } })?.response?.status;
       if (status === 404) {
@@ -194,7 +194,7 @@ export async function validateTrustlines(
   // Check each required asset
   for (const requiredAsset of nonNativeAssets) {
     const trustline = trustlines.find(
-      (t) =>
+      (t: any) =>
         t.asset_type !== 'native' &&
         t.asset_code === requiredAsset.code &&
         t.asset_issuer === requiredAsset.issuer
@@ -207,8 +207,9 @@ export async function validateTrustlines(
         reason: 'Trustline does not exist',
       });
     } else {
+      const tl = trustline as any;
       // Check if trustline is authorized
-      if (!trustline.is_authorized && !trustline.is_authorized_to_maintain_liabilities) {
+      if (!tl.is_authorized && !tl.is_authorized_to_maintain_liabilities) {
         missingTrustlines.push({
           asset: requiredAsset.code,
           issuer: requiredAsset.issuer,
@@ -217,7 +218,7 @@ export async function validateTrustlines(
       }
 
       // Check if trustline limit is maxed out
-      if (trustline.limit !== '0' && trustline.balance === trustline.limit) {
+      if (tl.limit !== '0' && tl.balance === tl.limit) {
         missingTrustlines.push({
           asset: requiredAsset.code,
           issuer: requiredAsset.issuer,
@@ -295,7 +296,7 @@ export async function validateAssetIssuanceDeployment(
   if (!resolvedAccountData && horizonUrl) {
     try {
       const server = new Horizon.Server(horizonUrl);
-      resolvedAccountData = await server.loadAccount(accountId);
+      resolvedAccountData = (await server.loadAccount(accountId)) as any;
     } catch (err: unknown) {
       const status = (err as { response?: { status?: number } })?.response?.status;
       if (status === 404) {

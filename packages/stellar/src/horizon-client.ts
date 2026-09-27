@@ -196,7 +196,7 @@ export class HorizonClient {
           headers: options?.headers ?? {},
         };
         if (options?.body !== undefined) {
-          fetchOptions.body = options.body;
+          fetchOptions.body = options.body as any;
         }
 
         const res = await this._fetch(url, fetchOptions);

@@ -797,7 +797,7 @@ export function parseStellarError(
   }
   // Handle Horizon API error responses
   else if (typeof error === 'object' && error !== null) {
-    const errObj = error as Record<string, unknown>;
+    const errObj = error as Record<string, any>;
 
     // Check for Horizon error structure
     if (errObj.status === 404 || errObj.type?.includes('not_found')) {
