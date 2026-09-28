@@ -253,6 +253,44 @@ describe('TemplateGeneratorService.generate — error paths', () => {
   });
 });
 
+describe('TemplateGeneratorService — Stellar network mismatch parity', () => {
+  const stellarTemplates = [
+    { id: 'stellar-dex', category: 'dex' },
+    { id: 'soroban-defi', category: 'lending' },
+    { id: 'payment-gateway', category: 'payment' },
+  ] as const;
+
+  it('rejects the same mismatched network configuration for every Stellar template', async () => {
+    const mismatchedCustomization = {
+      ...validCustomization,
+      stellar: {
+        ...validCustomization.stellar,
+        network: 'mainnet' as const,
+        horizonUrl: 'https://horizon-testnet.stellar.org',
+      },
+    };
+
+    const results = await Promise.all(stellarTemplates.map(async ({ id, category }) => {
+      const service = makeService({
+        getTemplate: vi.fn().mockResolvedValue({ ...mockTemplate, id, category }),
+      });
+      return {
+        templateId: id,
+        result: await service.generate({ ...validRequest, templateId: id, customization: mismatchedCustomization }),
+      };
+    }));
+
+    const expectedError = results[0].result.errors[0];
+    for (const { templateId, result } of results) {
+      expect(result.success, `${templateId} accepted a mismatched Stellar network`).toBe(false);
+      expect(result.errors[0], `${templateId} returned a different network-mismatch error`)
+        .toEqual(expectedError);
+      expect(result.errors[0].file).toBe('stellar.horizonUrl');
+      expect(result.errors[0].message).toContain('Horizon URL points to testnet');
+    }
+  });
+});
+
 // ── Happy path ────────────────────────────────────────────────────────────────
 
 describe('TemplateGeneratorService.generate — happy path', () => {

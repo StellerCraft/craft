@@ -19,6 +19,8 @@ Integration tests verify RLS enforcement across every protected table. Coverage 
 
 **Test file**: `supabase/tests/rls/policy-verification.test.ts`
 
+**Migration drift guard**: The test reads `supabase/tests/rls/rls-migration-hashes.json` and checks the SHA-256 of each migration mirrored by the in-process predicates. When changing a tracked RLS migration, manually compare every affected `USING` and `WITH CHECK` expression with the corresponding predicate and update the mirror and its tests first. Then refresh that migration's hash in the manifest; the test will fail with the migration name and a stale-mirror warning until both sides are reviewed.
+
 **Test categories**:
 1. **Service-role bypass** — Verifies service_role skips all policies (all 8 tables)
 2. **Cross-table isolation** — Ensures users cannot access other users' data via indirect joins

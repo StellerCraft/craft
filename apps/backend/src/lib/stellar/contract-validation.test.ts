@@ -5,41 +5,25 @@ import {
     validateContractAddresses,
     type ContractValidationResult,
 } from './contract-validation';
-
-// Helper to generate a malformed contract address with a different version byte
-// but matching checksum. This tests the validation gap where strkey validation
-// passes but the version byte is incorrect.
-function generateContractWithVersionByte(versionByte: number): string {
-    // Valid contract address starting with C (version byte 0x10)
-    const validAddr = 'CBQWI64FZ2NKSJC7D45HJZVVMQZ3T7KHXOJSLZPZ5LHKQM7FFWVGNQST';
-
-    // For this test, we'll use a hardcoded malformed address with version byte 0x11
-    // The CRC-16 is computed over the payload, so a different version byte but same
-    // overall structure would still pass the checksum if we recomputed it.
-    // This address has version byte 0x11 instead of 0x10:
-    return 'CCQWI64FZ2NKSJC7D45HJZVVMQZ3T7KHXOJSLZPZ5LHKQM7FFWVGNQSP';
-}
+import {
+    INVALID_CONTRACT_ADDRESSES,
+    VALID_CONTRACT_ADDRESSES,
+} from '@craft/stellar';
 
 // ── Valid Contract Addresses ─────────────────────────────────────────────────
 
 const VALID_TESTNET_CONTRACTS = {
-    usdcContract: 'CBQWI64FZ2NKSJC7D45HJZVVMQZ3T7KHXOJSLZPZ5LHKQM7FFWVGNQST', // 56 chars
-    nativeTokenContract: 'CATPNZ2SJRSVZJBWXGFSMZQHQ47JM5PXNQRVJLGHGHVKPZ2OVH3FHPAA', // 56 chars
+    usdcContract: VALID_CONTRACT_ADDRESSES.testnetUsdc,
+    nativeTokenContract: VALID_CONTRACT_ADDRESSES.testnetNativeToken,
 };
 
 const VALID_MAINNET_CONTRACTS = {
-    someContract: 'CATHQD7JDJFQ4WVQXVJDAJX4CSJM3XDYPRMHMV35FVPVLCZDWJYC5WDA', // 56 chars
+    someContract: VALID_CONTRACT_ADDRESSES.mainnetExample,
 };
 
 // ── Invalid Contract Addresses ───────────────────────────────────────────────
 
-const INVALID_CONTRACTS = {
-    tooShort: 'CBQWI64FZ2NKSJC7D45HJZVVMQZ3T7KHXOJSLZPZ5LHK',
-    tooLong: 'CBQWI64FZ2NKSJC7D45HJZVVMQZ3T7KHXOJSLZPZ5LHKQM7FFWVGNQSTX',
-    wrongPrefix: 'GBQWI64FZ2NKSJC7D45HJZVVMQZ3T7KHXOJSLZPZ5LHKQM7FFWVGNQST',
-    invalidCharacters: 'CBQWI64FZ2NKSJC7D45HJZVVMQZ3T7KHXOJSLZPZ5LHKQM7-FWVGNQST',
-    invalidChars2: 'CBQWI64FZ2NKSJC7D45HJZVVMQZ3T7KHXOJSLZPZ5LHKQM7FFWVGNQSI', // I is invalid (not base32)
-};
+const INVALID_CONTRACTS = INVALID_CONTRACT_ADDRESSES;
 
 // ── Arbitraries for Property-Based Tests ─────────────────────────────────────
 
@@ -138,13 +122,13 @@ describe('validateContractAddress', () => {
         });
 
         it('rejects address with I (invalid base32)', () => {
-            const result = validateContractAddress(INVALID_CONTRACTS.invalidChars2);
+            const result = validateContractAddress(INVALID_CONTRACTS.invalidCharacterI);
             expect(result.valid).toBe(false);
             expect(result.code).toBe('CONTRACT_ADDRESS_INVALID_CHARSET');
         });
 
         it('rejects address with O (invalid base32)', () => {
-            const result = validateContractAddress('CBQWI64FZ2NKSJC7D45HJZVVMQZ3T7KHXOJSLZPZ5LHKQM7OFWVGNQST');
+            const result = validateContractAddress(INVALID_CONTRACTS.invalidCharacterO);
             expect(result.valid).toBe(false);
             expect(result.code).toBe('CONTRACT_ADDRESS_INVALID_CHARSET');
         });
@@ -154,7 +138,7 @@ describe('validateContractAddress', () => {
         it('rejects address with incorrect version byte (0x11 instead of 0x10)', () => {
             // This address has a version byte of 0x11 instead of 0x10 (CONTRACT type)
             // but passes all other strkey checks (length, prefix, charset, checksum)
-            const malformedAddr = generateContractWithVersionByte(0x11);
+            const malformedAddr = INVALID_CONTRACT_ADDRESSES.wrongVersionByte;
             const result = validateContractAddress(malformedAddr);
             expect(result.valid).toBe(false);
             expect(result.code).toBe('CONTRACT_ADDRESS_INVALID_VERSION_BYTE');
@@ -163,6 +147,11 @@ describe('validateContractAddress', () => {
         it('accepts valid contract address with correct version byte', () => {
             const result = validateContractAddress(VALID_TESTNET_CONTRACTS.usdcContract);
             expect(result.valid).toBe(true);
+        });
+
+        it('rejects an address with a valid format but invalid checksum', () => {
+            const result = validateContractAddress(INVALID_CONTRACT_ADDRESSES.invalidChecksum);
+            expect(result).toMatchObject({ valid: false, code: 'CONTRACT_ADDRESS_INVALID_CHECKSUM' });
         });
     });
 });

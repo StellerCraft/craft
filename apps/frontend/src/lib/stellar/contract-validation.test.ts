@@ -5,18 +5,22 @@ import {
     validateContractAddresses,
     type ContractValidationResult,
 } from './contract-validation';
+import {
+    INVALID_CONTRACT_ADDRESSES,
+    VALID_CONTRACT_ADDRESSES,
+} from '@craft/stellar';
 import { encodeContractAddress } from './strkey-test-utils';
 
 // ── Valid Contract Addresses ─────────────────────────────────────────────────
 
 // Real strkey-encoded contract IDs (valid CRC-16 checksum, version byte 0x10).
 const VALID_TESTNET_CONTRACTS = {
-    usdcContract: 'CADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP5KR',
-    nativeTokenContract: 'CAAQQDYWDUSCWMRZIBDU4VK4MNVHC6D7Q2GZJG5CVGYLPPWFZTJ5U2RQ',
+    usdcContract: VALID_CONTRACT_ADDRESSES.testnetUsdc,
+    nativeTokenContract: VALID_CONTRACT_ADDRESSES.testnetNativeToken,
 };
 
 const VALID_MAINNET_CONTRACTS = {
-    someContract: 'CAAQQDYWDUSCWMRZIBDU4VK4MNVHC6D7Q2GZJG5CVGYLPPWFZTJ5U2RQ',
+    someContract: VALID_CONTRACT_ADDRESSES.mainnetExample,
 };
 
 // ── Invalid Contract Addresses ───────────────────────────────────────────────
@@ -153,6 +157,18 @@ describe('validateContractAddress', () => {
             expect(result.code).toBe('CONTRACT_ADDRESS_INVALID_CHARSET');
         });
 
+        it('rejects address with I (invalid base32)', () => {
+            const result = validateContractAddress(INVALID_CONTRACTS.invalidCharacterI);
+            expect(result.valid).toBe(false);
+            expect(result.code).toBe('CONTRACT_ADDRESS_INVALID_CHARSET');
+        });
+
+        it('rejects address with O (invalid base32)', () => {
+            const result = validateContractAddress(INVALID_CONTRACTS.invalidCharacterO);
+            expect(result.valid).toBe(false);
+            expect(result.code).toBe('CONTRACT_ADDRESS_INVALID_CHARSET');
+        });
+
         it('rejects address with 1 (not in base32 alphabet)', () => {
             const result = validateContractAddress(INVALID_CONTRACTS.invalidChars2);
             expect(result.valid).toBe(false);
@@ -163,6 +179,20 @@ describe('validateContractAddress', () => {
             const result = validateContractAddress('CBQWI64FZ2NKSJC7D45HJZVVMQZ3T7KHXOJSLZPZ5LHKQM78FWVGNQST');
             expect(result.valid).toBe(false);
             expect(result.code).toBe('CONTRACT_ADDRESS_INVALID_CHARSET');
+        });
+            expect(result.valid).toBe(false);
+            expect(result.code).toBe('CONTRACT_ADDRESS_INVALID_CHARSET');
+        });
+
+        it('rejects address with 1 (not in base32 alphabet)', () => {
+            const result = validateContractAddress(INVALID_CONTRACTS.invalidChars2);
+            expect(result.valid).toBe(false);
+            expect(result.code).toBe('CONTRACT_ADDRESS_INVALID_CHARSET');
+        });
+
+        it('rejects address with a valid format but invalid checksum', () => {
+            const result = validateContractAddress(INVALID_CONTRACTS.invalidChecksum);
+            expect(result).toMatchObject({ valid: false, code: 'CONTRACT_ADDRESS_INVALID_CHECKSUM' });
         });
     });
 });

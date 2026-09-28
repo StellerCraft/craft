@@ -15,6 +15,7 @@ export default defineConfig({
     alias: {
       '@': path.resolve(__dirname, './src'),
       '@craft/types': path.resolve(__dirname, '../../packages/types/src'),
+      '@craft/stellar': path.resolve(__dirname, '../../packages/stellar/src'),
     },
   },
 });
