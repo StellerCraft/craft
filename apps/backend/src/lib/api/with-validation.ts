@@ -9,10 +9,27 @@
  * On failure returns HTTP 400 with field-level errors:
  *   { error: 'Validation failed', details: { field: ['message'] } }
  *
- * Compose with withAuth / withRateLimit:
- *   export const POST = withRateLimit('route', config)(
- *     withValidation(schema)(handler)
- *   );
+ * Compose with withAuth / withRateLimit / withRole / withUsageTracking. Put
+ * validation AFTER auth/role checks but BEFORE usage-tracking — see
+ * CONTRIBUTING.md's "Middleware Composition Order" section for why:
+ *
+ * @example
+ * ```typescript
+ * export const POST = withRateLimit('deployments:create', DEPLOY_RATE_LIMIT)(
+ *   withAuth(async (req, ctx) => {
+ *     return withValidation(createDeploymentSchema)(async (req, innerCtx) => {
+ *       const trackedHandler = await withUsageTracking(
+ *         async (req, trackedCtx) => {
+ *           const deployment = await createDeployment(ctx.user.id, req.validatedBody);
+ *           return NextResponse.json(deployment, { status: 201 });
+ *         },
+ *         'deployment_create'
+ *       );
+ *       return trackedHandler(req, innerCtx);
+ *     })(req, { params: ctx.params });
+ *   })
+ * );
+ * ```
  */
 
 import { NextRequest, NextResponse } from 'next/server';

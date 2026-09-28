@@ -23,6 +23,25 @@ type RoleRouteHandler = (
  * - Role is resolved from user_metadata.role (set server-side via Supabase
  *   admin) with a fallback to the ADMIN_USER_IDS env variable (comma-separated
  *   user IDs). Roles are never trusted from client-supplied headers.
+ *
+ * withRole performs its own auth check (it needs the verified user before it
+ * can check their role), so it should be applied after withRateLimit but
+ * does not need to be nested inside a separate withAuth call. Put
+ * withValidation / withUsageTracking inside the handler it wraps. See
+ * CONTRIBUTING.md's "Middleware Composition Order" section.
+ *
+ * @example
+ * ```typescript
+ * export const POST = withRateLimit('admin:webhooks:dlq', ADMIN_RATE_LIMIT)(
+ *   withRole('admin', async (req, { userId, log }) => {
+ *     return withValidation(reprocessSchema)(async (req) => {
+ *       log.info('Reprocessing DLQ entry', { userId });
+ *       const result = await reprocessDlqEntry(req.validatedBody);
+ *       return NextResponse.json(result);
+ *     })(req, { params: {} });
+ *   })
+ * );
+ * ```
  */
 export function withRole(requiredRole: AppRole, handler: RoleRouteHandler) {
     return withLogging(async (req: NextRequest, { correlationId, log }) => {

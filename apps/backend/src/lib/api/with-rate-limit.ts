@@ -20,6 +20,23 @@ type RouteHandler<TParams = {}> = (
  *
  * Bypass (local dev):
  *   Set RATE_LIMIT_DISABLED=true in .env.local
+ *
+ * Compose as the OUTERMOST wrapper — it's the cheapest check (no DB auth
+ * lookup) and should reject abusive traffic before withAuth, withRole,
+ * withValidation, or withUsageTracking do any work. See CONTRIBUTING.md's
+ * "Middleware Composition Order" section.
+ *
+ * @example
+ * ```typescript
+ * export const POST = withRateLimit('deployments:create', DEPLOY_RATE_LIMIT)(
+ *   withAuth(async (req, { user, params }) => {
+ *     return withValidation(createDeploymentSchema)(async (req, ctx) => {
+ *       const deployment = await createDeployment(user.id, req.validatedBody);
+ *       return NextResponse.json(deployment, { status: 201 });
+ *     })(req, { params });
+ *   })
+ * );
+ * ```
  */
 export function withRateLimit<TParams = {}>(
   routeKey: string,

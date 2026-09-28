@@ -26,6 +26,27 @@ type RouteHandler<TParams = {}> = (
  * Wraps a route handler with Supabase session authentication.
  * Returns 401 if the user is not authenticated.
  * Attaches a correlation ID and logger to the context via withLogging.
+ *
+ * Compose with withRateLimit / withValidation / withUsageTracking — see
+ * CONTRIBUTING.md's "Middleware Composition Order" section for why the
+ * nesting order below matters (rate-limit outermost, auth before any
+ * role/tier check, usage-tracking innermost).
+ *
+ * @example
+ * ```typescript
+ * export const POST = withRateLimit('deployments:create', DEPLOY_RATE_LIMIT)(
+ *   withAuth(async (req, { user, params }) => {
+ *     const trackedHandler = await withUsageTracking(
+ *       async (req, ctx) => {
+ *         const deployment = await createDeployment(user.id, params);
+ *         return NextResponse.json(deployment, { status: 201 });
+ *       },
+ *       'deployment_create'
+ *     );
+ *     return trackedHandler(req, { params });
+ *   })
+ * );
+ * ```
  */
 export function withAuth<TParams = {}>(handler: RouteHandler<TParams>) {
     return withLogging<TParams>(async (req, { params, correlationId, log }) => {
