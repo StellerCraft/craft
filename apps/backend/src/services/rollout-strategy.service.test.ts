@@ -117,6 +117,50 @@ describe('RolloutEngine — evaluateAndMaybeRollback at thresholds', () => {
     });
 });
 
+describe('RolloutEngine — configurable rollback thresholds', () => {
+    it('defaults to the module-level thresholds when none are supplied', () => {
+        const candidate: DeploymentVersion = { ...HEALTHY_CANDIDATE, errorRate: ROLLBACK_ERROR_RATE_THRESHOLD };
+        const engine = new RolloutEngine(HEALTHY_STABLE, candidate);
+        engine.setTrafficPercent(50);
+
+        expect(engine.evaluateAndMaybeRollback()).toBe(true);
+    });
+
+    it('rolls back on a caller-supplied stricter error-rate threshold', () => {
+        // 0.03 would be healthy against the default 0.05 threshold, but not against 0.02.
+        const candidate: DeploymentVersion = { ...HEALTHY_CANDIDATE, errorRate: 0.03, p99LatencyMs: 100 };
+        const engine = new RolloutEngine(HEALTHY_STABLE, candidate, { errorRateThreshold: 0.02 });
+        engine.setTrafficPercent(50);
+
+        expect(engine.evaluateAndMaybeRollback()).toBe(true);
+    });
+
+    it('tolerates a caller-supplied looser latency threshold', () => {
+        // 3000ms would trip the default 2000ms threshold, but not a 5000ms override.
+        const candidate: DeploymentVersion = { ...HEALTHY_CANDIDATE, errorRate: 0.001, p99LatencyMs: 3_000 };
+        const engine = new RolloutEngine(HEALTHY_STABLE, candidate, { latencyThresholdMs: 5_000 });
+        engine.setTrafficPercent(50);
+
+        expect(engine.evaluateAndMaybeRollback()).toBe(false);
+    });
+
+    it('rejects a zero or negative error-rate threshold override', () => {
+        expect(() => new RolloutEngine(HEALTHY_STABLE, HEALTHY_CANDIDATE, { errorRateThreshold: 0 })).toThrow(RangeError);
+        expect(() => new RolloutEngine(HEALTHY_STABLE, HEALTHY_CANDIDATE, { errorRateThreshold: -0.01 })).toThrow(RangeError);
+    });
+
+    it('rejects a zero or negative latency threshold override', () => {
+        expect(() => new RolloutEngine(HEALTHY_STABLE, HEALTHY_CANDIDATE, { latencyThresholdMs: 0 })).toThrow(RangeError);
+        expect(() => new RolloutEngine(HEALTHY_STABLE, HEALTHY_CANDIDATE, { latencyThresholdMs: -100 })).toThrow(RangeError);
+    });
+
+    it('does not mutate the shared module-level constants', () => {
+        expect(() => new RolloutEngine(HEALTHY_STABLE, HEALTHY_CANDIDATE, { errorRateThreshold: 0.5, latencyThresholdMs: 9_000 })).not.toThrow();
+        expect(ROLLBACK_ERROR_RATE_THRESHOLD).toBe(0.05);
+        expect(ROLLBACK_LATENCY_THRESHOLD_MS).toBe(2_000);
+    });
+});
+
 describe('BlueGreenSwitcher — switchToStandby', () => {
     it('switches to standby when standby version is healthy', () => {
         const switcher = new BlueGreenSwitcher(HEALTHY_STABLE, HEALTHY_CANDIDATE, 'blue');
