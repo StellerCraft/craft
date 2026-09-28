@@ -29,11 +29,13 @@ const mockEq = vi.fn();
 const mockGte = vi.fn();
 const mockOrder = vi.fn();
 const mockLimit = vi.fn();
+const mockStorageFrom = vi.fn();
 
 vi.mock('@/lib/supabase/server', () => ({
     createClient: vi.fn(() => ({
         rpc: mockRpc,
         from: mockFrom,
+        storage: { from: mockStorageFrom },
     })),
 }));
 
@@ -224,6 +226,77 @@ describe('CleanupService', () => {
             await expect(service.purgeOldUsageRecords()).rejects.toThrow(
                 'Failed to purge old usage records: Constraint violation'
             );
+        });
+    });
+
+    // ── purgeOrphanedArtifacts (dry run) ──────────────────────────────────────
+
+    describe('purgeOrphanedArtifacts', () => {
+        const NOW = new Date('2024-06-01T00:00:00Z');
+        const OLD_TIMESTAMP = '2024-05-01T00:00:00Z'; // well past the 24h retention window
+
+        function mockStorageObjects(objects: Array<{ name: string; created_at: string; metadata?: { size?: number } }>) {
+            const mockList = vi.fn().mockResolvedValue({ data: objects, error: null });
+            const mockRemove = vi.fn().mockResolvedValue({ error: null });
+            mockStorageFrom.mockReturnValue({ list: mockList, remove: mockRemove });
+            return { mockList, mockRemove };
+        }
+
+        function mockDeploymentsAndAuditTables(existingDeploymentIds: string[]) {
+            const mockAuditInsert = vi.fn().mockResolvedValue({ data: null, error: null });
+
+            mockFrom.mockImplementation((table: string) => {
+                if (table === 'deployments') {
+                    return {
+                        select: vi.fn(() => ({
+                            in: vi.fn().mockResolvedValue({
+                                data: existingDeploymentIds.map((id) => ({ id })),
+                                error: null,
+                            }),
+                        })),
+                    };
+                }
+                if (table === 'orphaned_artifact_cleanup_log') {
+                    return { insert: mockAuditInsert };
+                }
+                throw new Error(`Unexpected table in test: ${table}`);
+            });
+
+            return { mockAuditInsert };
+        }
+
+        it('dry run reports the correct orphan candidate set and deletes nothing', async () => {
+            const { mockRemove } = mockStorageObjects([
+                { name: 'orphan-1.zip', created_at: OLD_TIMESTAMP, metadata: { size: 100 } },
+                { name: 'live-deployment.zip', created_at: OLD_TIMESTAMP, metadata: { size: 200 } },
+            ]);
+            const { mockAuditInsert } = mockDeploymentsAndAuditTables(['live-deployment']);
+
+            const result = await service.purgeOrphanedArtifacts({ dryRun: true, now: NOW });
+
+            expect(result.recordsDeleted).toBe(1);
+            expect(result.orphansDeleted).toEqual([
+                expect.objectContaining({ path: 'orphan-1.zip', sizeBytes: 100 }),
+            ]);
+            expect(result.scanned).toBe(2);
+            expect(result.description).toContain('dry run');
+            expect(mockRemove).not.toHaveBeenCalled();
+            expect(mockAuditInsert).not.toHaveBeenCalled();
+        });
+
+        it('a real (non-dry-run) run deletes the same candidate set and writes the audit log', async () => {
+            const { mockRemove } = mockStorageObjects([
+                { name: 'orphan-1.zip', created_at: OLD_TIMESTAMP, metadata: { size: 100 } },
+            ]);
+            const { mockAuditInsert } = mockDeploymentsAndAuditTables([]);
+
+            const result = await service.purgeOrphanedArtifacts({ now: NOW });
+
+            expect(result.recordsDeleted).toBe(1);
+            expect(mockRemove).toHaveBeenCalledWith(['orphan-1.zip']);
+            expect(mockAuditInsert).toHaveBeenCalledWith([
+                expect.objectContaining({ artifact_path: 'orphan-1.zip' }),
+            ]);
         });
     });
 

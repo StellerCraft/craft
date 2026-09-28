@@ -22,6 +22,9 @@
  *   EMAIL_API_KEY   — API key for the provider
  *   EMAIL_FROM      — Sender address (e.g. notifications@craft.app)
  *   When EMAIL_API_URL is unset, the message is logged instead of sent (dev mode).
+ *   See CONTRIBUTING.md's "Rate Limiting, Idempotency, and Tier Enforcement"
+ *   section for the full reference on these three variables, including the
+ *   dev-mode fallback behavior.
  *
  * Issue: #769 — Email Notification Delivery Service with Template Rendering
  *               and Delivery Tracking

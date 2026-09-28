@@ -18,6 +18,11 @@ import { withCronAuth } from '@/lib/api/cron-auth';
  * Orphaned artifacts are kept for a 24h debugging window and deleted in batches
  * of up to 100 per run (see CleanupService.purgeOrphanedArtifacts).
  *
+ * Pass ?dryRun=true to preview the orphaned-artifact purge (candidate set,
+ * zero deletions) for manual operator invocation — still protected by
+ * CRON_SECRET like any other call to this route. Does not affect the
+ * tombstoned-deployment purge above, which always runs for real.
+ *
  * Scheduled daily via vercel.json.  Protected by CRON_SECRET via withCronAuth.
  */
 async function handlePurgeTombstonedDeployments(req: NextRequest) {
@@ -25,6 +30,8 @@ async function handlePurgeTombstonedDeployments(req: NextRequest) {
     const correlationId = resolveCorrelationId(req);
     const log = createLogger({ correlationId, service: 'purge-tombstoned-deployments-cron' });
     const headers = { [CORRELATION_ID_HEADER]: correlationId };
+
+    const dryRun = req.nextUrl.searchParams.get('dryRun') === 'true';
 
     const retentionDays = readRetentionDays('tombstonedDeploymentPurge');
     validateRetentionWindows(getRetentionPolicyWindows());
@@ -50,7 +57,7 @@ async function handlePurgeTombstonedDeployments(req: NextRequest) {
     // Remove orphaned storage artifacts (24h retention, 100/run batch limit).
     let orphanedArtifactsPurged = 0;
     try {
-        const orphanResult = await cleanupService.purgeOrphanedArtifacts({ correlationId });
+        const orphanResult = await cleanupService.purgeOrphanedArtifacts({ dryRun, correlationId });
         orphanedArtifactsPurged = orphanResult.recordsDeleted;
     } catch (err: unknown) {
         // Orphan cleanup failure should not fail the whole cron; log and continue.
@@ -61,6 +68,7 @@ async function handlePurgeTombstonedDeployments(req: NextRequest) {
         {
             purged,
             orphanedArtifactsPurged,
+            dryRun,
             retentionDisabled: retentionDays === 0,
         },
         { headers },

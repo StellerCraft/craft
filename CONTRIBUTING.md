@@ -64,6 +64,16 @@ for all of them; each source file below points back here.
 - **Default:** `300000` (5 minutes)
 - **Effect:** how long a validated GitHub token-scope result is cached (keyed by a SHA-256 hash of the token) before being re-checked against the GitHub API.
 
+### `EMAIL_API_URL`, `EMAIL_API_KEY`, `EMAIL_FROM`
+
+- **Read by:** `apps/backend/src/services/email-delivery.service.ts`
+- **Default:** unset
+- **Effect:** configure the transactional email provider used to send templated emails (deployment completion, subscription changes, security alerts, invoices).
+  - `EMAIL_API_URL` — base URL of the email API (e.g. `https://api.resend.com`).
+  - `EMAIL_API_KEY` — API key sent as a bearer token to the provider.
+  - `EMAIL_FROM` — sender address (e.g. `notifications@craft.app`); defaults to `notifications@craft.app` when unset.
+  - **Dev-mode fallback:** when `EMAIL_API_URL` is unset, `EmailDeliveryService` does not call any provider — it logs the rendered subject/recipient to the console and returns a synthetic `dev-<to>-<subject>` message id instead. This is intentional for local development and CI. If emails are not being delivered in a staging or production environment, check that `EMAIL_API_URL` is actually set before treating it as a bug.
+
 ### Tier-limit constants
 
 These are not environment variables — they are constants defined directly in
@@ -76,6 +86,43 @@ reference page.
 - `apps/backend/src/lib/tier-enforcement.middleware.ts`:
   - `TIER_ORDER` — numeric ordering used to compare a user's tier against a route's required tier (`free: 0`, `pro: 1`, `enterprise: 2`).
   - `FEATURE_GATES` — declarative map from route-pattern substrings to the minimum subscription tier required to access them.
+
+## Middleware Composition Order
+
+`with-auth.ts`, `with-role.ts`, `with-validation.ts`, `with-rate-limit.ts`, and
+`with-usage-tracking.ts` are designed to be composed on a single route. Nesting
+order matters for correctness, not just style:
+
+1. **`withRateLimit` outermost.** It's the cheapest check (keyed by IP/route, no
+   DB auth lookup) and should reject abusive traffic before any auth or
+   validation work happens. See existing routes such as `api/auth/signin`.
+2. **`withAuth` before `withRole`.** Role/tier enforcement needs a verified
+   user id to check against — `withRole` (and any future tier-enforcement
+   wrapper) must run only once identity is established.
+3. **`withValidation` after auth/role.** Validate the request body once the
+   caller is known to be authenticated and permitted; this avoids paying
+   Zod-parsing cost for requests that were going to be rejected anyway.
+4. **`withUsageTracking` innermost, closest to the handler.** It should only
+   fire for requests that passed every other check and actually executed.
+   This is also why it must sit *outside* idempotency handling for a given
+   operation: a replayed idempotent request should be served from the
+   idempotency cache and must **not** re-trigger usage tracking, or metered
+   usage gets double-counted for a single logical operation.
+
+Putting it together, the recommended nesting (outer → inner) is:
+
+```
+withRateLimit(...)(
+  withAuth(
+    withRole('admin', ...)          // or another tier/role check, if needed
+    withValidation(schema)(
+      withUsageTracking(operationType)(handler)
+    )
+  )
+)
+```
+
+See each module's own docstring for a runnable composition example.
 
 ## Database Migrations
 
@@ -110,6 +157,21 @@ node scripts/check-migration-numbering.js
 1. The migration filename follows the convention above and the collision guard passes.
 2. The PR description names the new migration file and its prefix.
 3. Migrations that depend on another migration's objects note that dependency in the file header.
+
+## Snapshot Testing (Stellar Configuration)
+
+Snapshot tests capture and diff configuration outputs to catch unintended changes in network settings, RPC endpoints, and serialization.
+
+### Snapshot Files
+
+Snapshots are stored in `__snapshots__` directories co-located with test files:
+
+- `packages/stellar/src/__snapshots__/config.test.ts.snap`
+- `apps/frontend/src/lib/stellar/__snapshots__/stellar-config-generator.test.ts.snap`
+
+### Update Snapshots
+
+When intentional changes are made to Stellar c
 
 ## Snapshot Testing (Stellar Configuration)
 

@@ -79,6 +79,13 @@ export interface PurgeOrphanedArtifactsOptions {
     batchLimit?: number;
     /** Override the current time (testing only). */
     now?: Date;
+    /**
+     * When true, compute and return the same result shape a real run would
+     * produce, but skip both the storage `remove()` call and the audit-log
+     * insert. Lets an operator preview exactly what a purge would delete
+     * before running it against production data.
+     */
+    dryRun?: boolean;
     /** Correlation ID tying every log entry to one cron invocation (default: freshly generated). */
     correlationId?: string;
 }
@@ -223,6 +230,9 @@ export class CleanupService {
      *     per run to bound cron work.
      *   - Audit: every deleted orphan is logged to orphaned_artifact_cleanup_log
      *     with its size and age.
+     *   - Dry run: pass `{ dryRun: true }` to compute and return the same
+     *     result shape without deleting anything or writing an audit row —
+     *     use it to preview a run against production data first.
      */
     async purgeOrphanedArtifacts(
         options: PurgeOrphanedArtifactsOptions = {},
@@ -297,7 +307,20 @@ export class CleanupService {
         const batchLimitReached = orphans.length > batchLimit;
         const toDelete = orphans.slice(0, batchLimit);
 
-        // 5. Delete and audit each orphan.
+        // 5. Dry run: report the candidate set without deleting or auditing.
+        if (options.dryRun) {
+            return {
+                recordsDeleted: toDelete.length,
+                description: `Orphaned deployment artifacts purged from ${bucket} (dry run)`,
+                executedAt: now,
+                orphansDeleted: toDelete,
+                scanned: artifacts.length,
+                skippedWithinRetention,
+                batchLimitReached,
+            };
+        }
+
+        // 6. Delete and audit each orphan.
         if (toDelete.length > 0) {
             const { error: removeError } = await supabase.storage
                 .from(bucket)

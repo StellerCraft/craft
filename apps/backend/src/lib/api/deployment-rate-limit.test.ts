@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import {
     checkDeploymentRateLimit,
+    createDeploymentStyleRateLimiter,
     TIER_HOURLY_LIMITS,
     WINDOW_MS,
     ESCALATION_REDUCTION,
@@ -268,5 +269,132 @@ describe('checkDeploymentRateLimit', () => {
         expect(result.allowed).toBe(false);
         expect(result.limit).toBe(TIER_HOURLY_LIMITS.free);
         expect(result.resetAt).toBe(new Date(oldestInWindow).getTime() + WINDOW_MS);
+    });
+});
+
+describe('createDeploymentStyleRateLimiter', () => {
+    beforeEach(() => {
+        vi.useFakeTimers();
+        vi.setSystemTime(NOW);
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    /**
+     * A minimal stateful fake of the two tables the limiter reads/writes,
+     * so we can actually observe whether two limiter instances end up
+     * reading/writing the same rows for the same user id.
+     */
+    function createStatefulSupabaseMock() {
+        const requests: Array<{ user_id: string; created_at: string }> = [];
+        const escalations = new Map<string, { hit_count: number; window_start: string }>();
+
+        const from = vi.fn((table: string) => {
+            if (table === 'deployment_rate_limit_requests') {
+                return {
+                    select: vi.fn((_cols: string, opts?: { head?: boolean }) => {
+                        if (opts?.head) {
+                            return {
+                                eq: vi.fn((_col: string, key: string) => ({
+                                    gte: vi.fn((_col2: string, windowStart: string) =>
+                                        Promise.resolve({
+                                            count: requests.filter(
+                                                (r) => r.user_id === key && r.created_at >= windowStart
+                                            ).length,
+                                            error: null,
+                                        })
+                                    ),
+                                })),
+                            };
+                        }
+                        return {
+                            eq: vi.fn((_col: string, key: string) => ({
+                                gte: vi.fn(() => ({
+                                    order: vi.fn(() => ({
+                                        limit: vi.fn(() => ({
+                                            single: vi.fn(() => {
+                                                const matches = requests
+                                                    .filter((r) => r.user_id === key)
+                                                    .sort((a, b) => a.created_at.localeCompare(b.created_at));
+                                                return Promise.resolve({ data: matches[0] ?? null });
+                                            }),
+                                        })),
+                                    })),
+                                })),
+                            })),
+                        };
+                    }),
+                    insert: vi.fn((row: { user_id: string; created_at: string }) => {
+                        requests.push(row);
+                        return Promise.resolve({ data: null, error: null });
+                    }),
+                };
+            }
+
+            if (table === 'deployment_rate_limit_escalations') {
+                return {
+                    select: vi.fn(() => ({
+                        eq: vi.fn((_col: string, key: string) => ({
+                            single: vi.fn(() => Promise.resolve({ data: escalations.get(key) ?? null })),
+                        })),
+                    })),
+                    upsert: vi.fn((row: { user_id: string; hit_count: number; window_start: string }) => {
+                        escalations.set(row.user_id, { hit_count: row.hit_count, window_start: row.window_start });
+                        return Promise.resolve({ data: null, error: null });
+                    }),
+                    update: vi.fn((patch: { hit_count: number }) => ({
+                        eq: vi.fn((_col: string, key: string) => {
+                            const existing = escalations.get(key);
+                            if (existing) escalations.set(key, { ...existing, hit_count: patch.hit_count });
+                            return Promise.resolve({ data: null, error: null });
+                        }),
+                    })),
+                };
+            }
+
+            throw new Error(`Unexpected table in test: ${table}`);
+        });
+
+        return { from } as unknown as SupabaseClient;
+    }
+
+    it('keeps two independently-configured limiters from sharing a counter for the same user', async () => {
+        const supabase = createStatefulSupabaseMock();
+
+        const limiterA = createDeploymentStyleRateLimiter({
+            windowMs: WINDOW_MS,
+            maxRequests: { free: 2, pro: 2, enterprise: 2 },
+            keyPrefix: 'bulk-domain-attach',
+        });
+        const limiterB = createDeploymentStyleRateLimiter({
+            windowMs: WINDOW_MS,
+            maxRequests: { free: 2, pro: 2, enterprise: 2 },
+            keyPrefix: 'repo-re-push',
+        });
+
+        // Exhaust limiter A's budget for user-1.
+        const firstA = await limiterA.check(supabase, 'user-1', 'free');
+        const secondA = await limiterA.check(supabase, 'user-1', 'free');
+        const thirdA = await limiterA.check(supabase, 'user-1', 'free');
+
+        expect(firstA.allowed).toBe(true);
+        expect(secondA.allowed).toBe(true);
+        expect(thirdA.allowed).toBe(false); // limiter A's budget (2) is exhausted
+
+        // limiter B, same underlying user, independently-configured — its
+        // counter must be untouched by limiter A's requests above.
+        const firstB = await limiterB.check(supabase, 'user-1', 'free');
+        expect(firstB.allowed).toBe(true);
+        expect(firstB.remaining).toBe(1);
+    });
+
+    it('defaults to WINDOW_MS / TIER_HOURLY_LIMITS / no key prefix, matching checkDeploymentRateLimit', () => {
+        const limiter = createDeploymentStyleRateLimiter();
+
+        expect(limiter.windowMs).toBe(WINDOW_MS);
+        expect(limiter.maxRequests).toEqual(TIER_HOURLY_LIMITS);
+        expect(limiter.keyPrefix).toBeUndefined();
     });
 });

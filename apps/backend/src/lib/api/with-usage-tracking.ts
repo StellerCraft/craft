@@ -45,7 +45,32 @@ export function detectOperationType(pathname: string): string {
 }
 
 /**
- * Middleware to track API usage for metered billing
+ * Middleware to track API usage for metered billing.
+ *
+ * Always the innermost wrapper — apply it closest to the handler, after
+ * withAuth, withRole, and withValidation have all run. This ensures usage is
+ * only recorded for requests that were actually authenticated, permitted,
+ * and well-formed, and — critically — that a request replayed through
+ * withIdempotency (see apps/backend/src/lib/api/idempotency.ts) is served
+ * from the idempotency cache and does not reach this wrapper again, so a
+ * single logical operation is never double-counted. See CONTRIBUTING.md's
+ * "Middleware Composition Order" section for the full rationale.
+ *
+ * @example
+ * ```typescript
+ * export const POST = withRateLimit('deployments:create', DEPLOY_RATE_LIMIT)(
+ *   withAuth(async (req, { user, params }) => {
+ *     const trackedHandler = await withUsageTracking(
+ *       async (req, ctx) => {
+ *         const deployment = await createDeployment(user.id, params);
+ *         return NextResponse.json(deployment, { status: 201 });
+ *       },
+ *       'deployment_create'
+ *     );
+ *     return trackedHandler(req, { params });
+ *   })
+ * );
+ * ```
  */
 export async function withUsageTracking<TParams = {}>(
   handler: (
