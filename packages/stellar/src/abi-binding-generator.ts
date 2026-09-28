@@ -283,6 +283,19 @@ function escapeDoc(doc: string, indent: string = ''): string {
   return [`${indent}/**`, ...lines, `${indent} */`].join('\n');
 }
 
+const TYPESCRIPT_RESERVED_WORDS = new Set([
+  'abstract', 'any', 'as', 'asserts', 'await', 'bigint', 'boolean', 'break',
+  'case',
+  'catch', 'class', 'const', 'continue', 'debugger', 'declare', 'default',
+  'delete', 'do', 'else', 'enum', 'export', 'extends', 'false', 'finally',
+  'for', 'function', 'if', 'implements', 'import', 'in', 'infer',
+  'instanceof', 'interface', 'is', 'keyof', 'let', 'module', 'namespace',
+  'never', 'new', 'null', 'number', 'object', 'package', 'private',
+  'protected', 'public', 'readonly', 'return', 'static', 'string', 'super',
+  'switch', 'symbol', 'this', 'throw', 'true', 'try', 'type', 'typeof',
+  'undefined', 'unique', 'unknown', 'var', 'void', 'while', 'with', 'yield',
+]);
+
 /**
  * Reserved TypeScript keywords and types that cannot be used as bare identifiers.
  */

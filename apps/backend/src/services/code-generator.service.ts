@@ -13,6 +13,9 @@
  *   - Syntactically valid TypeScript/JSON
  *   - stellar-sdk in package.json dependencies
  *
+ * For the Soroban DeFi contract-address injection contract, see
+ * [templates/soroban-defi/README.md](../../../../templates/soroban-defi/README.md#contract-address-injection).
+ *
  * Validates: Requirements 7.1, 7.2, 7.3, 7.4, 7.5
  */
 
