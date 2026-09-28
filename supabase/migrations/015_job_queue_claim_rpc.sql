@@ -1,3 +1,15 @@
+-- ── Dependency chain: job queue / DLQ (see issue #1336) ─────────────────────
+-- These four migrations must apply in this exact order:
+--   1. 013_github_webhook_delivery_tracking.sql — webhook delivery tracking (root of the chain)
+--   2. 014_job_queue.sql — job_queue / job_dlq tables and job_priority / job_status enums
+--   3. 015_job_queue_claim_rpc.sql — claim_next_job() RPC — requires job_queue from 014_job_queue.sql  <-- this file
+--   4. 018_dlq_reprocess_atomicity.sql — job_dlq 'in_progress' reprocess state — requires job_dlq from 014_job_queue.sql
+-- Supabase applies migrations in lexicographic filename order. If these files
+-- are renumbered (e.g. to resolve the duplicate 014_ prefix), the new numbers
+-- MUST stay strictly ascending in the order above. This is enforced by
+-- apps/backend/tests/database/job-queue-migration-chain.test.ts.
+-- ─────────────────────────────────────────────────────────────────────────────
+
 -- Migration: 015_job_queue_claim_rpc.sql
 -- Atomic "claim next job" function used by workers to avoid double-processing.
 --

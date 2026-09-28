@@ -71,6 +71,20 @@ describe('corsHeaders', () => {
                 .toBe('https://www.craft.app');
         });
     });
+
+    it('omits ACAO header when allowlist is empty in production (fail closed)', () => {
+        withEnv({ ALLOWED_ORIGINS: '', NODE_ENV: 'production' }, () => {
+            const headers = corsHeaders('https://any-origin.com');
+            expect(headers['Access-Control-Allow-Origin']).toBeUndefined();
+        });
+    });
+
+    it('omits ACAO header when allowlist env var is unset in production (fail closed)', () => {
+        withEnv({ ALLOWED_ORIGINS: undefined, NODE_ENV: 'production' }, () => {
+            const headers = corsHeaders('https://any-origin.com');
+            expect(headers['Access-Control-Allow-Origin']).toBeUndefined();
+        });
+    });
 });
 
 describe('handlePreflight', () => {

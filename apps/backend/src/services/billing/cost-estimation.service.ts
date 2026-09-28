@@ -103,6 +103,8 @@ const OVERAGE_RATES = {
     vercelComputeCostPerUnit: 1.5,
 };
 
+const BILLING_UNIT_HOURS = 1;
+
 function roundCurrency(value: number): number {
     return Number(value.toFixed(2));
 }
@@ -112,6 +114,11 @@ function normalizeNumber(value: unknown, fallback: number): number {
         return fallback;
     }
     return Math.max(0, value);
+}
+
+function roundUpBillingHours(durationHours: number): number {
+    if (durationHours <= 0) return 0;
+    return Math.ceil(durationHours / BILLING_UNIT_HOURS) * BILLING_UNIT_HOURS;
 }
 
 export class CostEstimationService {
@@ -125,8 +132,10 @@ export class CostEstimationService {
         const cpuOverage = Math.max(0, usage.cpuCores - config.includedCpuCores);
         const memoryOverage = Math.max(0, usage.memoryGB - config.includedMemoryGB);
 
-        const computeCost = (cpuOverage * OVERAGE_RATES.cpuPerHour * usage.durationHours) +
-                            (memoryOverage * OVERAGE_RATES.memoryPerHour * usage.durationHours);
+        const roundedDurationHours = roundUpBillingHours(usage.durationHours);
+
+        const computeCost = (cpuOverage * OVERAGE_RATES.cpuPerHour * roundedDurationHours) +
+                            (memoryOverage * OVERAGE_RATES.memoryPerHour * roundedDurationHours);
 
         const storageOverage = Math.max(0, usage.storageGB - config.includedStorageGB);
         const storageCost = storageOverage * OVERAGE_RATES.storagePerMonth;

@@ -129,8 +129,8 @@ describe('validateCustomizationConfig', () => {
             stellar: {
                 ...valid.stellar,
                 contractAddresses: {
-                    usdcContract: 'CBQWI64FZ2NKSJC7D45HJZVVMQZ3T7KHXOJSLZPZ5LHKQM7FFWVGNQST',
-                    nativeTokenContract: 'CATPNZ2SJRSVZJBWXGFSMZQHQ47JM5PXNQRVJLGHGHVKPZ2OVH3FHXPA',
+                    usdcContract: 'CADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP5KR',
+                    nativeTokenContract: 'CAAQQDYWDUSCWMRZIBDU4VK4MNVHC6D7Q2GZJG5CVGYLPPWFZTJ5U2RQ',
                 },
             },
         });
@@ -178,5 +178,26 @@ describe('validateCustomizationConfig', () => {
         });
         expect(result.valid).toBe(false);
         expect(result.errors[0].code).toBe('CONTRACT_ADDRESS_INVALID_CHARSET');
+    });
+
+    // ── Asset pair validation ──────────────────────────────────────────────────
+
+    it('accepts config without asset pairs', () => {
+        const result = validateCustomizationConfig(valid);
+        expect(result.valid).toBe(true);
+    });
+
+    it('validates asset pairs when provided', () => {
+        const result = validateCustomizationConfig({
+            ...valid,
+            stellar: {
+                ...valid.stellar,
+                assetPairs: [
+                    { buy: null, sell: null }
+                ]
+            },
+        });
+        expect(result.valid).toBe(false);
+        expect(result.errors.length).toBeGreaterThan(0);
     });
 });

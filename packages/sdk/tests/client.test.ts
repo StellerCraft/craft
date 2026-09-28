@@ -11,7 +11,8 @@
  *   - TypeScript type correctness
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, expectTypeOf, vi, beforeEach, afterEach } from 'vitest';
+import type { DeploymentStatusType as CanonicalDeploymentStatusType } from '@craft/types';
 import {
   CraftClient,
   CraftApiError,
@@ -24,7 +25,14 @@ import {
   type SubscriptionStatus,
   type DeploymentAnalytics,
   type DeploymentHealth,
+  type DeploymentStatusType,
 } from '../src/client';
+
+describe('Deployment status type parity', () => {
+  it('accepts every canonical backend deployment status', () => {
+    expectTypeOf<CanonicalDeploymentStatusType>().toMatchTypeOf<DeploymentStatusType>();
+  });
+});
 
 // ── Fetch mock helpers ────────────────────────────────────────────────────────
 

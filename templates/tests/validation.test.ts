@@ -530,3 +530,50 @@ describe('Template Validation', () => {
     });
   });
 });
+
+// ── Asset-issuance compliance env documentation (#1338) ───────────────────────
+
+describe('asset-issuance .env.example — compliance configuration', () => {
+  // Variable names read by packages/stellar/src/asset-compliance.ts
+  const COMPLIANCE_VARS = ['COMPLIANCE_BLOCKLIST_JSON', 'COMPLIANCE_JURISDICTION_JSON'] as const;
+
+  const envExample = () => readFileSync(templatePath('asset-issuance', '.env.example'), 'utf-8');
+
+  function envValue(content: string, key: string): string | undefined {
+    const line = content.split('\n').find((l) => l.startsWith(`${key}=`));
+    return line?.slice(key.length + 1);
+  }
+
+  it('asset-issuance ships a .env.example', () => {
+    expect(existsSync(templatePath('asset-issuance', '.env.example'))).toBe(true);
+  });
+
+  it.each(COMPLIANCE_VARS)('documents %s with a placeholder entry', (key) => {
+    expect(envValue(envExample(), key), `${key} placeholder missing`).toBeDefined();
+  });
+
+  it.each(COMPLIANCE_VARS)('%s default value is valid JSON the validator accepts', (key) => {
+    const value = envValue(envExample(), key)!;
+    const parsed = JSON.parse(value);
+    expect(Array.isArray(parsed)).toBe(true);
+  });
+
+  it('commented COMPLIANCE_BLOCKLIST_JSON example parses to { issuer, reason } entries', () => {
+    const exampleLine = envExample()
+      .split('\n')
+      .find((l) => l.startsWith('# COMPLIANCE_BLOCKLIST_JSON=['));
+    expect(exampleLine, 'blocklist example missing').toBeDefined();
+    const entries = JSON.parse(exampleLine!.replace('# COMPLIANCE_BLOCKLIST_JSON=', ''));
+    expect(Array.isArray(entries)).toBe(true);
+    for (const entry of entries) {
+      expect(typeof entry.issuer).toBe('string');
+      expect(typeof entry.reason).toBe('string');
+    }
+  });
+
+  it('compliance variables are server-side only (not NEXT_PUBLIC_)', () => {
+    for (const key of COMPLIANCE_VARS) {
+      expect(envExample()).not.toContain(`NEXT_PUBLIC_${key}`);
+    }
+  });
+});

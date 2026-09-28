@@ -184,17 +184,6 @@ describe('CronFailureTrackerService', () => {
 
         const mock = {
             from: vi.fn().mockReturnValue({
-                rpc: vi.fn().mockImplementation((fnName, params) => {
-                    if (fnName === 'increment_cron_failure_count') {
-                        // First call returns 1, second call returns 2 (atomic server-side)
-                        const callCount = (mock.from().rpc as any).mock.callCount;
-                        return Promise.resolve({
-                            data: callCount,
-                            error: null,
-                        });
-                    }
-                    return Promise.resolve({ data: null, error: null });
-                }),
                 update: vi.fn().mockResolvedValue({ error: null }),
                 eq: vi.fn().mockReturnThis(),
                 select: vi.fn().mockReturnThis(),
@@ -203,6 +192,9 @@ describe('CronFailureTrackerService', () => {
                     error: null,
                 }),
             }),
+            rpc: vi.fn()
+                .mockResolvedValueOnce({ data: 1, error: null })
+                .mockResolvedValueOnce({ data: 2, error: null }),
         };
 
         mockCreateClient.mockReturnValue(mock as any);
@@ -213,11 +205,15 @@ describe('CronFailureTrackerService', () => {
             svc.recordFailure('concurrent-job', 'error2'),
         ]);
 
-        // Verify both increments happened (RPC was called twice)
-        const rpcCalls = (mock.from().rpc as any).mock.calls.filter(
-            (call: any[]) => call[0] === 'increment_cron_failure_count'
-        );
-        expect(rpcCalls.length).toBe(2);
+        // Verify both increments used the active atomic counter RPC.
+        expect(mock.rpc).toHaveBeenNthCalledWith(1, 'increment_cron_failure', {
+            p_job_name: 'concurrent-job',
+            p_error: 'error1',
+        });
+        expect(mock.rpc).toHaveBeenNthCalledWith(2, 'increment_cron_failure', {
+            p_job_name: 'concurrent-job',
+            p_error: 'error2',
+        });
     });
 
     it('escalation fires when count crosses threshold, even if jumping past exact value', async () => {

@@ -391,3 +391,127 @@ describe('secure token storage — regression', () => {
         expect(err).toBeInstanceOf(GitHubCredentialError);
     });
 });
+
+// ── Rotation race condition recovery ──────────────────────────────────────────
+
+describe('withFreshCredentialOnRotation — rotation race recovery', () => {
+    it('returns operation result on immediate success', async () => {
+        const encrypted = encryptToken(PLAINTEXT_TOKEN);
+        const db = makeSupabase({ github_token_encrypted: encrypted, github_token_expires_at: null });
+        const mockFetch = vi.fn().mockResolvedValue(makeResponse(200));
+        const svc = new GitHubCredentialService(db as never, mockFetch);
+
+        const result = await svc.withFreshCredentialOnRotation(USER_ID, async (token) => {
+            expect(token).toBe(PLAINTEXT_TOKEN);
+            return 'success';
+        });
+
+        expect(result).toBe('success');
+    });
+
+    it('retries once with fresh credential on 401', async () => {
+        const oldToken = 'ghp_old_token_before_rotation';
+        const newToken = 'ghp_new_token_after_rotation';
+        const encryptedOld = encryptToken(oldToken);
+        const encryptedNew = encryptToken(newToken);
+
+        // First call to DB returns the old encrypted token
+        // Second call (after retry) returns the new encrypted token
+        let callCount = 0;
+        const db = {
+            from: (table: string) => {
+                if (table !== 'profiles') throw new Error(`Unexpected table: ${table}`);
+                return {
+                    select: () => ({
+                        eq: () => ({
+                            single: async () => {
+                                callCount++;
+                                if (callCount === 1) {
+                                    return { data: { github_token_encrypted: encryptedOld, github_token_expires_at: null }, error: null };
+                                } else {
+                                    return { data: { github_token_encrypted: encryptedNew, github_token_expires_at: null }, error: null };
+                                }
+                            },
+                        }),
+                    }),
+                    update: () => ({ eq: async () => ({ error: null }) }),
+                };
+            },
+        };
+
+        let operationCallCount = 0;
+        const operation = async (token: string) => {
+            operationCallCount++;
+            if (operationCallCount === 1) {
+                // First call with old token fails with 401 (rotation race)
+                throw new GitHubCredentialError('GitHub token is invalid', 'TOKEN_INVALID');
+            } else {
+                // Second call with new token succeeds
+                expect(token).toBe(newToken);
+                return 'success-on-retry';
+            }
+        };
+
+        const mockFetch = vi.fn();
+        const svc = new GitHubCredentialService(db as never, mockFetch);
+
+        const result = await svc.withFreshCredentialOnRotation(USER_ID, operation);
+
+        expect(result).toBe('success-on-retry');
+        expect(operationCallCount).toBe(2);
+        expect(callCount).toBe(2); // DB was queried twice (once for initial, once for retry)
+    });
+
+    it('does not retry on non-401 errors', async () => {
+        const encrypted = encryptToken(PLAINTEXT_TOKEN);
+        const db = makeSupabase({ github_token_encrypted: encrypted, github_token_expires_at: null });
+        const mockFetch = vi.fn();
+        const svc = new GitHubCredentialService(db as never, mockFetch);
+
+        let operationCallCount = 0;
+        const operation = async (token: string) => {
+            operationCallCount++;
+            throw new GitHubCredentialError('Some other error', 'VALIDATION_FAILED');
+        };
+
+        await expect(svc.withFreshCredentialOnRotation(USER_ID, operation)).rejects.toMatchObject({
+            code: 'VALIDATION_FAILED',
+        });
+
+        // Operation called only once (no retry on non-401)
+        expect(operationCallCount).toBe(1);
+    });
+
+    it('throws after retry if second attempt also fails', async () => {
+        const encrypted = encryptToken(PLAINTEXT_TOKEN);
+        const db = makeSupabase({ github_token_encrypted: encrypted, github_token_expires_at: null });
+        const mockFetch = vi.fn();
+        const svc = new GitHubCredentialService(db as never, mockFetch);
+
+        const operation = async (token: string) => {
+            throw new GitHubCredentialError('Still invalid', 'TOKEN_INVALID');
+        };
+
+        await expect(svc.withFreshCredentialOnRotation(USER_ID, operation)).rejects.toMatchObject({
+            code: 'TOKEN_INVALID',
+        });
+    });
+
+    it('does not retry if error is not a GitHubCredentialError', async () => {
+        const encrypted = encryptToken(PLAINTEXT_TOKEN);
+        const db = makeSupabase({ github_token_encrypted: encrypted, github_token_expires_at: null });
+        const mockFetch = vi.fn();
+        const svc = new GitHubCredentialService(db as never, mockFetch);
+
+        let operationCallCount = 0;
+        const operation = async (token: string) => {
+            operationCallCount++;
+            throw new Error('Generic error');
+        };
+
+        await expect(svc.withFreshCredentialOnRotation(USER_ID, operation)).rejects.toThrow('Generic error');
+
+        // Operation called only once (no retry on non-GitHubCredentialError)
+        expect(operationCallCount).toBe(1);
+    });
+});

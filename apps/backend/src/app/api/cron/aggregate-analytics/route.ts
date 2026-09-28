@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { withCronAuth } from '@/lib/api/cron-auth';
 import { analyticsAggregationService } from '@/services/analytics-aggregation.service';
+import { cronFailureTrackerService } from '@/services/cron-failure-tracker.service';
+
+const JOB_NAME = 'aggregate-analytics';
 
 async function handleAggregateAnalytics(_req: NextRequest) {
     try {
@@ -9,6 +12,8 @@ async function handleAggregateAnalytics(_req: NextRequest) {
             analyticsAggregationService.aggregate('24h'),
         ]);
 
+        await cronFailureTrackerService.recordSuccess(JOB_NAME);
+
         return NextResponse.json({
             success: true,
             hourly: { bucketsWritten: hourly.bucketsWritten },
@@ -16,8 +21,11 @@ async function handleAggregateAnalytics(_req: NextRequest) {
         });
     } catch (error: any) {
         console.error('Analytics aggregation failed:', error);
+        const errorMessage = error.message || 'Aggregation failed';
+        await cronFailureTrackerService.recordFailure(JOB_NAME, errorMessage);
+
         return NextResponse.json(
-            { error: error.message || 'Aggregation failed' },
+            { error: errorMessage },
             { status: 500 }
         );
     }

@@ -34,6 +34,10 @@ export const POST = withAuth(async (req: NextRequest, { params, user, supabase, 
         );
     }
 
+    // Only the tombstone is cleared. Blue-green alias lineage (staging_deployment_id,
+    // production_deployment_id, previous_production_deployment_id — migration 010,
+    // persisted per #995) is intentionally preserved as it was at deletion time,
+    // since soft-delete never touches it. Covered by blue-green-alias-restore.integration.test.ts.
     const { error: restoreError } = await supabase
         .from('deployments')
         .update({ deleted_at: null })

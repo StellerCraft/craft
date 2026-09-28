@@ -1,14 +1,17 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import type { AssetPair, StellarAsset } from '@craft/types';
 import type { StellarConfigFormReturn } from './useStellarConfigForm';
 
-interface StellarConfigPanelProps {
+export interface StellarConfigPanelProps {
     form: StellarConfigFormReturn;
     onSubmit: () => void;
     submitLabel?: string;
     isSubmitting?: boolean;
+    getConnectionStatus?: () => Promise<{ stellar: boolean; connectedAt?: { stellar?: string } } | boolean>;
+    initialConnected?: boolean;
+    debounceDelayMs?: number;
 }
 
 // ── Network selector ──────────────────────────────────────────────────────────
@@ -42,8 +45,58 @@ export function StellarConfigPanel({
     onSubmit,
     submitLabel = 'Save changes',
     isSubmitting = false,
+    getConnectionStatus,
+    initialConnected = false,
+    debounceDelayMs = 150,
 }: StellarConfigPanelProps) {
     const { state, errors, isDirty, setField, setAssetPairs, setContractAddress, removeContractAddress, validate, reset } = form;
+    const [isConnected, setIsConnected] = useState<boolean>(initialConnected);
+    const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    const checkConnection = useCallback(async () => {
+        if (!getConnectionStatus) return;
+        try {
+            const result = await getConnectionStatus();
+            const connected = typeof result === 'boolean' ? result : Boolean(result?.stellar);
+            setIsConnected(connected);
+        } catch {
+            // Out-of-band error / network error can be handled safely without throwing in listener
+        }
+    }, [getConnectionStatus]);
+
+    const debouncedCheckConnection = useCallback(() => {
+        if (debounceTimerRef.current) {
+            clearTimeout(debounceTimerRef.current);
+        }
+        debounceTimerRef.current = setTimeout(() => {
+            void checkConnection();
+        }, debounceDelayMs);
+    }, [checkConnection, debounceDelayMs]);
+
+    useEffect(() => {
+        void checkConnection();
+
+        const handleFocus = () => {
+            debouncedCheckConnection();
+        };
+
+        const handleVisibilityChange = () => {
+            if (document.visibilityState === 'visible') {
+                debouncedCheckConnection();
+            }
+        };
+
+        window.addEventListener('focus', handleFocus);
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+
+        return () => {
+            if (debounceTimerRef.current) {
+                clearTimeout(debounceTimerRef.current);
+            }
+            window.removeEventListener('focus', handleFocus);
+            document.removeEventListener('visibilitychange', handleVisibilityChange);
+        };
+    }, [checkConnection, debouncedCheckConnection]);
 
     function handleSubmit(e: React.FormEvent) {
         e.preventDefault();
@@ -66,6 +119,32 @@ export function StellarConfigPanel({
 
     return (
         <form onSubmit={handleSubmit} className="flex flex-col gap-8" noValidate>
+            {/* Wallet connection card */}
+            <ConfigSection title="Wallet Connection">
+                <div
+                    data-testid="stellar-connection-card"
+                    className="flex items-center justify-between p-4 rounded-lg border border-outline-variant/20 bg-surface-container-low"
+                >
+                    <div className="flex flex-col gap-1">
+                        <span className="text-sm font-medium text-on-surface">Stellar Wallet Status</span>
+                        <span className="text-xs text-on-surface-variant">
+                            Monitors active Stellar wallet connection and reflects changes automatically.
+                        </span>
+                    </div>
+                    <span
+                        role="status"
+                        data-testid="stellar-connection-badge"
+                        data-status={isConnected ? 'connected' : 'disconnected'}
+                        className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${
+                            isConnected
+                                ? 'bg-success/10 text-success border border-success/20'
+                                : 'bg-outline-variant/20 text-on-surface-variant'
+                        }`}
+                    >
+                        {isConnected ? 'connected' : 'disconnected'}
+                    </span>
+                </div>
+            </ConfigSection>
             {/* Network */}
             <ConfigSection title="Network">
                 <div className="flex flex-col gap-1.5">

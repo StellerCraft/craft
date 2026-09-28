@@ -17,9 +17,33 @@
  *    prepared, unsigned transaction that extends their TTL.
  * 4. Sign and submit the prepared transaction via `sendSorobanTransaction`.
  *
+ * ## Ledger Sequence Renewal Timing Contract & Worked Example
+ * Decisions to queue or trigger renewal are strictly driven by the ledger sequence delta
+ * (`remainingLedgers = liveUntilLedger - currentLedger`), independent of wall-clock time
+ * (though wall-clock intervals govern polling frequency):
+ * - **Queueing Eligibility**: An entry is placed in the renewal queue when
+ *   `remainingLedgers <= RENEWAL_QUEUE_THRESHOLD` (1 000 ledgers).
+ * - **Renewal Execution Trigger**: Renewal transaction generation fires if any entry in the
+ *   monitored set has `isExpired` true or `remainingLedgers <= RENEWAL_TRIGGER_LEDGERS` (500 ledgers).
+ * - **Worked Numeric Example**:
+ *   - Suppose an entry has expiration sequence `liveUntilLedger = N + 1 000`.
+ *   - At ledger `currentLedger = N`, `remainingLedgers = 1 000 <= RENEWAL_QUEUE_THRESHOLD (1 000)`.
+ *     The entry enters the candidate queue, but batch renewal does not execute yet.
+ *   - As ledgers advance to `currentLedger = N + 500`, `remainingLedgers = 500 <= RENEWAL_TRIGGER_LEDGERS (500)`.
+ *     At this sequence, renewal executes for all currently queued entries.
+ *   - When renewed with target `extendToLedgers = 172 800`, the new expiration becomes
+ *     `(currentLedger + extendToLedgers) = N + 500 + 172 800 = N + 173 300`.
+ *
  * ## High-level helper
  * `checkContractTtl(contractId)` wraps steps 1–3 for the common case of
  * managing a contract's own instance entry.
+ *
+ * ## Timing Source & Clock-Skew Safety
+ * Every renewal-timing decision in this module is driven strictly by Stellar ledger
+ * sequence numbers (comparing `liveUntilLedgerSeq` against the network's current
+ * ledger sequence `latestLedger.sequence`), rather than local wall-clock time (`Date.now()`).
+ * This design guarantees immunity from host clock skew between the renewing process's
+ * host machine and the Stellar network's actual ledger close times.
  *
  * @see https://developers.stellar.org/docs/smart-contracts/storage-and-ttl
  */
@@ -369,7 +393,24 @@ export class AutomaticTTLRenewer {
         return this;
     }
 
-    /** Run one poll cycle (exposed for testing). */
+    /**
+     * Run one poll cycle (exposed for testing).
+     *
+     * @remarks
+     * **Renewal Timing Contract**:
+     * 1. **Ledger Sequence Delta**: Evaluation relies entirely on `remainingLedgers = liveUntilLedger - currentLedger`
+     *    returned from `getLedgerEntryTtl`, avoiding dependency on system wall clock for expiration timing.
+     * 2. **Queueing Stage**: Entries with `remainingLedgers <= RENEWAL_QUEUE_THRESHOLD` (default 1 000) are placed
+     *    in the candidate queue.
+     * 3. **Batch Trigger Condition**: The candidate queue is dispatched for renewal if and only if at least one monitored
+     *    entry is expired (`isExpired === true`) or has `remainingLedgers <= RENEWAL_TRIGGER_LEDGERS` (default 500).
+     * 4. **Worked Numeric Example**:
+     *    Given entry key `K` expiring at ledger `liveUntilLedger = N + 1 000`:
+     *    - At `currentLedger = N`, `remainingLedgers = 1 000 <= RENEWAL_QUEUE_THRESHOLD`. Key `K` enters the queue.
+     *      However, since `1 000 > RENEWAL_TRIGGER_LEDGERS (500)` and `!isExpired`, batch renewal does NOT fire yet.
+     *    - At `currentLedger = N + 500`, `remainingLedgers = 500 <= RENEWAL_TRIGGER_LEDGERS (500)`.
+     *      This fulfills `shouldRenewNow`, triggering `buildTtlExtensionTransaction` for all queued keys.
+     */
     async _tick(): Promise<void> {
         if (this.keys.length === 0) return;
 
