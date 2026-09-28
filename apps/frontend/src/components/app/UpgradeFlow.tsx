@@ -7,8 +7,9 @@
  * Displays the target tier, monthly price, proration note, and a confirm CTA.
  *
  * @param currentTier  - The user's active subscription tier
- * @param targetTier   - The tier the user wants to upgrade to
- * @param onConfirm    - Called when the user clicks "Confirm upgrade"
+ * @param targetTier   - The tier the user wants to move to (higher or lower)
+ * @param onConfirm    - Called when the user clicks the confirm CTA
+ *                       ("Confirm upgrade" / "Confirm downgrade"
  * @param loading      - Whether the checkout redirect is in progress
  * @param error        - Error message to display, if any
  */
@@ -25,6 +26,10 @@ function isUpgrade(current: SubscriptionTier, target: SubscriptionTier): boolean
   return TIER_ORDER.indexOf(target) > TIER_ORDER.indexOf(current);
 }
 
+function isDowngrade(current: SubscriptionTier, target: SubscriptionTier): boolean {
+  return TIER_ORDER.indexOf(target) < TIER_ORDER.indexOf(current);
+}
+
 interface UpgradeFlowProps {
   currentTier: SubscriptionTier;
   targetTier: SubscriptionTier;
@@ -37,11 +42,14 @@ export function UpgradeFlow({ currentTier, targetTier, onConfirm, loading, error
   const currentConfig = TIER_CONFIGS[currentTier];
   const targetConfig = TIER_CONFIGS[targetTier];
   const upgrade = isUpgrade(currentTier, targetTier);
+  const downgrade = isDowngrade(currentTier, targetTier);
+  const actionLabel = upgrade ? 'upgrade' : downgrade ? 'downgrade' : 'change';
+  const headingVerb = upgrade ? 'Upgrade' : downgrade ? 'Downgrade' : 'Change';
   const priceDisplay = `${formatTierPrice(targetConfig.monthlyPriceCents)}/month`;
 
   return (
     <section
-      aria-label="Upgrade confirmation"
+      aria-label={`${headingVerb} confirmation`}
       className="max-w-2xl mx-auto px-6 py-10"
     >
       {/* Header */}
@@ -54,7 +62,7 @@ export function UpgradeFlow({ currentTier, targetTier, onConfirm, loading, error
           ← Back to plans
         </Link>
         <h1 className="mt-4 text-2xl font-bold font-headline text-on-surface">
-          {upgrade ? 'Upgrade' : 'Change'} to {targetConfig.displayName}
+          {headingVerb} to {targetConfig.displayName}
         </h1>
         <p className="mt-1 text-sm text-on-surface-variant">
           Switching from{' '}
@@ -80,6 +88,17 @@ export function UpgradeFlow({ currentTier, targetTier, onConfirm, loading, error
           >
             You will be charged a prorated amount for the remainder of the current billing cycle,
             then <strong>{priceDisplay}</strong> on each subsequent renewal date.
+          </p>
+        )}
+
+        {downgrade && (
+          <p
+            data-testid="proration-note"
+            className="text-xs text-on-surface-variant bg-surface-container-low rounded-lg px-4 py-3"
+          >
+            You will keep your {currentConfig.displayName} features until the end of the current
+            billing cycle. Any unused time is applied as a credit, and you will be billed{' '}
+            <strong>{priceDisplay}</strong> from your next renewal date.
           </p>
         )}
       </div>
@@ -139,7 +158,7 @@ export function UpgradeFlow({ currentTier, targetTier, onConfirm, loading, error
           disabled={loading}
           className="flex-1 rounded-lg bg-surface-tint px-5 py-3 text-sm font-semibold text-on-primary hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-surface-tint focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200"
         >
-          {loading ? 'Redirecting…' : `Confirm ${upgrade ? 'upgrade' : 'change'}`}
+          {loading ? 'Redirecting…' : `Confirm ${actionLabel}`}
         </button>
         <Link
           href="/app/subscription"

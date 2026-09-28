@@ -12,18 +12,20 @@
  *   - Support replay of failed or missed deliveries
  *   - Query deliveries for monitoring and troubleshooting
  *
- * Database schema: supabase/migrations/013_github_webhook_delivery_tracking.sql
+ * Database schema: supabase/migrations/020_github_webhook_delivery_tracking.sql
  */
 
 import { createClient } from '@/lib/supabase/server';
 import { createLogger } from '@/lib/api/logger';
 import { randomUUID } from 'node:crypto';
+import { readRetentionDays } from '@/lib/retention-policy';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface WebhookDelivery {
     id: string;
     deliveryId: string;
+    installationId: number;
     eventType: string;
     payload: Record<string, unknown>;
     headers: Record<string, string>;
@@ -37,6 +39,7 @@ export interface WebhookDelivery {
 
 export interface RecordDeliveryRequest {
     deliveryId: string;
+    installationId: number;
     eventType: string;
     payload: Record<string, unknown>;
     headers: Record<string, string>;
@@ -84,6 +87,23 @@ export interface ReplayDeliveryResult {
 
 export type WebhookDeliveryProcessor = (delivery: WebhookDelivery) => Promise<void>;
 
+export interface PruneOldDeliveriesOptions {
+    /** Days to retain processed deliveries. Default: WEBHOOK_DELIVERY_RETENTION_DAYS env var, else 90. */
+    retentionDays?: number;
+    /** Rows to delete per pruning run. Default: 500. */
+    batchLimit?: number;
+    /** Injectable clock for testing. Default: () => new Date() */
+    now?: () => Date;
+}
+
+export interface PruneOldDeliveriesResult {
+    success: boolean;
+    pruned: number;
+    error?: string;
+}
+
+const PRUNE_BATCH_LIMIT = 500;
+
 // ── Service ───────────────────────────────────────────────────────────────────
 
 export class WebhookDeliveryService {
@@ -123,6 +143,7 @@ export class WebhookDeliveryService {
             // Use the database function for atomic insert with conflict handling
             const { data, error } = await supabase.rpc('record_webhook_delivery', {
                 p_delivery_id: request.deliveryId,
+                p_installation_id: request.installationId,
                 p_event_type: request.eventType,
                 p_payload: request.payload as any,
                 p_headers: request.headers as any,
@@ -289,9 +310,10 @@ export class WebhookDeliveryService {
      * new delivery ID will be processed once.
      *
      * @param originalDeliveryId - Original delivery ID to replay
+     * @param installationId - GitHub App installation ID for scoping
      * @returns Result with new delivery ID for the replayed event
      */
-    async replayDelivery(originalDeliveryId: string): Promise<ReplayDeliveryResult> {
+    async replayDelivery(originalDeliveryId: string, installationId: number): Promise<ReplayDeliveryResult> {
         try {
             const supabase = createClient();
 
@@ -300,6 +322,7 @@ export class WebhookDeliveryService {
                 .from('github_webhook_deliveries')
                 .select('*')
                 .eq('delivery_id', originalDeliveryId)
+                .eq('installation_id', installationId)
                 .single();
 
             if (fetchError || !original) {
@@ -366,12 +389,13 @@ export class WebhookDeliveryService {
     }
 
     /**
-     * Gets a delivery by its delivery ID.
+     * Gets a delivery by its delivery ID, scoped to the installation.
      *
      * @param deliveryId - GitHub delivery ID
+     * @param installationId - GitHub App installation ID for scoping
      * @returns Delivery record or null if not found
      */
-    async getDelivery(deliveryId: string): Promise<WebhookDelivery | null> {
+    async getDelivery(deliveryId: string, installationId: number): Promise<WebhookDelivery | null> {
         try {
             const supabase = createClient();
 
@@ -379,6 +403,7 @@ export class WebhookDeliveryService {
                 .from('github_webhook_deliveries')
                 .select('*')
                 .eq('delivery_id', deliveryId)
+                .eq('installation_id', installationId)
                 .single();
 
             if (error || !data) {
@@ -393,18 +418,20 @@ export class WebhookDeliveryService {
     }
 
     /**
-     * Gets recent deliveries for monitoring.
+     * Gets recent deliveries for monitoring, scoped to the installation.
      *
+     * @param installationId - GitHub App installation ID for scoping
      * @param limit - Maximum number of deliveries to return
      * @returns Array of delivery records
      */
-    async getRecentDeliveries(limit: number = 50): Promise<WebhookDelivery[]> {
+    async getRecentDeliveries(installationId: number, limit: number = 50): Promise<WebhookDelivery[]> {
         try {
             const supabase = createClient();
 
             const { data, error } = await supabase
                 .from('github_webhook_deliveries')
                 .select('*')
+                .eq('installation_id', installationId)
                 .order('created_at', { ascending: false })
                 .limit(limit);
 
@@ -419,12 +446,74 @@ export class WebhookDeliveryService {
         }
     }
 
+    /**
+     * Prunes successfully-processed deliveries past the retention window.
+     *
+     * Only rows with status = 'processed' are eligible: 'failed' and 'received'
+     * deliveries remain queryable via getDeliveriesForReplay() and must never be
+     * pruned while they're still eligible for replay. Deletes in a single bounded
+     * batch per call so repeated cron runs drain a large backlog gradually,
+     * matching the pattern used by CleanupService.purgeOrphanedArtifacts.
+     *
+     * @param options - Optional retention window, batch size, and clock overrides
+     * @returns Result with the count of rows pruned
+     */
+    async pruneOldDeliveries(options: PruneOldDeliveriesOptions = {}): Promise<PruneOldDeliveriesResult> {
+        const retentionDays = options.retentionDays ?? readRetentionDays('webhookDeliveryPrune');
+        const batchLimit = options.batchLimit ?? PRUNE_BATCH_LIMIT;
+        const now = options.now ? options.now() : new Date();
+
+        if (retentionDays <= 0) {
+            return { success: true, pruned: 0 };
+        }
+
+        const cutoffIso = new Date(now.getTime() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
+
+        try {
+            const supabase = createClient();
+
+            const { data: candidates, error: selectError } = await supabase
+                .from('github_webhook_deliveries')
+                .select('id')
+                .eq('status', 'processed')
+                .lt('processed_at', cutoffIso)
+                .limit(batchLimit);
+
+            if (selectError) {
+                this.log.error('Failed to select deliveries for pruning', selectError);
+                return { success: false, pruned: 0, error: selectError.message };
+            }
+
+            const ids = (candidates ?? []).map((row: { id: string }) => row.id);
+            if (ids.length === 0) {
+                return { success: true, pruned: 0 };
+            }
+
+            const { error: deleteError } = await supabase
+                .from('github_webhook_deliveries')
+                .delete()
+                .in('id', ids);
+
+            if (deleteError) {
+                this.log.error('Failed to prune webhook deliveries', deleteError);
+                return { success: false, pruned: 0, error: deleteError.message };
+            }
+
+            this.log.info('Pruned processed webhook deliveries', { count: ids.length, retentionDays });
+            return { success: true, pruned: ids.length };
+        } catch (error: any) {
+            this.log.error('Unexpected error pruning webhook deliveries', error);
+            return { success: false, pruned: 0, error: error.message || 'Unknown error' };
+        }
+    }
+
     // ── Private helpers ───────────────────────────────────────────────────────
 
     private mapToWebhookDelivery(data: any): WebhookDelivery {
         return {
             id: data.id,
             deliveryId: data.delivery_id,
+            installationId: data.installation_id,
             eventType: data.event_type,
             payload: data.payload,
             headers: data.headers,

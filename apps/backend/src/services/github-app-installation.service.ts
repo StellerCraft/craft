@@ -14,7 +14,7 @@
  * via a non-atomic read-modify-write, so handleInstallationRepositoriesAdded
  * and handleInstallationRepositoriesRemoved use optimistic concurrency
  * control keyed on the row's `updated_at` (maintained by a DB trigger,
- * see supabase/migrations/010_github_app_installations.sql): the update is
+ * see supabase/migrations/013_github_app_installations.sql): the update is
  * conditioned on `updated_at` still matching the value read, and a losing
  * writer retries against the freshly-read state instead of clobbering the
  * other handler's change.

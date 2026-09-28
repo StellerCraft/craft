@@ -7,7 +7,7 @@
  * Run: vitest run src/services/webhook-delivery.service.test.ts
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { WebhookDeliveryService } from './webhook-delivery.service';
 
 // ── Mock Supabase ─────────────────────────────────────────────────────────────
@@ -79,12 +79,13 @@ beforeEach(() => {
 
 describe('WebhookDeliveryService', () => {
     describe('recordDelivery', () => {
-        it('records a new delivery successfully', async () => {
+        it('records a new delivery successfully with installation scoping', async () => {
             const service = new WebhookDeliveryService();
 
             const mockDelivery = {
                 id: 'uuid-1',
                 delivery_id: 'del-123',
+                installation_id: 12345,
                 event_type: 'push',
                 payload: { ref: 'refs/heads/main' },
                 headers: { 'x-github-event': 'push' },
@@ -97,6 +98,7 @@ describe('WebhookDeliveryService', () => {
 
             const result = await service.recordDelivery({
                 deliveryId: 'del-123',
+                installationId: 12345,
                 eventType: 'push',
                 payload: { ref: 'refs/heads/main' },
                 headers: { 'x-github-event': 'push' },
@@ -105,9 +107,11 @@ describe('WebhookDeliveryService', () => {
             expect(result.success).toBe(true);
             expect(result.delivery).toBeDefined();
             expect(result.delivery?.deliveryId).toBe('del-123');
+            expect(result.delivery?.installationId).toBe(12345);
             expect(result.delivery?.eventType).toBe('push');
             expect(mockRpc).toHaveBeenCalledWith('record_webhook_delivery', {
                 p_delivery_id: 'del-123',
+                p_installation_id: 12345,
                 p_event_type: 'push',
                 p_payload: { ref: 'refs/heads/main' },
                 p_headers: { 'x-github-event': 'push' },
@@ -327,12 +331,13 @@ describe('WebhookDeliveryService', () => {
     });
 
     describe('replayDelivery', () => {
-        it('creates a new delivery for replay', async () => {
+        it('creates a new delivery for replay scoped to installation', async () => {
             const service = new WebhookDeliveryService();
 
             const originalDelivery = {
                 id: 'uuid-1',
                 delivery_id: 'del-original',
+                installation_id: 12345,
                 event_type: 'push',
                 payload: { ref: 'refs/heads/main' },
                 headers: { 'x-github-event': 'push' },
@@ -342,6 +347,7 @@ describe('WebhookDeliveryService', () => {
             const replayedDelivery = {
                 id: 'uuid-2',
                 delivery_id: 'replay-123-abc',
+                installation_id: 12345,
                 event_type: 'push',
                 payload: { ref: 'refs/heads/main' },
                 headers: { 'x-github-event': 'push' },
@@ -373,7 +379,7 @@ describe('WebhookDeliveryService', () => {
                 }),
             });
 
-            const result = await service.replayDelivery('del-original');
+            const result = await service.replayDelivery('del-original', 12345);
 
             expect(result.success).toBe(true);
             expect(result.newDeliveryId).toMatch(/^replay-/);
@@ -385,6 +391,7 @@ describe('WebhookDeliveryService', () => {
             const originalDelivery = {
                 id: 'uuid-1',
                 delivery_id: 'del-original',
+                installation_id: 12345,
                 event_type: 'push',
                 payload: {},
                 headers: {},
@@ -394,6 +401,7 @@ describe('WebhookDeliveryService', () => {
             const replayedDelivery = {
                 id: 'uuid-2',
                 delivery_id: 'replay-placeholder',
+                installation_id: 12345,
                 event_type: 'push',
                 payload: {},
                 headers: {},
@@ -425,7 +433,7 @@ describe('WebhookDeliveryService', () => {
             });
 
             const before = Date.now();
-            const result = await service.replayDelivery('del-original');
+            const result = await service.replayDelivery('del-original', 12345);
             const after = Date.now();
 
             expect(result.success).toBe(true);
@@ -455,7 +463,27 @@ describe('WebhookDeliveryService', () => {
                 }),
             });
 
-            const result = await service.replayDelivery('del-nonexistent');
+            const result = await service.replayDelivery('del-nonexistent', 12345);
+
+            expect(result.success).toBe(false);
+            expect(result.error).toBe('Original delivery not found');
+        });
+
+        it('does not replay delivery from different installation', async () => {
+            const service = new WebhookDeliveryService();
+
+            mockFrom.mockReturnValueOnce({
+                select: vi.fn().mockReturnValue({
+                    eq: vi.fn().mockReturnValue({
+                        single: vi.fn().mockResolvedValue({
+                            data: null,
+                            error: { message: 'Not found' },
+                        }),
+                    }),
+                }),
+            });
+
+            const result = await service.replayDelivery('del-123', 99999);
 
             expect(result.success).toBe(false);
             expect(result.error).toBe('Original delivery not found');
@@ -467,6 +495,7 @@ describe('WebhookDeliveryService', () => {
             const originalDelivery = {
                 id: 'uuid-1',
                 delivery_id: 'del-original',
+                installation_id: 12345,
                 event_type: 'push',
                 payload: {},
                 headers: {},
@@ -495,7 +524,7 @@ describe('WebhookDeliveryService', () => {
                 }),
             });
 
-            const result = await service.replayDelivery('del-original');
+            const result = await service.replayDelivery('del-original', 12345);
 
             expect(result.success).toBe(false);
             expect(result.error).toBe('Insert failed');
@@ -503,12 +532,13 @@ describe('WebhookDeliveryService', () => {
     });
 
     describe('getDelivery', () => {
-        it('retrieves a delivery by delivery ID', async () => {
+        it('retrieves a delivery by delivery ID scoped to installation', async () => {
             const service = new WebhookDeliveryService();
 
             const mockDelivery = {
                 id: 'uuid-1',
                 delivery_id: 'del-123',
+                installation_id: 12345,
                 event_type: 'push',
                 payload: {},
                 headers: {},
@@ -519,11 +549,13 @@ describe('WebhookDeliveryService', () => {
 
             mockSingle.mockResolvedValue({ data: mockDelivery, error: null });
 
-            const result = await service.getDelivery('del-123');
+            const result = await service.getDelivery('del-123', 12345);
 
             expect(result).toBeDefined();
             expect(result?.deliveryId).toBe('del-123');
+            expect(result?.installationId).toBe(12345);
             expect(result?.status).toBe('processed');
+            expect(mockEq).toHaveBeenCalledWith('installation_id', 12345);
         });
 
         it('returns null when delivery not found', async () => {
@@ -531,20 +563,191 @@ describe('WebhookDeliveryService', () => {
 
             mockSingle.mockResolvedValue({ data: null, error: { message: 'Not found' } });
 
-            const result = await service.getDelivery('del-nonexistent');
+            const result = await service.getDelivery('del-nonexistent', 12345);
 
             expect(result).toBeNull();
+        });
+
+        it('does not return a delivery belonging to a different installation', async () => {
+            const service = new WebhookDeliveryService();
+
+            mockSingle.mockResolvedValue({ data: null, error: { message: 'Not found' } });
+
+            const result = await service.getDelivery('del-123', 99999);
+
+            expect(result).toBeNull();
+            expect(mockEq).toHaveBeenCalledWith('installation_id', 99999);
+        });
+    });
+
+    describe('pruneOldDeliveries', () => {
+        const fixedNow = () => new Date('2024-06-01T00:00:00.000Z');
+
+        afterEach(() => {
+            delete process.env.WEBHOOK_DELIVERY_RETENTION_DAYS;
+        });
+
+        it('prunes processed deliveries past the retention window', async () => {
+            const service = new WebhookDeliveryService();
+
+            const selectChain = {
+                select: vi.fn().mockReturnValue({
+                    eq: vi.fn().mockReturnValue({
+                        lt: vi.fn().mockReturnValue({
+                            limit: vi.fn().mockResolvedValue({
+                                data: [{ id: 'row-1' }, { id: 'row-2' }],
+                                error: null,
+                            }),
+                        }),
+                    }),
+                }),
+            };
+            const deleteChain = {
+                delete: vi.fn().mockReturnValue({
+                    in: vi.fn().mockResolvedValue({ error: null }),
+                }),
+            };
+            mockFrom.mockReturnValueOnce(selectChain).mockReturnValueOnce(deleteChain);
+
+            const result = await service.pruneOldDeliveries({ retentionDays: 90, now: fixedNow });
+
+            expect(result).toEqual({ success: true, pruned: 2 });
+            expect(deleteChain.delete).toHaveBeenCalled();
+        });
+
+        it('only selects deliveries with status=processed, preserving in-window/replayable rows', async () => {
+            const service = new WebhookDeliveryService();
+
+            const eqMock = vi.fn().mockReturnValue({
+                lt: vi.fn().mockReturnValue({
+                    limit: vi.fn().mockResolvedValue({ data: [], error: null }),
+                }),
+            });
+            mockFrom.mockReturnValueOnce({ select: vi.fn().mockReturnValue({ eq: eqMock }) });
+
+            const result = await service.pruneOldDeliveries({ retentionDays: 90, now: fixedNow });
+
+            expect(eqMock).toHaveBeenCalledWith('status', 'processed');
+            expect(result).toEqual({ success: true, pruned: 0 });
+        });
+
+        it('computes the cutoff at exactly the retention boundary', async () => {
+            const service = new WebhookDeliveryService();
+
+            const ltMock = vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue({ data: [], error: null }),
+            });
+            mockFrom.mockReturnValueOnce({
+                select: vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ lt: ltMock }) }),
+            });
+
+            await service.pruneOldDeliveries({ retentionDays: 30, now: fixedNow });
+
+            expect(ltMock).toHaveBeenCalledWith('processed_at', '2024-05-02T00:00:00.000Z');
+        });
+
+        it('returns pruned: 0 and skips the delete call when nothing is past retention', async () => {
+            const service = new WebhookDeliveryService();
+
+            mockFrom.mockReturnValueOnce({
+                select: vi.fn().mockReturnValue({
+                    eq: vi.fn().mockReturnValue({
+                        lt: vi.fn().mockReturnValue({
+                            limit: vi.fn().mockResolvedValue({ data: [], error: null }),
+                        }),
+                    }),
+                }),
+            });
+
+            const result = await service.pruneOldDeliveries({ retentionDays: 90, now: fixedNow });
+
+            expect(result).toEqual({ success: true, pruned: 0 });
+            expect(mockFrom).toHaveBeenCalledTimes(1); // no second (delete) call
+        });
+
+        it('returns an error result when the select fails', async () => {
+            const service = new WebhookDeliveryService();
+
+            mockFrom.mockReturnValueOnce({
+                select: vi.fn().mockReturnValue({
+                    eq: vi.fn().mockReturnValue({
+                        lt: vi.fn().mockReturnValue({
+                            limit: vi.fn().mockResolvedValue({
+                                data: null,
+                                error: { message: 'Database error' },
+                            }),
+                        }),
+                    }),
+                }),
+            });
+
+            const result = await service.pruneOldDeliveries({ retentionDays: 90, now: fixedNow });
+
+            expect(result).toEqual({ success: false, pruned: 0, error: 'Database error' });
+        });
+
+        it('returns an error result when the delete fails', async () => {
+            const service = new WebhookDeliveryService();
+
+            mockFrom
+                .mockReturnValueOnce({
+                    select: vi.fn().mockReturnValue({
+                        eq: vi.fn().mockReturnValue({
+                            lt: vi.fn().mockReturnValue({
+                                limit: vi.fn().mockResolvedValue({
+                                    data: [{ id: 'row-1' }],
+                                    error: null,
+                                }),
+                            }),
+                        }),
+                    }),
+                })
+                .mockReturnValueOnce({
+                    delete: vi.fn().mockReturnValue({
+                        in: vi.fn().mockResolvedValue({ error: { message: 'Delete failed' } }),
+                    }),
+                });
+
+            const result = await service.pruneOldDeliveries({ retentionDays: 90, now: fixedNow });
+
+            expect(result).toEqual({ success: false, pruned: 0, error: 'Delete failed' });
+        });
+
+        it('is a no-op when retentionDays is 0 (retention disabled)', async () => {
+            const service = new WebhookDeliveryService();
+
+            const result = await service.pruneOldDeliveries({ retentionDays: 0, now: fixedNow });
+
+            expect(result).toEqual({ success: true, pruned: 0 });
+            expect(mockFrom).not.toHaveBeenCalled();
+        });
+
+        it('falls back to WEBHOOK_DELIVERY_RETENTION_DAYS env var when retentionDays is not supplied', async () => {
+            process.env.WEBHOOK_DELIVERY_RETENTION_DAYS = '30';
+            const service = new WebhookDeliveryService();
+
+            const ltMock = vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue({ data: [], error: null }),
+            });
+            mockFrom.mockReturnValueOnce({
+                select: vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ lt: ltMock }) }),
+            });
+
+            await service.pruneOldDeliveries({ now: fixedNow });
+
+            expect(ltMock).toHaveBeenCalledWith('processed_at', '2024-05-02T00:00:00.000Z');
         });
     });
 
     describe('getRecentDeliveries', () => {
-        it('retrieves recent deliveries with default limit', async () => {
+        it('retrieves recent deliveries scoped to installation with default limit', async () => {
             const service = new WebhookDeliveryService();
 
             const mockDeliveries = [
                 {
                     id: 'uuid-1',
                     delivery_id: 'del-1',
+                    installation_id: 12345,
                     event_type: 'push',
                     payload: {},
                     headers: {},
@@ -555,6 +758,7 @@ describe('WebhookDeliveryService', () => {
                 {
                     id: 'uuid-2',
                     delivery_id: 'del-2',
+                    installation_id: 12345,
                     event_type: 'installation',
                     payload: {},
                     headers: {},
@@ -566,11 +770,13 @@ describe('WebhookDeliveryService', () => {
 
             mockLimit.mockResolvedValue({ data: mockDeliveries, error: null });
 
-            const result = await service.getRecentDeliveries();
+            const result = await service.getRecentDeliveries(12345);
 
             expect(result).toHaveLength(2);
             expect(result[0].deliveryId).toBe('del-1');
+            expect(result[0].installationId).toBe(12345);
             expect(result[1].deliveryId).toBe('del-2');
+            expect(mockEq).toHaveBeenCalledWith('installation_id', 12345);
         });
 
         it('retrieves recent deliveries with custom limit', async () => {
@@ -578,7 +784,7 @@ describe('WebhookDeliveryService', () => {
 
             mockLimit.mockResolvedValue({ data: [], error: null });
 
-            const result = await service.getRecentDeliveries(10);
+            const result = await service.getRecentDeliveries(12345, 10);
 
             expect(result).toHaveLength(0);
             expect(mockLimit).toHaveBeenCalledWith(10);
@@ -589,7 +795,7 @@ describe('WebhookDeliveryService', () => {
 
             mockLimit.mockResolvedValue({ data: null, error: { message: 'Database error' } });
 
-            const result = await service.getRecentDeliveries();
+            const result = await service.getRecentDeliveries(12345);
 
             expect(result).toHaveLength(0);
         });

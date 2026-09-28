@@ -32,15 +32,38 @@ export interface TrafficResult {
 export const ROLLBACK_ERROR_RATE_THRESHOLD = 0.05;
 export const ROLLBACK_LATENCY_THRESHOLD_MS = 2_000;
 
+export interface RolloutThresholdConfig {
+  /** Overrides ROLLBACK_ERROR_RATE_THRESHOLD for this rollout. Must be > 0. */
+  errorRateThreshold?: number;
+  /** Overrides ROLLBACK_LATENCY_THRESHOLD_MS for this rollout. Must be > 0. */
+  latencyThresholdMs?: number;
+}
+
 export class RolloutEngine {
   private _canaryPercent = 0;
   private _status: RolloutStatus = 'pending';
   private _requestCounter = 0;
+  private readonly errorRateThreshold: number;
+  private readonly latencyThresholdMs: number;
 
   constructor(
     private readonly stable: DeploymentVersion,
     private readonly candidate: DeploymentVersion,
-  ) {}
+    thresholds: RolloutThresholdConfig = {},
+  ) {
+    const errorRateThreshold = thresholds.errorRateThreshold ?? ROLLBACK_ERROR_RATE_THRESHOLD;
+    const latencyThresholdMs = thresholds.latencyThresholdMs ?? ROLLBACK_LATENCY_THRESHOLD_MS;
+
+    if (!(errorRateThreshold > 0)) {
+      throw new RangeError('errorRateThreshold must be a positive number');
+    }
+    if (!(latencyThresholdMs > 0)) {
+      throw new RangeError('latencyThresholdMs must be a positive number');
+    }
+
+    this.errorRateThreshold = errorRateThreshold;
+    this.latencyThresholdMs = latencyThresholdMs;
+  }
 
   get status(): RolloutStatus { return this._status; }
   get canaryPercent(): number { return this._canaryPercent; }
@@ -76,8 +99,8 @@ export class RolloutEngine {
    */
   evaluateAndMaybeRollback(): boolean {
     const shouldRollback =
-      this.candidate.errorRate >= ROLLBACK_ERROR_RATE_THRESHOLD ||
-      this.candidate.p99LatencyMs > ROLLBACK_LATENCY_THRESHOLD_MS;
+      this.candidate.errorRate >= this.errorRateThreshold ||
+      this.candidate.p99LatencyMs > this.latencyThresholdMs;
 
     if (shouldRollback) {
       this._canaryPercent = 0;

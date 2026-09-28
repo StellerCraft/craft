@@ -1,0 +1,31 @@
+name: Migration sequence
+
+on:
+  pull_request:
+    paths:
+      - 'supabase/migrations/**'
+      - 'supabase/config.toml'
+      - 'supabase/tests/migrations/**'
+      - '.github/workflows/migration-sequence.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  migration-sequence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+      - name: Start local Supabase
+        run: supabase start
+      - name: Apply every migration to a fresh database
+        run: supabase db reset --local
+      - name: Verify schema baseline
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes postgresql-client
+          eval "$(supabase status -o env)"
+          psql "$DB_URL" -v ON_ERROR_STOP=1 -f supabase/tests/migrations/schema-smoke.sql

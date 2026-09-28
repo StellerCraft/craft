@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { getRetentionPolicyWindows, readRetentionDays, validateRetentionWindows } from '@/lib/retention-policy';
 import { cleanupService } from '@/services/cleanup.service';
+import { createLogger, resolveCorrelationId, CORRELATION_ID_HEADER } from '@/lib/api/logger';
+import { withCronAuth } from '@/lib/api/cron-auth';
 
 /**
  * Cron: permanently purge tombstoned deployments past the retention window,
@@ -21,13 +23,13 @@ import { cleanupService } from '@/services/cleanup.service';
  * CRON_SECRET like any other call to this route. Does not affect the
  * tombstoned-deployment purge above, which always runs for real.
  *
- * Scheduled daily via vercel.json.  Protected by CRON_SECRET.
+ * Scheduled daily via vercel.json.  Protected by CRON_SECRET via withCronAuth.
  */
-export async function GET(req: NextRequest) {
-    const cronSecret = process.env.CRON_SECRET;
-    if (cronSecret && req.headers.get('authorization') !== `Bearer ${cronSecret}`) {
-        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+async function handlePurgeTombstonedDeployments(req: NextRequest) {
+
+    const correlationId = resolveCorrelationId(req);
+    const log = createLogger({ correlationId, service: 'purge-tombstoned-deployments-cron' });
+    const headers = { [CORRELATION_ID_HEADER]: correlationId };
 
     const dryRun = req.nextUrl.searchParams.get('dryRun') === 'true';
 
@@ -46,8 +48,8 @@ export async function GET(req: NextRequest) {
             .lt('deleted_at', cutoff);
 
         if (error) {
-            console.error('Tombstone purge failed:', error);
-            return NextResponse.json({ error: error.message }, { status: 500 });
+            log.error('Tombstone purge failed', error);
+            return NextResponse.json({ error: error.message }, { status: 500, headers });
         }
         purged = count ?? 0;
     }
@@ -55,17 +57,22 @@ export async function GET(req: NextRequest) {
     // Remove orphaned storage artifacts (24h retention, 100/run batch limit).
     let orphanedArtifactsPurged = 0;
     try {
-        const orphanResult = await cleanupService.purgeOrphanedArtifacts({ dryRun });
+        const orphanResult = await cleanupService.purgeOrphanedArtifacts({ dryRun, correlationId });
         orphanedArtifactsPurged = orphanResult.recordsDeleted;
     } catch (err: unknown) {
         // Orphan cleanup failure should not fail the whole cron; log and continue.
-        console.error('Orphaned artifact purge failed:', err);
+        log.error('Orphaned artifact purge failed', err);
     }
 
-    return NextResponse.json({
-        purged,
-        orphanedArtifactsPurged,
-        dryRun,
-        retentionDisabled: retentionDays === 0,
-    });
+    return NextResponse.json(
+        {
+            purged,
+            orphanedArtifactsPurged,
+            dryRun,
+            retentionDisabled: retentionDays === 0,
+        },
+        { headers },
+    );
 }
+
+export const GET = withCronAuth(handlePurgeTombstonedDeployments);

@@ -11,7 +11,8 @@
  *   - TypeScript type correctness
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, expectTypeOf, vi, beforeEach, afterEach } from 'vitest';
+import type { DeploymentStatusType as CanonicalDeploymentStatusType } from '@craft/types';
 import {
   CraftClient,
   CraftApiError,
@@ -24,7 +25,14 @@ import {
   type SubscriptionStatus,
   type DeploymentAnalytics,
   type DeploymentHealth,
+  type DeploymentStatusType,
 } from '../src/client';
+
+describe('Deployment status type parity', () => {
+  it('accepts every canonical backend deployment status', () => {
+    expectTypeOf<CanonicalDeploymentStatusType>().toMatchTypeOf<DeploymentStatusType>();
+  });
+});
 
 // ── Fetch mock helpers ────────────────────────────────────────────────────────
 
@@ -225,6 +233,33 @@ describe('Auth methods', () => {
     const err = await client.signIn({ email: 'bad@e.com', password: 'wrong' }).catch(e => e);
     expect(err).toBeInstanceOf(CraftApiError);
     expect(err.status).toBe(401);
+  });
+});
+
+describe('Rate limit retries', () => {
+  it('waits for the Retry-After duration before retrying a 429 response', async () => {
+    const client = new CraftClient({ baseUrl: BASE_URL });
+    const fetch = vi.fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 429,
+        headers: new Headers({ 'Retry-After': '5' }),
+        text: () => Promise.resolve('Rate limited'),
+        statusText: '429',
+      })
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(USER_PROFILE) });
+    vi.stubGlobal('fetch', fetch);
+    vi.useFakeTimers();
+
+    const request = client.getUser();
+    await vi.advanceTimersByTimeAsync(4999);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(request).resolves.toEqual(USER_PROFILE);
+    expect(fetch).toHaveBeenCalledTimes(2);
+
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 });
 

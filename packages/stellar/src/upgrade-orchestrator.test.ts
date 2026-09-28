@@ -3,6 +3,8 @@ import type { ContractAbiSchema } from './upgrade-orchestrator';
 
 const mocks = vi.hoisted(() => ({
   mockSimulate: vi.fn(),
+  mockSubmitTransaction: vi.fn(),
+  mockSend: vi.fn(),
   mockFromXDR: vi.fn(),
 }));
 
@@ -26,10 +28,11 @@ vi.mock('stellar-sdk', () => ({
 vi.mock('./soroban', () => ({
   createSorobanClient: vi.fn(() => ({
     simulateTransaction: mocks.mockSimulate,
+    sendTransaction: mocks.mockSend,
   })),
 }));
 
-const { diffAbiSchemas, orchestrateContractUpgrade } = await import('./upgrade-orchestrator');
+const { diffAbiSchemas, orchestrateContractUpgrade, submitUpgradeTransaction } = await import('./upgrade-orchestrator');
 
 function makeSchema(overrides?: Partial<ContractAbiSchema>): ContractAbiSchema {
   return {
@@ -351,6 +354,8 @@ describe('orchestrateContractUpgrade', () => {
       expect(result.dryRun).toBe(false);
       expect(result.diffReport.safe).toBe(true);
     }
+    expect(mocks.mockSimulate).not.toHaveBeenCalled();
+    expect(mocks.mockSubmitTransaction).not.toHaveBeenCalled();
   });
 
   it('blocks upgrade when breaking changes are detected', async () => {
@@ -417,6 +422,7 @@ describe('orchestrateContractUpgrade', () => {
       'Test SDF Network ; September 2015',
     );
     expect(mocks.mockSimulate).toHaveBeenCalledWith(mockTx);
+    expect(mocks.mockSubmitTransaction).not.toHaveBeenCalled();
   });
 
   it('handles simulation errors gracefully', async () => {
@@ -457,3 +463,37 @@ describe('orchestrateContractUpgrade', () => {
     }
   });
 });
+
+describe('submitUpgradeTransaction', () => {
+  const signedTxXdr = 'AAAAAgAAAABb8PsSeJ2XH7dDrHV6I90DH2eDBFezq92rLvdUesFGzgAAAGQADKQ7';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('throws an error and does NOT invoke sendTransaction when dryRun is true', async () => {
+    await expect(
+      submitUpgradeTransaction({
+        signedTxXdr,
+        dryRun: true,
+      }),
+    ).rejects.toThrow('Invariant violation: submitUpgradeTransaction reached while dryRun is true');
+
+    expect(mocks.mockSend).not.toHaveBeenCalled();
+    expect(mocks.mockSend).toHaveBeenCalledTimes(0);
+  });
+
+  it('submits transaction when dryRun is false or undefined', async () => {
+    const mockResponse = { status: 'PENDING', hash: 'tx-123' };
+    mocks.mockSend.mockResolvedValue(mockResponse);
+
+    const result = await submitUpgradeTransaction({
+      signedTxXdr,
+      dryRun: false,
+    });
+
+    expect(result).toBe(mockResponse);
+    expect(mocks.mockSend).toHaveBeenCalledTimes(1);
+  });
+});
+

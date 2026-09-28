@@ -51,6 +51,7 @@ describe('getSecurityHeaders', () => {
             'X-Frame-Options',
             'Referrer-Policy',
             'Permissions-Policy',
+            'Cache-Control',
         ]);
     });
 
@@ -94,5 +95,13 @@ describe('getSecurityHeaders', () => {
             .value;
 
         expect(devCsp).toBe(prodCsp);
+    });
+
+    it('includes Cache-Control: no-store for authenticated API responses', async () => {
+        const headers = await loadHeaders('production');
+        const cacheControl = headers.find((h) => h.key === 'Cache-Control');
+
+        expect(cacheControl).toBeDefined();
+        expect(cacheControl?.value).toBe('no-store');
     });
 });

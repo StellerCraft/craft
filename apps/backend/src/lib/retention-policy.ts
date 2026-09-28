@@ -14,6 +14,11 @@ export const RETENTION_POLICY = {
         envVar: 'AUDIT_LOG_COMPACTION_RETENTION_DAYS',
         label: 'audit log compaction',
     },
+    webhookDeliveryPrune: {
+        defaultDays: 90,
+        envVar: 'WEBHOOK_DELIVERY_RETENTION_DAYS',
+        label: 'webhook delivery pruning',
+    },
 } as const;
 
 export const RETENTION_WINDOW_RELATIONSHIP =

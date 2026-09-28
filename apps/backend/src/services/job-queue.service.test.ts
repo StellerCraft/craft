@@ -36,7 +36,17 @@ function makeSupabaseMock(
     const jobs: JobRecord[] = [...jobRows];
     const dlq: DLQRecord[] = [...dlqRows];
 
-    const mockRpc = vi.fn((_fn: string, { p_worker_id }: { p_worker_id: string }) => {
+    const mockRpc = vi.fn((fn: string, args: Record<string, string>) => {
+        if (fn === 'claim_dlq_reprocess_entry') {
+            const entry = dlq.find((row) => row.id === args.p_dlq_id);
+            if (!entry || entry.reprocess_status !== 'pending') {
+                return Promise.resolve({ data: [], error: null });
+            }
+            entry.reprocess_status = 'in_progress';
+            return Promise.resolve({ data: [entry], error: null });
+        }
+
+        const p_worker_id = args.p_worker_id;
         // Mimic atomic claim: find the highest-priority pending scheduled job
         const priorityOrder: Record<string, number> = { high: 1, normal: 2, low: 3 };
         const candidate = jobs
@@ -439,6 +449,31 @@ describe('DLQ reprocessing', () => {
         expect(supabase._dlq[0].reprocess_status).toBe('succeeded');
         // A new job should be in the queue
         expect(supabase._jobs.some((j: JobRecord) => j.job_type === 'deployment')).toBe(true);
+    });
+
+    it('allows only one concurrent reprocess claim for a DLQ entry', async () => {
+        const dlqEntry: DLQRecord = {
+            id: 'dlq-concurrent',
+            original_job_id: 'job-dead-concurrent',
+            job_type: 'deployment',
+            priority: 'high',
+            payload: { userId: 'u1' },
+            failure_reason: 'network error',
+            attempts: 3,
+            reprocess_status: 'pending',
+            reprocessed_at: null,
+            created_at: new Date().toISOString(),
+        };
+        const supabase = makeSupabaseMock([], [dlqEntry]);
+        vi.mocked(createClient).mockReturnValue(supabase as any);
+
+        const outcomes = await Promise.allSettled([
+            new JobQueueService(1).reprocessDLQEntry(dlqEntry.id),
+            new JobQueueService(1).reprocessDLQEntry(dlqEntry.id),
+        ]);
+
+        expect(outcomes.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(1);
+        expect(supabase._jobs.filter((job) => job.job_type === 'deployment')).toHaveLength(1);
     });
 
     it('throws when trying to reprocess an already-reprocessed entry', async () => {

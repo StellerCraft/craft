@@ -255,6 +255,21 @@ describe('checkDeploymentRateLimit', () => {
         );
         expect(supabase.upsert).not.toHaveBeenCalled();
     });
+
+    it('enforces the limit across a sliding-window boundary (no burst on reset)', async () => {
+        const oldestInWindow = new Date(NOW - 30 * 60 * 1_000).toISOString();
+        const supabase = createSupabaseMock({
+            countResult: { count: TIER_HOURLY_LIMITS.free, error: null },
+            oldestRow: { created_at: oldestInWindow },
+            escalationRow: null,
+        });
+
+        const result = await checkDeploymentRateLimit(supabase, 'user-1', 'free');
+
+        expect(result.allowed).toBe(false);
+        expect(result.limit).toBe(TIER_HOURLY_LIMITS.free);
+        expect(result.resetAt).toBe(new Date(oldestInWindow).getTime() + WINDOW_MS);
+    });
 });
 
 describe('createDeploymentStyleRateLimiter', () => {

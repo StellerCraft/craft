@@ -74,7 +74,7 @@ Or use the SQL migration directly:
 
 ```bash
 # For each region's Supabase project:
-psql -h your-region.db.supabase.co -U postgres -d postgres < supabase/migrations/010_auth_audit_logs_cross_region.sql
+psql -h your-region.db.supabase.co -U postgres -d postgres < supabase/migrations/011_auth_audit_logs_cross_region.sql
 ```
 
 ### Step 3: Deploy Edge Functions

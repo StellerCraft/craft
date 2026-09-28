@@ -8,6 +8,8 @@
  *   - Build performance (config parsing budget)
  *   - Error handling (missing / malformed configs)
  *   - Build caching artefacts (tsconfig incremental, turbo inputs)
+ *   - Negative case: a genuinely broken generated .ts/.tsx file fails the
+ *     build gate loudly with an actionable, file-referencing error
  *
  * All checks are static — no actual `next build` is executed.
  */
@@ -15,6 +17,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync, existsSync } from 'fs';
 import { resolve } from 'path';
+import * as ts from 'typescript';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -237,4 +240,132 @@ describe('Build process — caching', () => {
     expect(buildTask?.outputs, 'turbo.json build task should declare outputs').toBeDefined();
     expect(Array.isArray(buildTask?.outputs)).toBe(true);
   });
+});
+
+// ── Negative case: broken generated file (#1339) ──────────────────────────────
+//
+// A generated file that is syntactically invalid must fail the build loudly,
+// with an error that names the broken file and position — never an opaque
+// bundler stack trace, and never a "successful" build with a broken artefact.
+//
+// `runBuildGate` models the pre-`next build` syntax gate: it parses every
+// generated .ts AND .tsx file (the backend SyntaxValidator historically only
+// checked .ts, letting broken .tsx through — see the companion .tsx
+// syntax-validation gap fix). These fixtures would have caught that gap here.
+
+interface GeneratedSource {
+  path: string;
+  content: string;
+}
+
+interface BuildGateError {
+  file: string;
+  line: number;
+  column: number;
+  message: string;
+}
+
+interface BuildGateResult {
+  exitCode: 0 | 1;
+  errors: BuildGateError[];
+  output: string;
+}
+
+function runBuildGate(template: TemplateName, files: GeneratedSource[]): BuildGateResult {
+  const errors: BuildGateError[] = [];
+
+  for (const file of files) {
+    if (!/\.tsx?$/.test(file.path)) continue;
+    const { diagnostics = [] } = ts.transpileModule(file.content, {
+      fileName: file.path,
+      reportDiagnostics: true,
+      compilerOptions: { jsx: ts.JsxEmit.Preserve, target: ts.ScriptTarget.ES2020 },
+    });
+    for (const diag of diagnostics) {
+      const { line, character } =
+        diag.file && diag.start !== undefined
+          ? diag.file.getLineAndCharacterOfPosition(diag.start)
+          : { line: 0, character: 0 };
+      errors.push({
+        file: `${template}/${file.path}`,
+        line: line + 1,
+        column: character + 1,
+        message: ts.flattenDiagnosticMessageText(diag.messageText, '\n'),
+      });
+    }
+  }
+
+  const output = errors.length
+    ? [
+        `Build failed: ${errors.length} syntax error(s) in generated files.`,
+        ...errors.map((e) => `  ${e.file}:${e.line}:${e.column} - ${e.message}`),
+      ].join('\n')
+    : 'Build gate passed.';
+
+  return { exitCode: errors.length ? 1 : 0, errors, output };
+}
+
+const VALID_PAGE_TSX = (template: TemplateName) => `export default function Page() {
+  return (
+    <main>
+      <h1>${template}</h1>
+    </main>
+  );
+}
+`;
+
+/** Unclosed JSX element — the .tsx failure SyntaxValidator used to skip. */
+const BROKEN_PAGE_TSX = (template: TemplateName) => `export default function Page() {
+  return (
+    <main>
+      <h1>${template}</h1>
+    </main
+  );
+}
+`;
+
+/** Dangling assignment in a generated config module. */
+const BROKEN_CONFIG_TS = `export const stellarConfig = {
+  network: 'testnet',
+  horizonUrl: ,
+};
+`;
+
+describe('Build process — negative case: broken generated file', () => {
+  for (const name of TEMPLATE_NAMES) {
+    it(`${name}: valid generated .tsx passes the build gate (control)`, () => {
+      const result = runBuildGate(name, [{ path: 'src/app/page.tsx', content: VALID_PAGE_TSX(name) }]);
+      expect(result.exitCode, result.output).toBe(0);
+      expect(result.errors).toEqual([]);
+    });
+
+    it(`${name}: malformed generated .tsx fails the build with a non-zero exit`, () => {
+      const result = runBuildGate(name, [
+        { path: 'src/app/layout.tsx', content: VALID_PAGE_TSX(name) },
+        { path: 'src/app/page.tsx', content: BROKEN_PAGE_TSX(name) },
+      ]);
+      expect(result.exitCode).toBe(1);
+      expect(result.errors.length).toBeGreaterThan(0);
+      // Only the broken file is reported
+      expect(new Set(result.errors.map((e) => e.file))).toEqual(new Set([`${name}/src/app/page.tsx`]));
+    });
+
+    it(`${name}: malformed generated .ts fails the build with a non-zero exit`, () => {
+      const result = runBuildGate(name, [{ path: 'src/lib/stellar-config.ts', content: BROKEN_CONFIG_TS }]);
+      expect(result.exitCode).toBe(1);
+      expect(result.errors[0].file).toBe(`${name}/src/lib/stellar-config.ts`);
+      expect(result.errors[0].line).toBe(3);
+    });
+
+    it(`${name}: build failure output is actionable, not an opaque bundler trace`, () => {
+      const result = runBuildGate(name, [{ path: 'src/app/page.tsx', content: BROKEN_PAGE_TSX(name) }]);
+      // Names the broken file with a line:column position
+      expect(result.output).toMatch(new RegExp(`${name}/src/app/page\\.tsx:\\d+:\\d+ - \\S`));
+      // Points at the unclosed </main (line 5 onward), not line 1 of a bundle
+      expect(result.errors[0].line).toBeGreaterThanOrEqual(5);
+      // No stack frames or bundler internals
+      expect(result.output).not.toMatch(/^\s+at\s/m);
+      expect(result.output).not.toMatch(/webpack|node_modules/i);
+    });
+  }
 });

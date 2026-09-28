@@ -32,6 +32,10 @@ function createMockForm(overrides: Partial<StellarConfigFormReturn> = {}): Stell
         state: INITIAL_STATE,
         errors: new Map(),
         isDirty: false,
+        connectivity: {
+            horizon: { status: 'idle', result: null },
+            sorobanRpc: { status: 'idle', result: null },
+        },
         connectivityStatus: 'idle',
         connectivityResult: null,
         sorobanConnectivityStatus: 'idle',
@@ -421,6 +425,33 @@ describe('useStellarConfigForm', () => {
     it('resets soroban connectivity status when sorobanRpcUrl changes', () => {
         const { result } = renderHook(() => useStellarConfigForm(INITIAL_STATE));
         act(() => result.current.setStellar('sorobanRpcUrl', 'https://new.soroban.example.com'));
+        expect(result.current.sorobanConnectivityStatus).toBe('idle');
+        expect(result.current.sorobanConnectivityResult).toBeNull();
+    });
+
+    it('tracks Horizon and Soroban RPC connectivity state independently without bleed', async () => {
+        const { result } = renderHook(() => useStellarConfigForm(INITIAL_STATE));
+
+        expect(result.current.connectivity.horizon.status).toBe('idle');
+        expect(result.current.connectivity.sorobanRpc.status).toBe('idle');
+
+        // Trigger check on horizon endpoint
+        let checkPromise: Promise<void>;
+        act(() => {
+            checkPromise = result.current.checkHorizonConnectivity();
+        });
+
+        // Horizon is checking; Soroban RPC remains untouched at idle
+        expect(result.current.connectivity.horizon.status).toBe('checking');
+        expect(result.current.connectivity.sorobanRpc.status).toBe('idle');
+        expect(result.current.sorobanConnectivityStatus).toBe('idle');
+
+        await act(async () => {
+            await checkPromise;
+        });
+
+        // Soroban RPC is still idle after Horizon check finishes
+        expect(result.current.connectivity.sorobanRpc.status).toBe('idle');
         expect(result.current.sorobanConnectivityStatus).toBe('idle');
         expect(result.current.sorobanConnectivityResult).toBeNull();
     });

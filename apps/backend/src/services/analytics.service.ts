@@ -1,5 +1,7 @@
 import { createClient } from '@/lib/supabase/server';
 
+const MAX_EXPORT_ROWS = 100_000;
+
 // ── In-memory summary cache (60-second TTL) ───────────────────────────────────
 type CachedSummary = {
     value: Awaited<ReturnType<AnalyticsService['getAnalyticsSummary']>>;
@@ -137,6 +139,18 @@ export class AnalyticsService {
 
     async exportAnalytics(deploymentId: string, startDate?: Date, endDate?: Date): Promise<string> {
         const analytics = await this.getAnalytics(deploymentId, undefined, startDate, endDate);
+
+        if (analytics.length > MAX_EXPORT_ROWS) {
+            const daysRequested = endDate && startDate
+                ? Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24))
+                : 'unknown';
+            const estimatedDaysForLimit = daysRequested !== 'unknown'
+                ? Math.max(1, Math.floor((daysRequested * MAX_EXPORT_ROWS) / analytics.length))
+                : 15;
+            throw new Error(
+                `Export would return ${analytics.length} rows, exceeding limit of ${MAX_EXPORT_ROWS}. Narrow the date range to under ${estimatedDaysForLimit} days.`
+            );
+        }
 
         const headers = ['Metric Type', 'Value', 'Recorded At'];
         const rows = analytics.map((row) => [

@@ -9,8 +9,8 @@
     "scripts": {
         "dev": "turbo run dev --filter=@craft/frontend --filter=@craft/backend",
         "build": "turbo run build",
-        "test": "turbo run test",
-        "lint": "turbo run lint",
+        "test": "node --test scripts/check-migration-numbering.test.js && turbo run test",
+        "lint": "node scripts/check-migration-numbering.js && turbo run lint",
         "format": "prettier --write \"**/*.{ts,tsx,md}\""
     },
     "devDependencies": {

@@ -17,6 +17,29 @@ npm run build
 
 5. Link the PR to the relevant issue.
 
+## URL-synced filters
+
+List pages with user-facing filters (search, status, category, …) keep their
+filter state in the URL query string so filtered views are shareable and
+survive a refresh. Follow the same pattern everywhere instead of re-deriving it:
+
+- **Read** the initial state from `useSearchParams()` (or a Server Component's
+  `searchParams` prop passed down as `initialFilters`), falling back to defaults
+  for missing or unknown values.
+- **Hold** the live state in React; keep the filter UI itself a controlled
+  component that only receives `filters` and `onChange`.
+- **Write** changes back with a debounced `router.replace(url, { scroll: false })`
+  — `replace`, not `push`, and omit default values from the query string.
+
+Reference implementation: `DeploymentFiltersBar`
+(`apps/frontend/src/components/deployments/DeploymentFiltersBar.tsx`) — its
+JSDoc `@example` shows the pattern end-to-end.
+
+`TemplateCatalogFilters`
+(`apps/frontend/src/components/app/templates/TemplateCatalogFilters.tsx`) and
+its page already sync to the URL but without debouncing; aligning it with this
+convention is a candidate for a future issue.
+
 ## Rate Limiting, Idempotency, and Tier Enforcement
 
 Several backend middleware modules read tunable behavior from environment
@@ -100,6 +123,55 @@ withRateLimit(...)(
 ```
 
 See each module's own docstring for a runnable composition example.
+
+## Database Migrations
+
+Supabase migrations live in `supabase/migrations/` and are applied in filename sort order.
+
+### Numbering Convention
+
+Every new migration file must be named:
+
+```text
+NNN_short_snake_case_description.sql
+```
+
+- `NNN` is a three-digit, zero-padded prefix (e.g. `022`).
+- Use the **next unused** prefix: one higher than the highest prefix currently in `supabase/migrations/` on `main`.
+- Each prefix belongs to exactly one migration file. Never reuse an existing prefix, even for a related change.
+- Rebase on `main` right before opening your PR and renumber if another PR has claimed your prefix in the meantime.
+- Include `-- rollback:` comment lines describing how to undo the migration, matching the existing files.
+
+Some older files share a prefix (for example `010_*`, `014_*`, `016_*`). These are historical collisions kept as-is because renaming an applied migration changes its identity; do not add new files to those prefixes.
+
+### Check for Collisions
+
+The collision-guard script `scripts/check-migration-numbering.js` fails if a new migration reuses an existing prefix or breaks the naming pattern. CI runs the same check. Run it locally before opening a PR:
+
+```bash
+node scripts/check-migration-numbering.js
+```
+
+### PR Expectations
+
+1. The migration filename follows the convention above and the collision guard passes.
+2. The PR description names the new migration file and its prefix.
+3. Migrations that depend on another migration's objects note that dependency in the file header.
+
+## Snapshot Testing (Stellar Configuration)
+
+Snapshot tests capture and diff configuration outputs to catch unintended changes in network settings, RPC endpoints, and serialization.
+
+### Snapshot Files
+
+Snapshots are stored in `__snapshots__` directories co-located with test files:
+
+- `packages/stellar/src/__snapshots__/config.test.ts.snap`
+- `apps/frontend/src/lib/stellar/__snapshots__/stellar-config-generator.test.ts.snap`
+
+### Update Snapshots
+
+When intentional changes are made to Stellar c
 
 ## Snapshot Testing (Stellar Configuration)
 

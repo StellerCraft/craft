@@ -16,7 +16,11 @@
  * mirroring the SQL USING / WITH CHECK expressions from migration 002.
  */
 
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, it, expect } from 'vitest';
+import trackedMigrations from './rls-migration-hashes.json';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -112,6 +116,16 @@ const policy = {
     // Authenticated: ALL with USING (auth.uid() = user_id) and WITH CHECK (auth.uid() = user_id)
     deployment_updates_all: (row: Row, uid: Uid) => uid !== null && uid === row.user_id,
 };
+
+describe('RLS predicate mirror migration drift', () => {
+    it.each(trackedMigrations)('keeps %s synchronized with its mirror', ({ migration, sha256 }) => {
+        const path = resolve(__dirname, '../../migrations', migration);
+        const actual = createHash('sha256').update(readFileSync(path)).digest('hex');
+
+        expect(actual, `${migration} changed; the RLS mirror may be stale. Review the SQL and update the mirror and this manifest.`)
+            .toBe(sha256);
+    });
+});
 
 // ── 1. Service-role bypass ────────────────────────────────────────────────────
 
@@ -544,7 +558,7 @@ describe('RLS: payment_events — per-user direct-identity SELECT', () => {
 
 describe('RLS: audit_logs (auth_audit_logs) — per-user SELECT with tier expansion', () => {
     /**
-     * Policy from migration 010_auth_audit_logs_cross_region.sql:
+     * Policy from migration 011_auth_audit_logs_cross_region.sql:
      *   FOR SELECT USING (
      *     auth.uid() = user_id OR
      *     EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid()
@@ -604,7 +618,7 @@ describe('RLS: audit_logs (auth_audit_logs) — per-user SELECT with tier expans
 
 describe('RLS: branding_assets (storage.objects) — path-based user namespace', () => {
     /**
-     * Policy from migration 011_branding_asset_storage_policy.sql:
+     * Policy from migration 016_branding_asset_storage_policy.sql:
      *   INSERT WITH CHECK: bucket_id = 'branding_assets' AND foldername(name)[1] = auth.uid()
      *   SELECT USING:      bucket_id = 'branding_assets' AND foldername(name)[1] = auth.uid()
      *

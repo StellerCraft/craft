@@ -26,7 +26,7 @@
  *
  * Persistence
  * ────────────
- *   All state lives in Supabase (see migration 014_job_queue.sql), so jobs
+ *   All state lives in Supabase (see migration 025_job_queue.sql), so jobs
  *   survive server restarts automatically.
  *
  * Design doc properties satisfied:
@@ -239,7 +239,7 @@ export class JobQueueService {
 
     /**
      * Reprocess a dead-letter entry by re-enqueuing the original payload.
-     * Guards against double-reprocessing with an in-memory set.
+        * Claims the entry atomically in the database before re-enqueueing.
      * Only marks the entry as succeeded after enqueue actually resolves.
      */
     async reprocessDLQEntry(dlqId: string): Promise<EnqueueResult> {
@@ -249,19 +249,22 @@ export class JobQueueService {
             throw new Error(`DLQ entry ${dlqId} is already being reprocessed`);
         }
 
-        // Load the DLQ entry
-        const { data: entry, error: fetchError } = await supabase
-            .from('job_dlq')
-            .select('*')
-            .eq('id', dlqId)
-            .single();
+        const { data, error: claimError } = await supabase
+            .rpc('claim_dlq_reprocess_entry', { p_dlq_id: dlqId });
 
-        if (fetchError || !entry) {
-            throw new Error(`DLQ entry not found: ${dlqId}`);
+        if (claimError) {
+            throw new Error(`Failed to claim DLQ entry ${dlqId}: ${claimError.message}`);
         }
 
-        if (entry.reprocess_status !== 'pending') {
-            throw new Error(`DLQ entry ${dlqId} has already been reprocessed (status: ${entry.reprocess_status})`);
+        const entry = (Array.isArray(data) ? data[0] : data) as DLQRecord | null;
+        if (!entry) {
+            const { data: existing, error: fetchError } = await supabase
+                .from('job_dlq')
+                .select('*')
+                .eq('id', dlqId)
+                .single();
+            if (fetchError || !existing) throw new Error(`DLQ entry not found: ${dlqId}`);
+            throw new Error(`DLQ entry ${dlqId} has already been reprocessed (status: ${existing.reprocess_status})`);
         }
 
         this._reprocessingDlqIds.add(dlqId);

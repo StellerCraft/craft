@@ -15,6 +15,7 @@
  */
 
 import { createClient } from '@/lib/supabase/server';
+import { createLogger } from '@/lib/api/logger';
 
 // ── Result types ──────────────────────────────────────────────────────────────
 
@@ -85,6 +86,8 @@ export interface PurgeOrphanedArtifactsOptions {
      * before running it against production data.
      */
     dryRun?: boolean;
+    /** Correlation ID tying every log entry to one cron invocation (default: freshly generated). */
+    correlationId?: string;
 }
 
 const DEFAULT_ARTIFACT_BUCKET = 'deployment-artifacts';
@@ -240,6 +243,10 @@ export class CleanupService {
         const batchLimit = options.batchLimit ?? ORPHAN_BATCH_LIMIT;
         const now = options.now ?? new Date();
         const retentionMs = retentionHours * 60 * 60 * 1000;
+        const correlationId = options.correlationId ?? crypto.randomUUID();
+        const log = createLogger({ correlationId, service: 'cleanup-orphaned-artifacts' });
+
+        log.info('Orphaned artifact purge started', { bucket, retentionHours, batchLimit });
 
         const supabase = createClient();
 
@@ -249,6 +256,7 @@ export class CleanupService {
             .list('', { limit: 1000, sortBy: { column: 'created_at', order: 'asc' } });
 
         if (listError) {
+            log.error('Failed to list storage artifacts', listError, { bucket });
             throw new Error(`Failed to list storage artifacts: ${listError.message}`);
         }
 
@@ -267,6 +275,7 @@ export class CleanupService {
                 .in('id', candidateIds);
 
             if (depError) {
+                log.error('Failed to cross-reference deployments', depError, { bucket });
                 throw new Error(`Failed to cross-reference deployments: ${depError.message}`);
             }
             for (const row of rows ?? []) existingIds.add((row as { id: string }).id);
@@ -318,6 +327,10 @@ export class CleanupService {
                 .remove(toDelete.map((o) => o.path));
 
             if (removeError) {
+                log.error('Orphaned artifact batch deletion failed', removeError, {
+                    bucket,
+                    batchSize: toDelete.length,
+                });
                 throw new Error(`Failed to delete orphaned artifacts: ${removeError.message}`);
             }
 
@@ -334,9 +347,23 @@ export class CleanupService {
 
             if (auditError) {
                 // Audit failures are logged but must not mask a successful purge.
-                console.error('Orphan cleanup audit insert failed:', auditError.message);
+                log.error('Orphan cleanup audit insert failed', auditError, { bucket });
             }
+
+            log.info('Orphaned artifact batch deleted', {
+                bucket,
+                batchSize: toDelete.length,
+                bytesFreed: toDelete.reduce((sum, o) => sum + o.sizeBytes, 0),
+            });
         }
+
+        log.info('Orphaned artifact purge completed', {
+            bucket,
+            scanned: artifacts.length,
+            deleted: toDelete.length,
+            skippedWithinRetention,
+            batchLimitReached,
+        });
 
         return {
             recordsDeleted: toDelete.length,

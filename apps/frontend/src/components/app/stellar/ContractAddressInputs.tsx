@@ -146,7 +146,7 @@ export function ContractAddressInputs({
                         <button
                             type="button"
                             onClick={handleAdd}
-                            disabled={!newName || !newAddress}
+                            disabled={!newName && !newAddress}
                             className="px-3 py-1.5 rounded-lg text-sm font-semibold text-on-primary primary-gradient shadow-sm disabled:opacity-40 disabled:cursor-not-allowed transition-all"
                         >
                             Add contract

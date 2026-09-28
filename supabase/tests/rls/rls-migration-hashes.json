@@ -1,0 +1,26 @@
+[
+  {
+    "migration": "002_row_level_security.sql",
+    "sha256": "89350bc72c17db192e9cc78d9d76739744089bf4ed85889d94fa96f461b9b6d6"
+  },
+  {
+    "migration": "005_create_deployment_logs.sql",
+    "sha256": "5bff10539ceb78f8ce9be7a66edd3c8b6b149eb8455c060969423d13a57619da"
+  },
+  {
+    "migration": "008_github_vercel_deployments.sql",
+    "sha256": "df2f4a6b97d4c13a2cd2db710e429c5894fb2fa8ce4568929d29bd4c44653e13"
+  },
+  {
+    "migration": "009_deployment_updates_rollout.sql",
+    "sha256": "1063d70dec537851d43969101e02a1c392eb3acfe92c8c4132e6344aedc9f741"
+  },
+  {
+    "migration": "010_auth_audit_logs_cross_region.sql",
+    "sha256": "1f83b9228ea94180982a34c016ac2328233e03d41152eb02f2942efac2de4c57"
+  },
+  {
+    "migration": "019_fix_auth_audit_logs_rls.sql",
+    "sha256": "4c415169d23f7cb981e2c69765e3c9f489b72fcec56da674669a26e67163b9e4"
+  }
+]
