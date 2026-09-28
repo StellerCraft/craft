@@ -101,7 +101,7 @@ describe('MultiProviderAuthService', () => {
         // provider_connections, merge in memory, then write the whole object
         // back — a race between two concurrent requests could silently drop
         // one side's change. The merge now happens inside a single row-locked
-        // Postgres function (see supabase/migrations/017_provider_connections_atomic_rpc.sql),
+        // Postgres function (see supabase/migrations/034_provider_connections_atomic_rpc.sql),
         // so the client only ever sends its own provider's value, never a
         // merged snapshot of the whole column.
         const supabase = makeSupabase({ provider_connections: { someOther: { data: 'value' } } });

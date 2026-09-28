@@ -12,7 +12,7 @@
  *   - Support replay of failed or missed deliveries
  *   - Query deliveries for monitoring and troubleshooting
  *
- * Database schema: supabase/migrations/013_github_webhook_delivery_tracking.sql
+ * Database schema: supabase/migrations/020_github_webhook_delivery_tracking.sql
  */
 
 import { createClient } from '@/lib/supabase/server';

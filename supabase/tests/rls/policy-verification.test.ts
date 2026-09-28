@@ -558,7 +558,7 @@ describe('RLS: payment_events — per-user direct-identity SELECT', () => {
 
 describe('RLS: audit_logs (auth_audit_logs) — per-user SELECT with tier expansion', () => {
     /**
-     * Policy from migration 010_auth_audit_logs_cross_region.sql:
+     * Policy from migration 011_auth_audit_logs_cross_region.sql:
      *   FOR SELECT USING (
      *     auth.uid() = user_id OR
      *     EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid()
@@ -618,7 +618,7 @@ describe('RLS: audit_logs (auth_audit_logs) — per-user SELECT with tier expans
 
 describe('RLS: branding_assets (storage.objects) — path-based user namespace', () => {
     /**
-     * Policy from migration 011_branding_asset_storage_policy.sql:
+     * Policy from migration 016_branding_asset_storage_policy.sql:
      *   INSERT WITH CHECK: bucket_id = 'branding_assets' AND foldername(name)[1] = auth.uid()
      *   SELECT USING:      bucket_id = 'branding_assets' AND foldername(name)[1] = auth.uid()
      *

@@ -18,6 +18,7 @@ export * from './account-merge-protection';
 export * from './asset-compliance';
 export * from './circuit-breaker';
 export * from './horizon-client';
+export * from './stellar-asset';
 export * from './fixtures/strkey-addresses';
 export * from './abi-binding-generator';
 export * from './asset-auth';

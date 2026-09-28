@@ -5,7 +5,7 @@
  *
  * Full-text search (searchTemplates / listTemplates with `q` filter):
  *   - Backed by a Postgres tsvector column on name (weight A), tags (weight B),
- *     and description (weight C) — see migration 016_template_fulltext_search.sql.
+ *     and description (weight C) — see migration 030_template_fulltext_search.sql.
  *   - Results are ranked by ts_rank (most relevant first).
  *   - Supports: keyword search, phrase search ("liquidity pool"),
  *     prefix search (decentral:*), and category filter combined with text search.
