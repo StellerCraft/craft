@@ -1,4 +1,4 @@
--- Migration: 016_template_fulltext_search.sql
+-- Migration: 030_template_fulltext_search.sql
 --
 -- Adds full-text search to the templates table via:
 --   1. A `tags` TEXT[] column for keyword tagging

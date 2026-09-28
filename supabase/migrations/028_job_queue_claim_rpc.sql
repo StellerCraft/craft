@@ -1,4 +1,4 @@
--- Migration: 015_job_queue_claim_rpc.sql
+-- Migration: 028_job_queue_claim_rpc.sql
 -- Atomic "claim next job" function used by workers to avoid double-processing.
 --
 -- Priority mapping (CASE → integer) keeps ordering deterministic:

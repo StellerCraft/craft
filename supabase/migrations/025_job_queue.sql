@@ -1,4 +1,4 @@
--- Migration: 014_job_queue.sql
+-- Migration: 025_job_queue.sql
 -- Creates the job_queue table for background deployment processing with
 -- priority lanes (high / normal / low) and dead-letter escalation after
 -- MAX_ATTEMPTS failures.

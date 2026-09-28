@@ -3,6 +3,7 @@ import type { ContractAbiSchema } from './upgrade-orchestrator';
 
 const mocks = vi.hoisted(() => ({
   mockSimulate: vi.fn(),
+  mockSubmitTransaction: vi.fn(),
   mockFromXDR: vi.fn(),
 }));
 
@@ -26,6 +27,7 @@ vi.mock('stellar-sdk', () => ({
 vi.mock('./soroban', () => ({
   createSorobanClient: vi.fn(() => ({
     simulateTransaction: mocks.mockSimulate,
+    sendTransaction: mocks.mockSubmitTransaction,
   })),
 }));
 
@@ -351,6 +353,8 @@ describe('orchestrateContractUpgrade', () => {
       expect(result.dryRun).toBe(false);
       expect(result.diffReport.safe).toBe(true);
     }
+    expect(mocks.mockSimulate).not.toHaveBeenCalled();
+    expect(mocks.mockSubmitTransaction).not.toHaveBeenCalled();
   });
 
   it('blocks upgrade when breaking changes are detected', async () => {
@@ -417,6 +421,7 @@ describe('orchestrateContractUpgrade', () => {
       'Test SDF Network ; September 2015',
     );
     expect(mocks.mockSimulate).toHaveBeenCalledWith(mockTx);
+    expect(mocks.mockSubmitTransaction).not.toHaveBeenCalled();
   });
 
   it('handles simulation errors gracefully', async () => {

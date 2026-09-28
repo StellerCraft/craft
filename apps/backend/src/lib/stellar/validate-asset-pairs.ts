@@ -16,6 +16,7 @@
 
 import type { AssetPair, StellarAsset } from '@craft/types';
 import type { ValidationError } from '@craft/types';
+import { makeStellarAsset } from '@craft/stellar';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -153,7 +154,32 @@ export function validateAssetPairs(pairs: unknown): ValidationError[] {
         const pairHasAssetErrors = errors.some(e => e.field.startsWith(pairPrefix));
         if (pairHasAssetErrors) continue;
 
-        const typedPair = pair as AssetPair;
+        const rawBase = p['base'] as Record<string, unknown>;
+        const rawCounter = p['counter'] as Record<string, unknown>;
+        const typedPair: AssetPair = {
+            base: rawBase['type'] === 'native'
+                ? {
+                    type: 'native',
+                    code: typeof rawBase['code'] === 'string' ? rawBase['code'] : 'XLM',
+                    issuer: '',
+                }
+                : makeStellarAsset(
+                    rawBase['type'] as StellarAsset['type'],
+                    rawBase['code'] as string,
+                    rawBase['issuer'] as string,
+                ),
+            counter: rawCounter['type'] === 'native'
+                ? {
+                    type: 'native',
+                    code: typeof rawCounter['code'] === 'string' ? rawCounter['code'] : 'XLM',
+                    issuer: '',
+                }
+                : makeStellarAsset(
+                    rawCounter['type'] as StellarAsset['type'],
+                    rawCounter['code'] as string,
+                    rawCounter['issuer'] as string,
+                ),
+        };
 
         // Base and counter must differ
         if (assetKey(typedPair.base) === assetKey(typedPair.counter)) {

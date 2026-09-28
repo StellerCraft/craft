@@ -1,4 +1,4 @@
--- Migration: 021_usage_records_atomic_increment_rpc.sql
+-- Migration: 040_usage_records_atomic_increment_rpc.sql
 -- Atomic increment RPC for usage_records.idempotency_key conflicts.
 -- Prevents the lost-update race when two concurrent calls hit the same
 -- (user_id, operation_type) within the same second.

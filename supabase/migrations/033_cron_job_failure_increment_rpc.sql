@@ -1,4 +1,4 @@
--- Migration: 017_cron_job_failure_increment_rpc.sql
+-- Migration: 033_cron_job_failure_increment_rpc.sql
 -- Atomic increment function for cron_job_failures.consecutive_failures.
 -- Replaces the read-then-upsert pattern that could lose increments under
 -- concurrent calls (see issue #986).
@@ -28,5 +28,5 @@ BEGIN
 END;
 $$;
 
--- Grant execute to the service role only (matches 015_job_queue_claim_rpc.sql pattern)
+-- Grant execute to the service role only (matches 028_job_queue_claim_rpc.sql pattern)
 GRANT EXECUTE ON FUNCTION increment_cron_failure(TEXT, TEXT) TO service_role;

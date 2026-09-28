@@ -1,4 +1,4 @@
--- Migration: 017_provider_connections_atomic_rpc.sql
+-- Migration: 034_provider_connections_atomic_rpc.sql
 -- Atomic read-modify-write for profiles.provider_connections.
 --
 -- MultiProviderAuthService.connectStellar()/disconnectProvider() previously

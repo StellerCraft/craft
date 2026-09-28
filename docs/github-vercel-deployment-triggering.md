@@ -408,4 +408,4 @@ Logs are structured JSON and can be shipped to your log aggregation service.
 - `apps/backend/src/lib/github/webhook-verification.ts` - Signature verification
 - `apps/backend/src/services/github-to-vercel-deployment.service.ts` - Deployment service
 - `apps/backend/src/services/vercel.service.ts` - Vercel API client
-- `supabase/migrations/008_github_vercel_deployments.sql` - Database schema
+- `supabase/migrations/009_github_vercel_deployments.sql` - Database schema

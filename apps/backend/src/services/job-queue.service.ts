@@ -26,7 +26,7 @@
  *
  * Persistence
  * ────────────
- *   All state lives in Supabase (see migration 014_job_queue.sql), so jobs
+ *   All state lives in Supabase (see migration 025_job_queue.sql), so jobs
  *   survive server restarts automatically.
  *
  * Design doc properties satisfied:

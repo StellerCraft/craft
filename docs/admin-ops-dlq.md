@@ -82,7 +82,7 @@ operators discover the combined view.
 
 ```
 apps/backend/src/services/job-queue.service.ts  (class JobQueueService)
-supabase/migrations/014_job_queue.sql            (schema)
+supabase/migrations/025_job_queue.sql            (schema)
 ```
 
 ### What goes in

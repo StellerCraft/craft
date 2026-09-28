@@ -1,7 +1,7 @@
 /**
  * RLS Tests — auth_audit_logs policy fix (Issue #975)
  *
- * Verifies that migration 019_fix_auth_audit_logs_rls.sql correctly scopes
+ * Verifies that migration 037_fix_auth_audit_logs_rls.sql correctly scopes
  * the SELECT policy to the row owner and service_role only.
  *
  * The bug:  the old policy granted SELECT when the *requester's* profile had

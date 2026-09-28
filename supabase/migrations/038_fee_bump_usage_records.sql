@@ -1,4 +1,4 @@
--- Migration: 020_fee_bump_usage_records.sql
+-- Migration: 038_fee_bump_usage_records.sql
 -- Issue: #1111 — Persist Fee-Bump Usage Records So a Restart Cannot Silently
 --                Reset Monthly Billing Counters
 --

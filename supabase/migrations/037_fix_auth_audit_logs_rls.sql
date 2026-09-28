@@ -1,8 +1,8 @@
--- Migration: 019_fix_auth_audit_logs_rls.sql
+-- Migration: 037_fix_auth_audit_logs_rls.sql
 -- Issue: #975 — Close RLS Blanket-Read Gap on Cross-Region auth_audit_logs
 --
 -- Problem:
---   The SELECT policy created in 010_auth_audit_logs_cross_region.sql contained
+--   The SELECT policy created in 011_auth_audit_logs_cross_region.sql contained
 --   a second OR clause:
 --
 --     EXISTS (
