@@ -152,8 +152,26 @@ function isUnderAnyRoot(p: string, roots: string[]): boolean {
   return roots.some((root) => isUnder(p, root));
 }
 
+/** Returns true if the file extension indicates a binary file. */
+function isBinaryFile(filePath: string): boolean {
+  const binaryExtensions = new Set([
+    '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg',
+    '.ico', '.icns', '.ttf', '.otf', '.woff', '.woff2',
+    '.eot', '.zip', '.tar', '.gz', '.tar.gz', '.rar',
+    '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+    '.exe', '.dll', '.so', '.dylib', '.bin', '.iso',
+  ]);
+  const ext = nodePath.extname(filePath).toLowerCase();
+  return binaryExtensions.has(ext);
+}
+
 /** Returns true if the file extension indicates a text file. */
 function isTextFile(filePath: string): boolean {
+  // Binary files should not be processed as text
+  if (isBinaryFile(filePath)) {
+    return false;
+  }
+
   const textExtensions = new Set([
     '.txt', '.md', '.json', '.js', '.ts', '.tsx', '.jsx', '.css', '.scss',
     '.html', '.xml', '.yaml', '.yml', '.toml', '.env', '.sh', '.bash',

@@ -171,4 +171,96 @@ describe('POST /api/deployments/[id]/domains', () => {
         expect(body.domain).toBe('app.example.com');
         expect(body.records.some((r: { type: string }) => r.type === 'CNAME')).toBe(true);
     });
+
+    // ── Domain Uniqueness Enforcement ──────────────────────────────────────────
+
+    it('returns 409 when domain is already attached to another deployment', async () => {
+        mockFrom
+            .mockReturnValueOnce(
+                makeSupabaseQuery([{ data: { user_id: fakeUser.id }, error: null }]),
+            )
+            .mockReturnValueOnce(
+                makeSupabaseQuery([{
+                    data: null,
+                    error: { message: 'duplicate key value violates unique constraint "deployments_custom_domain_key"' }
+                }]),
+            );
+        const { POST } = await import('./route');
+
+        const res = await POST(makeRequest({ customDomain: 'app.example.com' }), { params });
+
+        expect(res.status).toBe(409);
+        const body = await res.json();
+        expect(body.error).toContain('already attached');
+    });
+
+    it('returns 409 (not 500) when unique constraint violation occurs on domain attach', async () => {
+        mockFrom
+            .mockReturnValueOnce(
+                makeSupabaseQuery([{ data: { user_id: fakeUser.id }, error: null }]),
+            )
+            .mockReturnValueOnce(
+                makeSupabaseQuery([{
+                    data: null,
+                    error: { message: 'Unique constraint violation' }
+                }]),
+            );
+        const { POST } = await import('./route');
+
+        const res = await POST(makeRequest({ customDomain: 'myapp.io' }), { params });
+
+        expect(res.status).toBe(409);
+    });
+
+    it('allows attaching domain to first deployment without uniqueness error', async () => {
+        mockFrom
+            .mockReturnValueOnce(
+                makeSupabaseQuery([{ data: { user_id: fakeUser.id }, error: null }]),
+            )
+            .mockReturnValueOnce(
+                makeSupabaseQuery([{ data: null, error: null }]),
+            );
+        const { POST } = await import('./route');
+
+        const res = await POST(makeRequest({ customDomain: 'unique-domain-1.io' }), { params });
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.domain).toBe('unique-domain-1.io');
+    });
+
+    it('simulates concurrent attach race: first request succeeds, second gets 409', async () => {
+        const domain = 'shared-domain.io';
+
+        // First deployment: attachment succeeds
+        mockFrom
+            .mockReturnValueOnce(
+                makeSupabaseQuery([{ data: { user_id: 'user-1' }, error: null }]),
+            )
+            .mockReturnValueOnce(
+                makeSupabaseQuery([{ data: null, error: null }]),
+            )
+            // Second deployment: uniqueness constraint violation
+            .mockReturnValueOnce(
+                makeSupabaseQuery([{ data: { user_id: 'user-2' }, error: null }]),
+            )
+            .mockReturnValueOnce(
+                makeSupabaseQuery([{
+                    data: null,
+                    error: { message: 'duplicate key value violates unique constraint' }
+                }]),
+            );
+
+        const { POST } = await import('./route');
+
+        // First request succeeds
+        const res1 = await POST(makeRequest({ customDomain: domain }), { params: { id: 'dep-1' } });
+        expect(res1.status).toBe(200);
+
+        // Second concurrent request fails with 409
+        const res2 = await POST(makeRequest({ customDomain: domain }), { params: { id: 'dep-2' } });
+        expect(res2.status).toBe(409);
+        const body = await res2.json();
+        expect(body.error).toContain('already attached');
+    });
 });

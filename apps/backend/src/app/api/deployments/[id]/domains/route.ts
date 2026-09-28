@@ -54,6 +54,15 @@ export const POST = withDeploymentAuth(async (req: NextRequest, { params, supaba
         .eq('id', params.id);
 
     if (updateError) {
+        const isUniquenessViolation = updateError.message?.includes('unique constraint') ||
+                                      updateError.message?.includes('duplicate key');
+        if (isUniquenessViolation) {
+            console.warn(`[domains-post] Domain already attached: ${domain}`);
+            return NextResponse.json(
+                { error: 'Domain already attached to another deployment' },
+                { status: 409 }
+            );
+        }
         console.error(`[domains-post] Failed to save domain for ${params.id}:`, updateError.message);
         return NextResponse.json({ error: 'Failed to save domain' }, { status: 500 });
     }

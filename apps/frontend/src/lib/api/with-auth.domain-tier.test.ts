@@ -31,6 +31,9 @@ function makeSupabaseQuery(results: QueryResult[]) {
     return {
         select: vi.fn(() => ({
             eq: vi.fn(() => ({
+                is: vi.fn(() => ({
+                    single: vi.fn().mockResolvedValue(results.shift() ?? { data: null, error: null }),
+                })),
                 single: vi.fn().mockResolvedValue(results.shift() ?? { data: null, error: null }),
             })),
         })),
@@ -54,9 +57,11 @@ describe('withDomainTierCheck', () => {
     });
 
     it('returns 403 when deployment belongs to another user', async () => {
-        mockFrom.mockReturnValue(
-            makeSupabaseQuery([{ data: { user_id: 'other-user' }, error: null }]),
-        );
+        const results = [
+            { data: { id: 'user-1' }, error: null },
+            { data: { user_id: 'other-user' }, error: null },
+        ];
+        mockFrom.mockReturnValue(makeSupabaseQuery(results));
         const { withDomainTierCheck } = await import('./with-auth');
         const handler = vi.fn().mockResolvedValue(NextResponse.json({ ok: true }));
         const route = withDomainTierCheck(handler);
@@ -66,9 +71,12 @@ describe('withDomainTierCheck', () => {
     });
 
     it('returns 403 with upgradeUrl for free-tier users', async () => {
-        mockFrom
-            .mockReturnValueOnce(makeSupabaseQuery([{ data: { user_id: fakeUser.id }, error: null }]))
-            .mockReturnValueOnce(makeSupabaseQuery([{ data: { subscription_tier: 'free' }, error: null }]));
+        const results = [
+            { data: { id: 'user-1' }, error: null },
+            { data: { user_id: fakeUser.id }, error: null },
+            { data: { subscription_tier: 'free' }, error: null }
+        ];
+        mockFrom.mockReturnValue(makeSupabaseQuery(results));
         const { withDomainTierCheck } = await import('./with-auth');
         const handler = vi.fn().mockResolvedValue(NextResponse.json({ ok: true }));
         const route = withDomainTierCheck(handler);
@@ -80,9 +88,12 @@ describe('withDomainTierCheck', () => {
     });
 
     it('falls back to free tier when profile is missing and blocks access', async () => {
-        mockFrom
-            .mockReturnValueOnce(makeSupabaseQuery([{ data: { user_id: fakeUser.id }, error: null }]))
-            .mockReturnValueOnce(makeSupabaseQuery([{ data: null, error: { message: 'not found' } }]));
+        const results = [
+            { data: { id: 'user-1' }, error: null },
+            { data: { user_id: fakeUser.id }, error: null },
+            { data: null, error: { message: 'not found' } }
+        ];
+        mockFrom.mockReturnValue(makeSupabaseQuery(results));
         const { withDomainTierCheck } = await import('./with-auth');
         const handler = vi.fn().mockResolvedValue(NextResponse.json({ ok: true }));
         const route = withDomainTierCheck(handler);
@@ -92,9 +103,12 @@ describe('withDomainTierCheck', () => {
     });
 
     it('calls handler for pro-tier users', async () => {
-        mockFrom
-            .mockReturnValueOnce(makeSupabaseQuery([{ data: { user_id: fakeUser.id }, error: null }]))
-            .mockReturnValueOnce(makeSupabaseQuery([{ data: { subscription_tier: 'pro' }, error: null }]));
+        const results = [
+            { data: { id: 'user-1' }, error: null },
+            { data: { user_id: fakeUser.id }, error: null },
+            { data: { subscription_tier: 'pro' }, error: null }
+        ];
+        mockFrom.mockReturnValue(makeSupabaseQuery(results));
         const { withDomainTierCheck } = await import('./with-auth');
         const handler = vi.fn().mockResolvedValue(NextResponse.json({ ok: true }));
         const route = withDomainTierCheck(handler);
@@ -104,9 +118,12 @@ describe('withDomainTierCheck', () => {
     });
 
     it('calls handler for enterprise-tier users', async () => {
-        mockFrom
-            .mockReturnValueOnce(makeSupabaseQuery([{ data: { user_id: fakeUser.id }, error: null }]))
-            .mockReturnValueOnce(makeSupabaseQuery([{ data: { subscription_tier: 'enterprise' }, error: null }]));
+        const results = [
+            { data: { id: 'user-1' }, error: null },
+            { data: { user_id: fakeUser.id }, error: null },
+            { data: { subscription_tier: 'enterprise' }, error: null }
+        ];
+        mockFrom.mockReturnValue(makeSupabaseQuery(results));
         const { withDomainTierCheck } = await import('./with-auth');
         const handler = vi.fn().mockResolvedValue(NextResponse.json({ ok: true }));
         const route = withDomainTierCheck(handler);

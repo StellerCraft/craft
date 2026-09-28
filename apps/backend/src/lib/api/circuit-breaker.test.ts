@@ -104,3 +104,33 @@ describe('CircuitBreaker — reset', () => {
         expect(breaker.currentState).toBe('CLOSED');
     });
 });
+
+// ── Re-export surface ─────────────────────────────────────────────────────────
+
+describe('CircuitBreaker — re-export completeness', () => {
+    it('re-exports CircuitOpenError for error handling', () => {
+        const error = new CircuitOpenError('test', 1000);
+        expect(error).toBeInstanceOf(Error);
+        expect(error.name).toBe('CircuitOpenError');
+        expect(error.message).toContain('Circuit');
+    });
+
+    it('re-exports CircuitBreaker class with all public methods', () => {
+        const breaker = makeBreaker();
+        expect(breaker).toBeInstanceOf(CircuitBreaker);
+        expect(typeof breaker.call).toBe('function');
+        expect(typeof breaker.isOpen).toBe('function');
+        expect(typeof breaker.getState).toBe('function');
+        expect(typeof breaker.recordSuccess).toBe('function');
+        expect(typeof breaker.recordFailure).toBe('function');
+        expect(typeof breaker.reset).toBe('function');
+        expect(breaker.name).toBe('test');
+    });
+
+    it('re-exports CircuitState values (CLOSED, OPEN, HALF_OPEN)', () => {
+        const breaker = makeBreaker();
+        expect(breaker.currentState).toBe('CLOSED');
+        breaker.reset();
+        expect(breaker.currentState).toBe('CLOSED');
+    });
+});

@@ -194,4 +194,57 @@ describe('CleanupService.purgeOrphanedArtifacts', () => {
         expect(result.recordsDeleted).toBe(2);
         expect(result.batchLimitReached).toBe(true);
     });
+
+    describe('correlation logging', () => {
+        function captureLogs() {
+            const lines: Array<Record<string, any>> = [];
+            const push = (l: string) => lines.push(JSON.parse(l));
+            vi.spyOn(console, 'log').mockImplementation(push);
+            vi.spyOn(console, 'error').mockImplementation(push);
+            vi.spyOn(console, 'warn').mockImplementation(push);
+            return lines;
+        }
+
+        it('tags start, batch, and completion entries with one supplied correlation ID', async () => {
+            const lines = captureLogs();
+            mockList.mockResolvedValue({ data: [artifact('orphan-1/bundle.zip', 48)], error: null });
+
+            await service.purgeOrphanedArtifacts({ now: NOW, correlationId: 'cron-run-12345678' });
+
+            expect(lines.map((l) => l.message)).toEqual([
+                'Orphaned artifact purge started',
+                'Orphaned artifact batch deleted',
+                'Orphaned artifact purge completed',
+            ]);
+            expect(new Set(lines.map((l) => l.correlationId))).toEqual(new Set(['cron-run-12345678']));
+            vi.restoreAllMocks();
+        });
+
+        it('generates a single correlation ID shared by all entries when none is supplied', async () => {
+            const lines = captureLogs();
+            mockList.mockResolvedValue({ data: [artifact('orphan-1/bundle.zip', 48)], error: null });
+
+            await service.purgeOrphanedArtifacts({ now: NOW });
+
+            const ids = new Set(lines.map((l) => l.correlationId));
+            expect(lines.length).toBeGreaterThanOrEqual(3);
+            expect(ids.size).toBe(1);
+            expect([...ids][0]).toMatch(/[0-9a-f-]{36}/);
+            vi.restoreAllMocks();
+        });
+
+        it('logs a failed batch deletion under the same correlation ID', async () => {
+            const lines = captureLogs();
+            mockList.mockResolvedValue({ data: [artifact('orphan-1/bundle.zip', 48)], error: null });
+            mockRemove.mockResolvedValue({ error: { message: 'boom' } });
+
+            await expect(
+                service.purgeOrphanedArtifacts({ now: NOW, correlationId: 'cron-run-12345678' }),
+            ).rejects.toThrow('Failed to delete orphaned artifacts');
+
+            expect(lines.some((l) => l.level === 'error' && l.message.includes('batch deletion failed'))).toBe(true);
+            expect(new Set(lines.map((l) => l.correlationId))).toEqual(new Set(['cron-run-12345678']));
+            vi.restoreAllMocks();
+        });
+    });
 });

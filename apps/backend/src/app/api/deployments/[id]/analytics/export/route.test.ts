@@ -233,4 +233,105 @@ describe('GET /api/deployments/[id]/analytics/export', () => {
     expect(res.status).toBe(401);
     expect(mockExportAnalytics).not.toHaveBeenCalled();
   });
+
+  // ── Row-count ceiling enforcement ──────────────────────────────────────────
+
+  it('rejects export request when oversized date range would exceed row limit', async () => {
+    // Simulate a request for a very wide date range (e.g., 5+ years)
+    // that would fetch ~2M rows, exceeding MAX_EXPORT_ROWS (e.g., 100k)
+    mockExportAnalytics.mockRejectedValue(
+      new Error('Export exceeds maximum row limit of 100000. Narrow the date range.')
+    );
+    const { GET } = await import('./route');
+    const res = await GET(
+      makeExportRequest({
+        startDate: '2020-01-01T00:00:00.000Z',
+        endDate: '2025-12-31T23:59:59.999Z',
+      }),
+      { params: { id: 'dep-1' } }
+    );
+
+    expect(res.status).toBe(400);
+    const json = await res.json();
+    expect(json.error).toContain('row limit');
+  });
+
+  it('allows export when date range returns rows within the ceiling', async () => {
+    // A 30-day window generating 50k rows should succeed (under 100k limit)
+    const rows = Array.from(
+      { length: 50_000 },
+      (_, i) => `page_view,${i},2026-01-${String((i % 30) + 1).padStart(2, '0')}T00:00:00.000Z`
+    );
+    const csv = ['Metric Type,Value,Recorded At', ...rows].join('\n');
+    mockExportAnalytics.mockResolvedValue(csv);
+
+    const { GET } = await import('./route');
+    const res = await GET(
+      makeExportRequest({
+        startDate: '2026-01-01T00:00:00.000Z',
+        endDate: '2026-01-31T23:59:59.999Z',
+      }),
+      { params: { id: 'dep-1' } }
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Type')).toContain('text/csv');
+  });
+
+  it('suggests narrowing date range in error message when export exceeds ceiling', async () => {
+    mockExportAnalytics.mockRejectedValue(
+      new Error('Export would return 150000 rows, exceeding limit of 100000. Narrow the date range to under 15 days.')
+    );
+    const { GET } = await import('./route');
+    const res = await GET(
+      makeExportRequest({
+        startDate: '2020-01-01T00:00:00.000Z',
+        endDate: '2025-12-31T23:59:59.999Z',
+      }),
+      { params: { id: 'dep-1' } }
+    );
+
+    expect(res.status).toBe(400);
+    const json = await res.json();
+    expect(json.error).toContain('Narrow the date range');
+  });
+
+  it('allows full historical export when under ceiling (e.g., low-traffic deployment)', async () => {
+    // A deployment with very low traffic over 2 years: 10k rows
+    const rows = Array.from({ length: 10_000 }, (_, i) =>
+      `page_view,1,2024-${String((i % 12) + 1).padStart(2, '0')}-01T00:00:00.000Z`
+    );
+    const csv = ['Metric Type,Value,Recorded At', ...rows].join('\n');
+    mockExportAnalytics.mockResolvedValue(csv);
+
+    const { GET } = await import('./route');
+    const res = await GET(
+      makeExportRequest({
+        startDate: '2022-01-01T00:00:00.000Z',
+        endDate: '2024-12-31T23:59:59.999Z',
+      }),
+      { params: { id: 'dep-1' } }
+    );
+
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body.split('\n')).toHaveLength(10_001);
+  });
+
+  it('returns 400 (not 500) when row limit is exceeded during export', async () => {
+    mockExportAnalytics.mockRejectedValue(
+      new Error('Row limit exceeded')
+    );
+    const { GET } = await import('./route');
+    const res = await GET(
+      makeExportRequest({
+        startDate: '2000-01-01T00:00:00.000Z',
+        endDate: '2026-12-31T23:59:59.999Z',
+      }),
+      { params: { id: 'dep-1' } }
+    );
+
+    // Should return 400 for client error (row limit), not 500 for server error
+    expect(res.status).toBe(400);
+  });
 });

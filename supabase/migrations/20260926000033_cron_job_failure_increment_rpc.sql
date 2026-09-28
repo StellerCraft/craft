@@ -5,6 +5,10 @@
 --
 -- Uses INSERT ... ON CONFLICT DO UPDATE so two concurrent calls for the
 -- same job_name both reliably increment the counter.
+-- This is the counter RPC used by CronFailureTrackerService. The earlier
+-- 017_cron_failure_atomic_increment.sql also defines increment_cron_failure_count
+-- plus alert-state helpers; the counter is superseded, while the alert helpers
+-- remain in use.
 
 CREATE OR REPLACE FUNCTION increment_cron_failure(p_job_name TEXT, p_error TEXT)
 RETURNS INTEGER

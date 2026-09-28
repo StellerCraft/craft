@@ -35,4 +35,45 @@ This template is configured via environment variables. See `.env.example` for av
 
 ## Soroban Integration
 
-This template uses Soroban RPC to interact with smart contracts on the Stellar network. Smart contract addresses are injected into the `src/lib/config.ts` during deployment by the CRAFT platform.
+This template uses Soroban RPC to interact with smart contracts on the Stellar network. Its `src/lib/config.ts` exposes a `contracts` object for platform-provided smart contract addresses.
+
+### Contract-address injection
+
+The template-facing injection contract is a named property under
+`config.contracts`. Each configured contract-address key and value must be
+materialized as a property with the same name and value. Template authors should
+use that key in code rather than adding per-contract environment variables or
+`{{PLACEHOLDER}}` tokens. The runtime wiring that populates this object is
+tracked separately.
+
+To add a `stakingPool` slot, include it in the customization input:
+
+```ts
+const customization = {
+	stellar: {
+		contractAddresses: {
+			stakingPool: '<staking pool contract address>',
+		},
+	},
+};
+```
+
+The generated `src/lib/config.ts` should expose the named value as:
+
+```ts
+contracts: {
+	stakingPool: '<staking pool contract address>',
+}
+```
+
+The template can then use the injected slot directly:
+
+```ts
+import { config } from '@/lib/config';
+
+const stakingPoolAddress = config.contracts.stakingPool;
+```
+
+Keep the same lower-camel-case slot name from the customization input through
+to `config.contracts` and its call sites. The runtime injection implementation
+must populate this object from the configured addresses.

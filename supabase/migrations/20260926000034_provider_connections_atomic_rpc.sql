@@ -10,6 +10,9 @@
 --
 -- These functions perform the read-modify-write inside a single row-locked
 -- UPDATE statement so concurrent callers serialize instead of racing.
+-- These generic RPCs are used by MultiProviderAuthService and supersede the
+-- specialized connect_stellar_provider/disconnect_stellar_provider functions
+-- from 017_atomic_provider_connections.sql.
 
 CREATE OR REPLACE FUNCTION set_provider_connection(
     p_user_id UUID,

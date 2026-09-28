@@ -182,6 +182,17 @@ const makeAuthRequest = async (email: string, password: string) => {
 
 ## Error Handling
 
+### Reconcile Pending Sign-Ups
+
+If a sign-up profile could not be synchronized to every region, its auth audit record is marked with `syncStatus: "pending"`. Configure a high-entropy `REGIONAL_AUTH_RECONCILIATION_TOKEN` secret for the reconciliation function, then trigger it manually with:
+
+```sh
+curl --fail-with-body -X POST "$SUPABASE_URL/functions/v1/regional-auth-reconcile" \
+  -H "Authorization: Bearer $REGIONAL_AUTH_RECONCILIATION_TOKEN"
+```
+
+The function retries up to 100 pending records per region per request and reports the scanned, repaired, and still-pending counts. Repeat the request while `pending` is nonzero; records that remain incomplete stay marked for retry.
+
 ### Handle Region Failover
 
 The system automatically fails over, but you should handle the response metadata:

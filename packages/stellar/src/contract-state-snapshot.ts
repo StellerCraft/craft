@@ -70,6 +70,16 @@ export class SnapshotStorageError extends Error {
     }
 }
 
+export class SnapshotOriginMismatchError extends Error {
+    constructor(originContractId: string, targetContractId: string) {
+        super(
+            `Snapshot origin contract "${originContractId}" does not match target contract "${targetContractId}". ` +
+            `Pass force: true to override.`,
+        );
+        this.name = 'SnapshotOriginMismatchError';
+    }
+}
+
 // ── Data types ────────────────────────────────────────────────────────────────
 
 export interface LedgerEntryRecord {
@@ -83,6 +93,7 @@ export interface LedgerEntryRecord {
 
 export interface SnapshotPayload {
     contractId: string;
+    originContractId?: string;
     ledgerSequence: number;
     entries: LedgerEntryRecord[];
 }
@@ -98,8 +109,14 @@ export interface ContractSnapshot {
 
 export interface RestoredSnapshot {
     contractId: string;
+    originContractId?: string;
     ledgerSequence: number;
     entries: LedgerEntryRecord[];
+}
+
+export interface RestoreOptions {
+    targetContractId?: string;
+    force?: boolean;
 }
 
 // ── Narrow dependency interfaces for testability ──────────────────────────────
@@ -187,7 +204,7 @@ export class ContractStateSnapshotService {
             liveUntilLedgerSeq: entry.liveUntilLedgerSeq,
         }));
 
-        const payload: SnapshotPayload = { contractId, ledgerSequence, entries };
+        const payload: SnapshotPayload = { contractId, originContractId: contractId, ledgerSequence, entries };
         const json = JSON.stringify(payload);
         const uncompressedBytes = Buffer.byteLength(json, 'utf8');
 
@@ -233,14 +250,35 @@ export class ContractStateSnapshotService {
      * Restore a previously captured snapshot for offline simulation.
      *
      * Downloads the compressed blob from Supabase Storage, decompresses it,
+     * verifies the snapshot origin matches the target contract ID (if specified),
      * and returns the deserialized ledger entries.
      *
+     * @param snapshotId - Unique ID of the snapshot in the database.
+     * @param targetOrOptions - Target contract ID to restore into, or RestoreOptions.
+     * @param forceParam - Force restore even if target contract ID does not match snapshot origin.
      * @throws SnapshotNotFoundError  when the snapshot ID does not exist in DB
      * @throws SnapshotStorageError   when the download from Supabase Storage fails
      * @throws SnapshotStorageError   when the downloaded blob contains corrupted
      *   or truncated JSON (identifies the snapshotId and storage_path)
+     * @throws SnapshotOriginMismatchError when target contract ID does not match
+     *   snapshot origin and force is not set to true.
      */
-    async restore(snapshotId: string): Promise<RestoredSnapshot> {
+    async restore(
+        snapshotId: string,
+        targetOrOptions?: string | RestoreOptions,
+        forceParam?: boolean,
+    ): Promise<RestoredSnapshot> {
+        let targetContractId: string | undefined;
+        let force = false;
+
+        if (typeof targetOrOptions === 'string') {
+            targetContractId = targetOrOptions;
+            force = typeof forceParam === 'boolean' ? forceParam : false;
+        } else if (targetOrOptions && typeof targetOrOptions === 'object') {
+            targetContractId = targetOrOptions.targetContractId;
+            force = Boolean(targetOrOptions.force);
+        }
+
         const { data: meta, error: metaError } = await this.db.findById(snapshotId);
         if (metaError || !meta) {
             throw new SnapshotNotFoundError(snapshotId);
@@ -265,8 +303,20 @@ export class ContractStateSnapshotService {
             );
         }
 
+        const originContractId = payload.originContractId ?? payload.contractId;
+
+        if (targetContractId && originContractId !== targetContractId) {
+            if (!force) {
+                throw new SnapshotOriginMismatchError(originContractId, targetContractId);
+            }
+            console.warn(
+                `[ContractStateSnapshotService] WARNING: Restoring snapshot with origin contract ID "${originContractId}" onto mismatched target contract ID "${targetContractId}" (force override enabled).`,
+            );
+        }
+
         return {
-            contractId: payload.contractId,
+            contractId: targetContractId ?? payload.contractId,
+            originContractId,
             ledgerSequence: payload.ledgerSequence,
             entries: payload.entries,
         };
