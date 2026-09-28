@@ -178,6 +178,45 @@ describe('POST /api/deployments', () => {
     expect(res.status).not.toBe(403);
   });
 
+  it('excludes soft-deleted deployments from tier deployment count enforcement', async () => {
+    // Free tier allows 1 deployment. User has 1 active + 1 soft-deleted.
+    // Count should return 1 (only active), allowing creation of a new deployment.
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'templates') return makeTableMock([{ data: { id: 'tpl-1', name: 'T' }, error: null }]);
+      if (table === 'profiles') return makeTableMock([{ data: { subscription_tier: 'free' }, error: null }]);
+      if (table === 'deployments') {
+        // Count check with .is('deleted_at', null) filter should return 1
+        return makeTableMock([{ data: null, error: null, count: 1 }, { data: { id: 'dep-new' }, error: null }]);
+      }
+      return makeTableMock([]);
+    });
+    const { POST } = await import('./route');
+    const res = await POST(post('http://localhost/api/deployments', { templateId: 'tpl-1', customizationConfig: validConfig }), { params: {} as any });
+    // Should hit limit (1 active deployment) and return 403
+    expect(res.status).toBe(403);
+  });
+
+  it('allows new deployment when soft-deleted deployment is at tier limit', async () => {
+    // Free tier allows 1 deployment. User deletes 1 and tries to create a new one.
+    // After deletion, count should be 0, allowing new creation.
+    const insertedDeployment = {
+      id: 'dep-new', template_id: 'tpl-1', user_id: fakeUser.id,
+      name: 'T', customization_config: {}, created_at: new Date().toISOString(),
+    };
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'templates') return makeTableMock([{ data: { id: 'tpl-1', name: 'T' }, error: null }]);
+      if (table === 'profiles') return makeTableMock([{ data: { subscription_tier: 'free' }, error: null }]);
+      if (table === 'deployments') {
+        // Count check: only soft-deleted deployments exist, so count = 0
+        return makeTableMock([{ data: null, error: null, count: 0 }, { data: insertedDeployment, error: null }]);
+      }
+      return makeTableMock([]);
+    });
+    const { POST } = await import('./route');
+    const res = await POST(post('http://localhost/api/deployments', { templateId: 'tpl-1', customizationConfig: validConfig }), { params: {} as any });
+    expect(res.status).toBe(201);
+  });
+
   it('returns 422 for invalid customization config', async () => {
     mockFrom.mockImplementation((table: string) => {
       if (table === 'templates') return makeTableMock([{ data: { id: 'tpl-1', name: 'T' }, error: null }]);

@@ -89,6 +89,38 @@ describe('withValidation', () => {
         expect(body.details.email).toBeDefined();
         expect(body.details.name).toBeDefined();
     });
+
+    it('does not leak raw Zod error internals in response', async () => {
+        const handler = vi.fn(async () => NextResponse.json({ ok: true }));
+        const wrapped = withValidation(schema)(handler);
+        const res = await wrapped(makeReq({ email: 'invalid-email' }), { params: {} });
+
+        expect(res.status).toBe(400);
+        const body = await res.json();
+        const bodyStr = JSON.stringify(body);
+
+        expect(bodyStr).not.toContain('_errors');
+        expect(bodyStr).not.toContain('ZodError');
+        expect(bodyStr).not.toContain('code:');
+        expect(body.error).toBe('Validation failed');
+        expect(body.details).toBeDefined();
+        expect(typeof body.details).toBe('object');
+    });
+
+    it('formats validation errors consistently as fieldErrors object', async () => {
+        const handler = vi.fn(async () => NextResponse.json({ ok: true }));
+        const wrapped = withValidation(schema)(handler);
+        const res = await wrapped(makeReq({ email: 'not-email', name: '' }), { params: {} });
+
+        expect(res.status).toBe(400);
+        const body = await res.json();
+
+        expect(body.error).toBe('Validation failed');
+        expect(Array.isArray(body.details.email)).toBe(true);
+        expect(Array.isArray(body.details.name)).toBe(true);
+        expect(body.details.email.length).toBeGreaterThan(0);
+        expect(body.details.email[0]).toEqual(expect.any(String));
+    });
 });
 
 describe('withQueryValidation', () => {

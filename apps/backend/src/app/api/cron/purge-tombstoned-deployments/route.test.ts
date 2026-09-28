@@ -5,6 +5,7 @@
  *   - Structured logging of orphaned artifact purge failures
  *   - Cron failure tracker recording failures
  *   - Successful purge operations
+ *   - Authorization handling
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';

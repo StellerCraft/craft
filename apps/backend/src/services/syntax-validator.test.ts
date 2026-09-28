@@ -9,6 +9,15 @@ describe('SyntaxValidator.validate — routing', () => {
         expect(result.valid).toBe(true);
     });
 
+    it('routes .tsx files to validateTypeScript with JSX support', () => {
+        const result = validator.validate({
+            path: 'src/components/Button.tsx',
+            content: 'export default function Button() { return <button>Click me</button>; }',
+            type: 'code'
+        });
+        expect(result.valid).toBe(true);
+    });
+
     it('routes .json files to validateJSON', () => {
         const result = validator.validate({ path: 'package.json', content: '{"name":"test"}', type: 'config' });
         expect(result.valid).toBe(true);
@@ -66,6 +75,26 @@ broken';`);
         expect(result.valid).toBe(false);
         expect(result.errors[0].file).toBe('my-file.ts');
         expect(result.errors[0].message.length).toBeGreaterThan(0);
+    });
+
+    it('returns valid:true for valid TSX with JSX elements', () => {
+        const result = validator.validateTypeScript('test.tsx', `
+            export default function Component() {
+                return <div><span>Hello World</span></div>;
+            }
+        `, require('typescript').ScriptKind.TSX);
+        expect(result.valid).toBe(true);
+        expect(result.errors).toHaveLength(0);
+    });
+
+    it('returns valid:false for malformed JSX in .tsx files', () => {
+        const result = validator.validateTypeScript('test.tsx', `
+            export default function Component() {
+                return <div><span>Unclosed div;
+            }
+        `, require('typescript').ScriptKind.TSX);
+        expect(result.valid).toBe(false);
+        expect(result.errors.length).toBeGreaterThan(0);
     });
 });
 

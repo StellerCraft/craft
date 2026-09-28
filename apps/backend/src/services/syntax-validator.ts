@@ -26,12 +26,16 @@ export class SyntaxValidator {
     /**
      * Validate a generated file based on its extension.
      * - .ts  → TypeScript syntactic validation (no type-checking)
+     * - .tsx → TypeScript with JSX syntactic validation (no type-checking)
      * - .json → JSON.parse validation
      * - other → no-op, always valid
      */
     validate(file: GeneratedFile): SyntaxValidationResult {
+        if (file.path.endsWith('.tsx')) {
+            return this.validateTypeScript(file.path, file.content, ts.ScriptKind.TSX);
+        }
         if (file.path.endsWith('.ts')) {
-            return this.validateTypeScript(file.path, file.content);
+            return this.validateTypeScript(file.path, file.content, ts.ScriptKind.TS);
         }
         if (file.path.endsWith('.json')) {
             return this.validateJSON(file.path, file.content);
@@ -43,12 +47,13 @@ export class SyntaxValidator {
      * Validate TypeScript content using the compiler's syntactic diagnostics only.
      * No imports are resolved and no type-checking is performed.
      */
-    validateTypeScript(path: string, content: string): SyntaxValidationResult {
+    validateTypeScript(path: string, content: string, scriptKind: ts.ScriptKind = ts.ScriptKind.TS): SyntaxValidationResult {
         const sourceFile = ts.createSourceFile(
             path,
             content,
             ts.ScriptTarget.Latest,
             /* setParentNodes */ true,
+            scriptKind,
         );
 
         // Use the public API: create a program-less diagnostic list via the source file
