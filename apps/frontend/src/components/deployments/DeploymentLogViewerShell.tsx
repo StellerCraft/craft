@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useState } from 'react';
 import type { DeploymentLogEntry } from '@/types/deployment';
 
 interface DeploymentLogViewerShellProps {
@@ -18,10 +18,25 @@ function levelClass(level: DeploymentLogEntry['level']): string {
   return 'bg-blue-100 text-blue-700';
 }
 
-function formatLogTimestamp(value: string): string {
+export type LogTimeZoneMode = 'local' | 'utc';
+
+/**
+ * Formats a log timestamp with an explicit timezone indicator (e.g. "PDT",
+ * "GMT+1" or "UTC") so entries can be correlated across regions.
+ */
+export function formatLogTimestamp(value: string, mode: LogTimeZoneMode = 'local'): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString();
+  return new Intl.DateTimeFormat(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    timeZoneName: 'short',
+    ...(mode === 'utc' ? { timeZone: 'UTC' } : {}),
+  }).format(date);
 }
 
 export function DeploymentLogViewerShell({
@@ -32,6 +47,8 @@ export function DeploymentLogViewerShell({
   onLoadMore,
   hasMore = false,
 }: DeploymentLogViewerShellProps) {
+  const [timeZoneMode, setTimeZoneMode] = useState<LogTimeZoneMode>('local');
+
   return (
     <section
       aria-label="Deployment logs"
@@ -40,16 +57,41 @@ export function DeploymentLogViewerShell({
       <div className="flex items-center justify-between gap-3">
         <h2 className="text-lg font-bold font-headline text-on-surface">Logs</h2>
 
-        {onRefresh && (
-          <button
-            type="button"
-            data-testid="deployment-logs-refresh-btn"
-            onClick={onRefresh}
-            className="rounded-lg border border-outline-variant px-3 py-1.5 text-sm text-on-surface-variant transition-colors hover:bg-surface-container hover:text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/40"
+        <div className="flex items-center gap-2">
+          <div
+            role="group"
+            aria-label="Timestamp timezone"
+            className="inline-flex overflow-hidden rounded-lg border border-outline-variant text-xs"
           >
-            Refresh
-          </button>
-        )}
+            {(['local', 'utc'] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                data-testid={`deployment-logs-tz-${mode}`}
+                aria-pressed={timeZoneMode === mode}
+                onClick={() => setTimeZoneMode(mode)}
+                className={`px-2.5 py-1.5 transition-colors focus:outline-none focus:ring-2 focus:ring-primary/40 ${
+                  timeZoneMode === mode
+                    ? 'bg-surface-container text-on-surface'
+                    : 'text-on-surface-variant hover:bg-surface-container hover:text-on-surface'
+                }`}
+              >
+                {mode === 'local' ? 'Local' : 'UTC'}
+              </button>
+            ))}
+          </div>
+
+          {onRefresh && (
+            <button
+              type="button"
+              data-testid="deployment-logs-refresh-btn"
+              onClick={onRefresh}
+              className="rounded-lg border border-outline-variant px-3 py-1.5 text-sm text-on-surface-variant transition-colors hover:bg-surface-container hover:text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/40"
+            >
+              Refresh
+            </button>
+          )}
+        </div>
       </div>
 
       {error && (
@@ -86,7 +128,13 @@ export function DeploymentLogViewerShell({
                 <span className={`rounded-full px-2 py-0.5 font-semibold uppercase tracking-wide ${levelClass(log.level)}`}>
                   {log.level}
                 </span>
-                <time className="font-mono text-on-surface-variant">{formatLogTimestamp(log.timestamp)}</time>
+                <time
+                  dateTime={log.timestamp}
+                  data-testid="deployment-log-timestamp"
+                  className="font-mono text-on-surface-variant"
+                >
+                  {formatLogTimestamp(log.timestamp, timeZoneMode)}
+                </time>
               </div>
               <p className="mt-1 font-mono text-xs text-on-surface">{log.message}</p>
             </li>

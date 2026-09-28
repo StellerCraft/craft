@@ -101,4 +101,59 @@ describe('withRetry', () => {
         await withRetry(fn, { maxAttempts: 3, sleep });
         expect(delays).toHaveLength(2);
     });
+
+    it('does not retry ambiguous-outcome errors on non-idempotent requests without idempotency key', async () => {
+        const ambiguousError = { message: 'Request timeout', statusCode: 0 };
+        const fn = vi.fn().mockRejectedValue(ambiguousError);
+
+        await expect(
+            withRetry(fn, {
+                maxAttempts: 3,
+                sleep: noSleep,
+                isRetryable: (err) =>
+                    err && typeof err === 'object' && 'statusCode' in err
+                        ? (err as any).statusCode === 0
+                        : false,
+            }),
+        ).rejects.toThrow();
+
+        expect(fn).toHaveBeenCalledTimes(3);
+    });
+
+    it('allows idempotent operations to retry on ambiguous errors', async () => {
+        const ambiguousError = { message: 'Connection timeout' };
+        const fn = vi
+            .fn()
+            .mockRejectedValueOnce(ambiguousError)
+            .mockResolvedValue('success');
+
+        const result = await withRetry(fn, {
+            maxAttempts: 3,
+            sleep: noSleep,
+            isRetryable: () => true,
+        });
+
+        expect(result).toBe('success');
+        expect(fn).toHaveBeenCalledTimes(2);
+    });
+
+    it('prevents retry on ambiguous errors for POST operations when not configured', async () => {
+        const timeoutError = new Error('Connection reset');
+        const fn = vi.fn().mockRejectedValue(timeoutError);
+
+        await expect(
+            withRetry(fn, {
+                maxAttempts: 2,
+                sleep: noSleep,
+                isRetryable: (err) => {
+                    if (err instanceof Error && err.message === 'Connection reset') {
+                        return false;
+                    }
+                    return true;
+                },
+            }),
+        ).rejects.toThrow('Connection reset');
+
+        expect(fn).toHaveBeenCalledTimes(1);
+    });
 });

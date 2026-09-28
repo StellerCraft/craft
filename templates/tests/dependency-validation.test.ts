@@ -16,7 +16,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
-import { satisfies, validRange } from 'semver';
+import { minVersion, satisfies, validRange } from 'semver';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -53,12 +53,26 @@ const KNOWN_VULNERABILITIES: Array<{ pkg: string; vulnerableRange: string; cve: 
   { pkg: 'next', vulnerableRange: '<13.5.1', cve: 'CVE-2023-46298' },
 ];
 
-// ── Peer-dependency requirements ──────────────────────────────────────────────
-// next@14 requires react@^18 and react-dom@^18.
+// ── Declared peer-dependency ranges ───────────────────────────────────────────
+// Mirrors the `peerDependencies` published by each package the templates depend
+// on. Each entry applies while the template's pinned version of `pkg` falls in
+// `appliesTo`; every peer range is then resolved against the version the
+// template itself pins for that peer (not just checked for range syntax).
+// Extend this list when a template adds a dependency that declares peers.
 
-const PEER_REQUIREMENTS: Array<{ host: string; hostRange: string; peer: string; peerRange: string }> = [
-  { host: 'next', hostRange: '>=14.0.0', peer: 'react',     peerRange: '^18.0.0' },
-  { host: 'next', hostRange: '>=14.0.0', peer: 'react-dom', peerRange: '^18.0.0' },
+interface PeerDeclaration {
+  pkg: string;
+  appliesTo: string;
+  peers: Record<string, string>;
+  /** Peers marked optional via `peerDependenciesMeta` — only checked if present. */
+  optionalPeers?: string[];
+}
+
+const DECLARED_PEER_RANGES: PeerDeclaration[] = [
+  { pkg: 'next',               appliesTo: '>=14.0.0 <15.0.0', peers: { react: '^18.2.0', 'react-dom': '^18.2.0' } },
+  { pkg: 'react-dom',          appliesTo: '^18.0.0',          peers: { react: '^18.2.0' } },
+  { pkg: 'eslint-config-next', appliesTo: '>=14.0.0 <15.0.0', peers: { eslint: '^7.23.0 || ^8.0.0', typescript: '>=3.3.1' }, optionalPeers: ['typescript'] },
+  { pkg: 'autoprefixer',       appliesTo: '^10.0.0',          peers: { postcss: '^8.1.0' } },
 ];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -67,11 +81,70 @@ function allDeps(pkg: PackageJson): Record<string, string> {
   return { ...pkg.dependencies, ...pkg.devDependencies, ...pkg.peerDependencies };
 }
 
+function sharedDependencyMismatches(packages: Record<string, PackageJson>): string[] {
+  const rangesByDependency = new Map<string, Set<string>>();
+  for (const pkg of Object.values(packages)) {
+    for (const [dependency, range] of Object.entries(allDeps(pkg))) {
+      const ranges = rangesByDependency.get(dependency) ?? new Set<string>();
+      ranges.add(range);
+      rangesByDependency.set(dependency, ranges);
+    }
+  }
+
+  return [...rangesByDependency]
+    .filter(([, ranges]) => ranges.size > 1)
+    .map(([dependency]) => dependency);
+}
+
 /** Strip leading range operators to get a representative version for satisfies(). */
 function representativeVersion(range: string): string | null {
   // e.g. "^18.2.0" → "18.2.0", "14.0.4" → "14.0.4"
   const match = range.match(/(\d+\.\d+\.\d+)/);
   return match ? match[1] : null;
+}
+
+/** Lowest version a pinned range can install — the worst case for satisfies(). */
+function pinnedVersion(range: string): string | null {
+  try {
+    return minVersion(range)?.version ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve every declared peer range against the versions this template pins.
+ * Returns one human-readable violation per incompatible or missing peer.
+ */
+function findPeerViolations(
+  pkg: PackageJson,
+  declarations: PeerDeclaration[] = DECLARED_PEER_RANGES,
+): string[] {
+  const deps = allDeps(pkg);
+  const violations: string[] = [];
+
+  for (const { pkg: host, appliesTo, peers, optionalPeers = [] } of declarations) {
+    if (!deps[host]) continue;
+    const hostVer = pinnedVersion(deps[host]);
+    if (!hostVer || !satisfies(hostVer, appliesTo)) continue;
+
+    for (const [peer, peerRange] of Object.entries(peers)) {
+      if (!deps[peer]) {
+        if (!optionalPeers.includes(peer)) {
+          violations.push(`${host}@${hostVer} requires peer "${peer}@${peerRange}" but it is not declared`);
+        }
+        continue;
+      }
+      const peerVer = pinnedVersion(deps[peer]);
+      if (!peerVer || !satisfies(peerVer, peerRange)) {
+        violations.push(
+          `${peer}@${deps[peer]} (resolves to ${peerVer ?? 'nothing'}) is outside ${host}@${hostVer}'s peer range "${peerRange}"`,
+        );
+      }
+    }
+  }
+
+  return violations;
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -148,25 +221,84 @@ describe('Template dependency validation — security vulnerabilities', () => {
 
 describe('Template dependency validation — peer dependency requirements', () => {
   for (const name of TEMPLATE_NAMES) {
-    it(`${name}: peer dependencies of installed packages are satisfied`, () => {
-      const deps = allDeps(PACKAGES[name]);
-      for (const { host, hostRange, peer, peerRange } of PEER_REQUIREMENTS) {
-        if (!deps[host]) continue;
-        const hostVer = representativeVersion(deps[host]);
-        if (!hostVer || !satisfies(hostVer, hostRange)) continue;
+    it(`${name}: every declared peer range is satisfied by the template's own pinned versions`, () => {
+      expect(findPeerViolations(PACKAGES[name])).toEqual([]);
+    });
 
-        const peerVer = deps[peer] ? representativeVersion(deps[peer]) : null;
-        expect(peerVer, `${host} requires peer "${peer}" but it is missing`).not.toBeNull();
+    it(`${name}: pinned next version falls inside every dependency's declared next peer range`, () => {
+      const nextVer = pinnedVersion(PACKAGES[name].dependencies?.next ?? '');
+      expect(nextVer, `${name} does not pin next`).not.toBeNull();
+      for (const { pkg, peers } of DECLARED_PEER_RANGES) {
+        if (!peers.next || !allDeps(PACKAGES[name])[pkg]) continue;
         expect(
-          satisfies(peerVer!, peerRange),
-          `${peer}@${peerVer} does not satisfy ${host}'s peer requirement "${peerRange}"`
+          satisfies(nextVer!, peers.next),
+          `next@${nextVer} is outside ${pkg}'s peer range "${peers.next}"`,
         ).toBe(true);
       }
     });
   }
+
+  describe('regression: incompatible fixtures are caught (#1337)', () => {
+    const base = PACKAGES['stellar-dex'];
+
+    it('flags a dependency whose next peer range excludes the pinned next major', () => {
+      const fixture: PackageJson = {
+        ...base,
+        dependencies: { ...base.dependencies, 'fake-next-ui-kit': '^1.0.0' },
+      };
+      const declarations: PeerDeclaration[] = [
+        ...DECLARED_PEER_RANGES,
+        { pkg: 'fake-next-ui-kit', appliesTo: '^1.0.0', peers: { next: '^13.0.0' } },
+      ];
+      const violations = findPeerViolations(fixture, declarations);
+      expect(violations).toHaveLength(1);
+      expect(violations[0]).toMatch(/next@14\.1\.1.*fake-next-ui-kit.*\^13\.0\.0/);
+    });
+
+    it('flags react pinned below next@14\'s peer range', () => {
+      const fixture: PackageJson = {
+        ...base,
+        dependencies: { ...base.dependencies, react: '^17.0.2', 'react-dom': '^17.0.2' },
+      };
+      const violations = findPeerViolations(fixture);
+      expect(violations.some((v) => v.startsWith('react@^17.0.2'))).toBe(true);
+      expect(violations.some((v) => v.startsWith('react-dom@^17.0.2'))).toBe(true);
+    });
+
+    it('flags a caret range whose lowest installable version is below the peer floor', () => {
+      // "^18.0.0" is valid syntax and shares the major, but can install 18.0.0 < 18.2.0
+      const fixture: PackageJson = {
+        ...base,
+        dependencies: { ...base.dependencies, react: '^18.0.0' },
+      };
+      expect(findPeerViolations(fixture).some((v) => v.includes('"^18.2.0"'))).toBe(true);
+    });
+
+    it('flags a missing required peer but not a missing optional one', () => {
+      const devDependencies = { ...base.devDependencies };
+      delete devDependencies.eslint;
+      delete devDependencies.typescript;
+      const fixture: PackageJson = { ...base, devDependencies };
+      const violations = findPeerViolations(fixture);
+      expect(violations.some((v) => v.includes('requires peer "eslint'))).toBe(true);
+      expect(violations.some((v) => v.includes('requires peer "typescript'))).toBe(false);
+    });
+  });
 });
 
 describe('Template dependency validation — dependency resolution', () => {
+  it('uses identical version constraints for dependencies shared across templates', () => {
+    expect(sharedDependencyMismatches(PACKAGES)).toEqual([]);
+  });
+
+  it('detects a mismatched shared dependency range', () => {
+    const fixture = {
+      first: { name: 'first', version: '1.0.0', dependencies: { next: '14.1.1' } },
+      second: { name: 'second', version: '1.0.0', dependencies: { next: '^14.1.1' } },
+    };
+    expect(sharedDependencyMismatches(fixture)).toEqual(['next']);
+  });
+
   it('no template declares the same package in both dependencies and devDependencies', () => {
     for (const name of TEMPLATE_NAMES) {
       const pkg = PACKAGES[name];

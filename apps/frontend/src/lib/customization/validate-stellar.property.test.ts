@@ -3,6 +3,7 @@ import { describe, it, expect } from 'vitest';
 import * as fc from 'fast-check';
 import { validateCustomizationConfig } from './validate';
 import type { CustomizationConfig, StellarAsset, AssetPair } from '@craft/types';
+import { encodeContractAddress } from '../stellar/strkey-test-utils';
 
 // ── Network constants ─────────────────────────────────────────────────────────
 
@@ -37,8 +38,8 @@ const arbAssetPair: fc.Arbitrary<AssetPair> = fc
 
 const arbAssetPairs = fc.array(arbAssetPair, { maxLength: 5 });
 
-/** Contract addresses: Soroban contract IDs are 56-char base32 strings starting with C */
-const arbContractId = fc.stringMatching(/^C[A-Z2-7]{55}$/);
+/** Contract addresses: real strkey-encoded Soroban contract IDs (valid checksum, version byte 0x10) */
+const arbContractId = fc.uint8Array({ minLength: 32, maxLength: 32 }).map(encodeContractAddress);
 const arbContractAddresses = fc.dictionary(
     fc.string({ minLength: 1, maxLength: 32 }),
     arbContractId,

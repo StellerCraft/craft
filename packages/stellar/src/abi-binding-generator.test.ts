@@ -4,6 +4,7 @@ import {
   xdrTypeToTypeScript,
   parseContractAbi,
   generateBinding,
+  toValidTsIdentifier,
 } from './abi-binding-generator';
 
 // ---------------------------------------------------------------------------
@@ -749,3 +750,82 @@ describe('generateBinding – identifier collision detection (regression #1105)'
 // ---------------------------------------------------------------------------
 // End regression #1105
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Issue #1287: Invalid identifier sanitization for leading digits and reserved words
+// ---------------------------------------------------------------------------
+describe('Issue #1287: toValidTsIdentifier and reserved-word / leading-digit sanitization', () => {
+  it('prefixes leading digits with underscore', () => {
+    expect(toValidTsIdentifier('1swap')).toBe('_1swap');
+    expect(toValidTsIdentifier('0balance')).toBe('_0balance');
+    expect(toValidTsIdentifier('99tokens')).toBe('_99tokens');
+  });
+
+  it('suffixes TypeScript reserved words with underscore', () => {
+    expect(toValidTsIdentifier('class')).toBe('class_');
+    expect(toValidTsIdentifier('interface')).toBe('interface_');
+    expect(toValidTsIdentifier('function')).toBe('function_');
+    expect(toValidTsIdentifier('default')).toBe('default_');
+    expect(toValidTsIdentifier('type')).toBe('type_');
+  });
+
+  it('preserves valid TypeScript identifiers', () => {
+    expect(toValidTsIdentifier('swap_tokens')).toBe('swap_tokens');
+    expect(toValidTsIdentifier('getBalance')).toBe('getBalance');
+    expect(toValidTsIdentifier('_existing_prefix')).toBe('_existing_prefix');
+  });
+
+  it('emits valid binding code for functions named with leading digits or reserved words', () => {
+    const entries = buildSpecEntries({
+      functions: [
+        {
+          name: '1swap',
+          inputs: [
+            {
+              name: 'class',
+              type: xdr.ScSpecTypeDef.scSpecTypeU32(),
+            },
+          ],
+          outputs: [xdr.ScSpecTypeDef.scSpecTypeU32()],
+        },
+        {
+          name: 'class',
+          inputs: [],
+          outputs: [xdr.ScSpecTypeDef.scSpecTypeVoid()],
+        },
+      ],
+    });
+
+    const code = generateBinding(entries, 'TokenContract');
+
+    // Method and interface names should be sanitized
+    expect(code).toContain('export interface _1swapArgs {');
+    expect(code).toContain('class_: number;');
+    expect(code).toContain('async _1swap(');
+    expect(code).toContain('async class_(');
+    // ContractSpec calls should still invoke original contract method name strings
+    expect(code).toContain("spec.funcArgsToScVals('1swap'");
+    expect(code).toContain("invoke('1swap', scArgs)");
+    expect(code).toContain("invoke('class', scArgs)");
+  });
+
+  it('routes leading-digit name collisions through existing collision detection', () => {
+    const entries = buildSpecEntries({
+      functions: [
+        {
+          name: '1swap',
+          inputs: [],
+          outputs: [xdr.ScSpecTypeDef.scSpecTypeVoid()],
+        },
+        {
+          name: '_1swap',
+          inputs: [],
+          outputs: [xdr.ScSpecTypeDef.scSpecTypeVoid()],
+        },
+      ],
+    });
+
+    expect(() => generateBinding(entries)).toThrow(/collision/i);
+  });
+});
+

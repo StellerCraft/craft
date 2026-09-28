@@ -66,9 +66,9 @@ function resolveUdtTypeName(
   rawName: string,
   udtNames: ReadonlySet<string>,
 ): string {
-  if (udtNames.has(rawName)) return rawName;
+  if (udtNames.has(rawName)) return toValidTsIdentifier(rawName);
   if (rawName.startsWith('ErrorEnum(')) return 'Error';
-  return rawName;
+  return toValidTsIdentifier(rawName);
 }
 
 /**
@@ -283,11 +283,113 @@ function escapeDoc(doc: string, indent: string = ''): string {
   return [`${indent}/**`, ...lines, `${indent} */`].join('\n');
 }
 
+const TYPESCRIPT_RESERVED_WORDS = new Set([
+  'abstract', 'any', 'as', 'asserts', 'await', 'bigint', 'boolean', 'break',
+  'case',
+  'catch', 'class', 'const', 'continue', 'debugger', 'declare', 'default',
+  'delete', 'do', 'else', 'enum', 'export', 'extends', 'false', 'finally',
+  'for', 'function', 'if', 'implements', 'import', 'in', 'infer',
+  'instanceof', 'interface', 'is', 'keyof', 'let', 'module', 'namespace',
+  'never', 'new', 'null', 'number', 'object', 'package', 'private',
+  'protected', 'public', 'readonly', 'return', 'static', 'string', 'super',
+  'switch', 'symbol', 'this', 'throw', 'true', 'try', 'type', 'typeof',
+  'undefined', 'unique', 'unknown', 'var', 'void', 'while', 'with', 'yield',
+]);
+
+/**
+ * Reserved TypeScript keywords and types that cannot be used as bare identifiers.
+ */
+export const TS_RESERVED_WORDS: ReadonlySet<string> = new Set([
+  'break',
+  'case',
+  'catch',
+  'class',
+  'const',
+  'continue',
+  'debugger',
+  'default',
+  'delete',
+  'do',
+  'else',
+  'enum',
+  'export',
+  'extends',
+  'false',
+  'finally',
+  'for',
+  'function',
+  'if',
+  'import',
+  'in',
+  'instanceof',
+  'new',
+  'null',
+  'return',
+  'super',
+  'switch',
+  'this',
+  'throw',
+  'true',
+  'try',
+  'typeof',
+  'var',
+  'void',
+  'while',
+  'with',
+  'as',
+  'implements',
+  'interface',
+  'let',
+  'package',
+  'private',
+  'protected',
+  'public',
+  'static',
+  'yield',
+  'any',
+  'boolean',
+  'constructor',
+  'declare',
+  'get',
+  'module',
+  'require',
+  'number',
+  'set',
+  'string',
+  'symbol',
+  'type',
+  'from',
+  'of',
+  'unknown',
+  'never',
+  'bigint',
+]);
+
+/**
+ * Converts a raw Soroban contract symbol (function, type, parameter, field name)
+ * into a valid TypeScript identifier.
+ *
+ * Rules:
+ * - Replace non-alphanumeric (and non-_/$) characters with `_`
+ * - Prefix names starting with a digit with `_` (e.g. `1swap` -> `_1swap`)
+ * - Suffix reserved TypeScript keywords with `_` (e.g. `class` -> `class_`, `interface` -> `interface_`)
+ */
+export function toValidTsIdentifier(name: string): string {
+  let sanitized = name.replace(/[^a-zA-Z0-9_$]/g, '_');
+  if (/^[0-9]/.test(sanitized)) {
+    sanitized = `_${sanitized}`;
+  }
+  if (TS_RESERVED_WORDS.has(sanitized)) {
+    sanitized = `${sanitized}_`;
+  }
+  return sanitized;
+}
+
 /**
  * Sanitise a name so it can be used as a TypeScript identifier.
  */
 function safeIdent(name: string): string {
-  return name.replace(/[^a-zA-Z0-9_$]/g, '_').replace(/^(\d)/, '_$1');
+  return toValidTsIdentifier(name);
 }
 
 /**

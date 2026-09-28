@@ -20,6 +20,21 @@
  *   - Runs as a one-off script with direct DB access (service_role key).
  *   - Does NOT cause downtime: old and new keys coexist during rotation.
  *   - HSM / KMS integration is out of scope.
+ *
+ * Isolation guarantee for concurrent reads (#1323):
+ *   - Each encrypted value is replaced as a whole string by the batched upsert,
+ *     so a concurrent read observes either the old-key blob or the new-key
+ *     blob for a given field — never a partially-rotated or corrupted value.
+ *     Both decrypt correctly as long as the old FIELD_ENCRYPTION_KEY_<N> is
+ *     still configured (step 6 above must wait until rotation completes).
+ *   - Columns are rotated one at a time, so a read that spans both columns of
+ *     the same row may see them at different key versions mid-rotation. Each
+ *     field is still independently decryptable.
+ *   - NOT guaranteed: the rotation reads a snapshot and writes it back later,
+ *     so an application write to the same field between the select and the
+ *     upsert is overwritten by the re-encrypted snapshot value (lost update).
+ *     Run rotation when writes to these columns are quiescent.
+ *   - See key-rotation.test.ts ("reads racing an in-flight rotation").
  */
 
 import { createClient } from '@supabase/supabase-js';
