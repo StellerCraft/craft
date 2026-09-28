@@ -16,6 +16,11 @@ import { cleanupService } from '@/services/cleanup.service';
  * Orphaned artifacts are kept for a 24h debugging window and deleted in batches
  * of up to 100 per run (see CleanupService.purgeOrphanedArtifacts).
  *
+ * Pass ?dryRun=true to preview the orphaned-artifact purge (candidate set,
+ * zero deletions) for manual operator invocation — still protected by
+ * CRON_SECRET like any other call to this route. Does not affect the
+ * tombstoned-deployment purge above, which always runs for real.
+ *
  * Scheduled daily via vercel.json.  Protected by CRON_SECRET.
  */
 export async function GET(req: NextRequest) {
@@ -23,6 +28,8 @@ export async function GET(req: NextRequest) {
     if (cronSecret && req.headers.get('authorization') !== `Bearer ${cronSecret}`) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
+
+    const dryRun = req.nextUrl.searchParams.get('dryRun') === 'true';
 
     const retentionDays = readRetentionDays('tombstonedDeploymentPurge');
     validateRetentionWindows(getRetentionPolicyWindows());
@@ -48,7 +55,7 @@ export async function GET(req: NextRequest) {
     // Remove orphaned storage artifacts (24h retention, 100/run batch limit).
     let orphanedArtifactsPurged = 0;
     try {
-        const orphanResult = await cleanupService.purgeOrphanedArtifacts();
+        const orphanResult = await cleanupService.purgeOrphanedArtifacts({ dryRun });
         orphanedArtifactsPurged = orphanResult.recordsDeleted;
     } catch (err: unknown) {
         // Orphan cleanup failure should not fail the whole cron; log and continue.
@@ -58,6 +65,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
         purged,
         orphanedArtifactsPurged,
+        dryRun,
         retentionDisabled: retentionDays === 0,
     });
 }
