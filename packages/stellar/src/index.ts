@@ -18,3 +18,7 @@ export * from './account-merge-protection';
 export * from './asset-compliance';
 export * from './circuit-breaker';
 export * from './horizon-client';
+export * from './abi-binding-generator';
+export * from './asset-auth';
+export * from './contract-state-snapshot';
+export * from './upgrade-orchestrator';
