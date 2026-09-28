@@ -7,7 +7,7 @@
  * Run: vitest run src/services/webhook-delivery.service.test.ts
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { WebhookDeliveryService } from './webhook-delivery.service';
 
 // ── Mock Supabase ─────────────────────────────────────────────────────────────
@@ -534,6 +534,165 @@ describe('WebhookDeliveryService', () => {
             const result = await service.getDelivery('del-nonexistent');
 
             expect(result).toBeNull();
+        });
+    });
+
+    describe('pruneOldDeliveries', () => {
+        const fixedNow = () => new Date('2024-06-01T00:00:00.000Z');
+
+        afterEach(() => {
+            delete process.env.WEBHOOK_DELIVERY_RETENTION_DAYS;
+        });
+
+        it('prunes processed deliveries past the retention window', async () => {
+            const service = new WebhookDeliveryService();
+
+            const selectChain = {
+                select: vi.fn().mockReturnValue({
+                    eq: vi.fn().mockReturnValue({
+                        lt: vi.fn().mockReturnValue({
+                            limit: vi.fn().mockResolvedValue({
+                                data: [{ id: 'row-1' }, { id: 'row-2' }],
+                                error: null,
+                            }),
+                        }),
+                    }),
+                }),
+            };
+            const deleteChain = {
+                delete: vi.fn().mockReturnValue({
+                    in: vi.fn().mockResolvedValue({ error: null }),
+                }),
+            };
+            mockFrom.mockReturnValueOnce(selectChain).mockReturnValueOnce(deleteChain);
+
+            const result = await service.pruneOldDeliveries({ retentionDays: 90, now: fixedNow });
+
+            expect(result).toEqual({ success: true, pruned: 2 });
+            expect(deleteChain.delete).toHaveBeenCalled();
+        });
+
+        it('only selects deliveries with status=processed, preserving in-window/replayable rows', async () => {
+            const service = new WebhookDeliveryService();
+
+            const eqMock = vi.fn().mockReturnValue({
+                lt: vi.fn().mockReturnValue({
+                    limit: vi.fn().mockResolvedValue({ data: [], error: null }),
+                }),
+            });
+            mockFrom.mockReturnValueOnce({ select: vi.fn().mockReturnValue({ eq: eqMock }) });
+
+            const result = await service.pruneOldDeliveries({ retentionDays: 90, now: fixedNow });
+
+            expect(eqMock).toHaveBeenCalledWith('status', 'processed');
+            expect(result).toEqual({ success: true, pruned: 0 });
+        });
+
+        it('computes the cutoff at exactly the retention boundary', async () => {
+            const service = new WebhookDeliveryService();
+
+            const ltMock = vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue({ data: [], error: null }),
+            });
+            mockFrom.mockReturnValueOnce({
+                select: vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ lt: ltMock }) }),
+            });
+
+            await service.pruneOldDeliveries({ retentionDays: 30, now: fixedNow });
+
+            expect(ltMock).toHaveBeenCalledWith('processed_at', '2024-05-02T00:00:00.000Z');
+        });
+
+        it('returns pruned: 0 and skips the delete call when nothing is past retention', async () => {
+            const service = new WebhookDeliveryService();
+
+            mockFrom.mockReturnValueOnce({
+                select: vi.fn().mockReturnValue({
+                    eq: vi.fn().mockReturnValue({
+                        lt: vi.fn().mockReturnValue({
+                            limit: vi.fn().mockResolvedValue({ data: [], error: null }),
+                        }),
+                    }),
+                }),
+            });
+
+            const result = await service.pruneOldDeliveries({ retentionDays: 90, now: fixedNow });
+
+            expect(result).toEqual({ success: true, pruned: 0 });
+            expect(mockFrom).toHaveBeenCalledTimes(1); // no second (delete) call
+        });
+
+        it('returns an error result when the select fails', async () => {
+            const service = new WebhookDeliveryService();
+
+            mockFrom.mockReturnValueOnce({
+                select: vi.fn().mockReturnValue({
+                    eq: vi.fn().mockReturnValue({
+                        lt: vi.fn().mockReturnValue({
+                            limit: vi.fn().mockResolvedValue({
+                                data: null,
+                                error: { message: 'Database error' },
+                            }),
+                        }),
+                    }),
+                }),
+            });
+
+            const result = await service.pruneOldDeliveries({ retentionDays: 90, now: fixedNow });
+
+            expect(result).toEqual({ success: false, pruned: 0, error: 'Database error' });
+        });
+
+        it('returns an error result when the delete fails', async () => {
+            const service = new WebhookDeliveryService();
+
+            mockFrom
+                .mockReturnValueOnce({
+                    select: vi.fn().mockReturnValue({
+                        eq: vi.fn().mockReturnValue({
+                            lt: vi.fn().mockReturnValue({
+                                limit: vi.fn().mockResolvedValue({
+                                    data: [{ id: 'row-1' }],
+                                    error: null,
+                                }),
+                            }),
+                        }),
+                    }),
+                })
+                .mockReturnValueOnce({
+                    delete: vi.fn().mockReturnValue({
+                        in: vi.fn().mockResolvedValue({ error: { message: 'Delete failed' } }),
+                    }),
+                });
+
+            const result = await service.pruneOldDeliveries({ retentionDays: 90, now: fixedNow });
+
+            expect(result).toEqual({ success: false, pruned: 0, error: 'Delete failed' });
+        });
+
+        it('is a no-op when retentionDays is 0 (retention disabled)', async () => {
+            const service = new WebhookDeliveryService();
+
+            const result = await service.pruneOldDeliveries({ retentionDays: 0, now: fixedNow });
+
+            expect(result).toEqual({ success: true, pruned: 0 });
+            expect(mockFrom).not.toHaveBeenCalled();
+        });
+
+        it('falls back to WEBHOOK_DELIVERY_RETENTION_DAYS env var when retentionDays is not supplied', async () => {
+            process.env.WEBHOOK_DELIVERY_RETENTION_DAYS = '30';
+            const service = new WebhookDeliveryService();
+
+            const ltMock = vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue({ data: [], error: null }),
+            });
+            mockFrom.mockReturnValueOnce({
+                select: vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ lt: ltMock }) }),
+            });
+
+            await service.pruneOldDeliveries({ now: fixedNow });
+
+            expect(ltMock).toHaveBeenCalledWith('processed_at', '2024-05-02T00:00:00.000Z');
         });
     });
 
