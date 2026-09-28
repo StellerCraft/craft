@@ -25,7 +25,7 @@ type RouteHandler<TParams = {}> = (
 
 /**
  * Wraps a route handler with Supabase session authentication.
- * Returns 401 if the user is not authenticated.
+ * Returns 401 if the user is not authenticated or if their account is soft-deleted.
  * Attaches a correlation ID and logger to the context.
  */
 export function withAuth<TParams = {}>(handler: RouteHandler<TParams>) {
@@ -36,6 +36,19 @@ export function withAuth<TParams = {}>(handler: RouteHandler<TParams>) {
         const { data: { user }, error } = await supabase.auth.getUser();
 
         if (error || !user) {
+            const res = NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+            res.headers.set(CORRELATION_ID_HEADER, correlationId);
+            return res;
+        }
+
+        const { data: profile } = await supabase
+            .from('profiles')
+            .select('id')
+            .eq('id', user.id)
+            .is('deleted_at', null)
+            .single();
+
+        if (!profile) {
             const res = NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
             res.headers.set(CORRELATION_ID_HEADER, correlationId);
             return res;

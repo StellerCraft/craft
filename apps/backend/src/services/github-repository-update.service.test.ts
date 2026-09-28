@@ -180,6 +180,18 @@ describe('GitHubRepositoryUpdateService.updateRepository', () => {
     });
   });
 
+  it('throws REPO_NOT_FOUND when non-owner attempts to update (ownership check)', async () => {
+    setupDeploymentFetch(null); // Different user's request filters out the deployment
+    const differentUserParams = { ...baseParams, userId: 'different-user' };
+
+    await expect(service.updateRepository(differentUserParams)).rejects.toMatchObject({
+      code: 'REPO_NOT_FOUND',
+    });
+
+    // Verify GitHub API was never called
+    expect(mockPushGeneratedCode).not.toHaveBeenCalled();
+  });
+
   it('throws INVALID_STATE when deployment status is not completed', async () => {
     setupDeploymentFetch(makeDeployment({ status: 'pending' }));
 

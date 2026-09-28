@@ -13,6 +13,10 @@
 export interface CraftClientOptions {
   baseUrl: string;
   accessToken?: string;
+  /** How many times a 429 response is retried after waiting for Retry-After. Defaults to 2. */
+  maxRetries?: number;
+  /** Upper bound (ms) on a single Retry-After wait; longer waits fail fast instead. Defaults to 60000. */
+  maxRetryDelayMs?: number;
 }
 
 export interface SignUpRequest {
@@ -108,20 +112,52 @@ export class CraftApiError extends Error {
    * Creates a new CraftApiError.
    * @param status - HTTP status code
    * @param message - Error message
+   * @param code - Optional machine-readable error code
+   * @param retryAfterMs - Optional wait (ms) requested by a 429 response
    */
   constructor(
     public readonly status: number,
     message: string,
     public readonly code?: string,
+    /** For 429 responses: how long (ms) the server asked the client to wait. */
+    public readonly retryAfterMs?: number,
   ) {
     super(message);
     this.name = 'CraftApiError';
   }
 }
 
+const DEFAULT_MAX_RETRIES = 2;
+const DEFAULT_MAX_RETRY_DELAY_MS = 60_000;
+/** Wait used when a 429 carries neither a Retry-After header nor a retryAfterMs body field. */
+const FALLBACK_RETRY_DELAY_MS = 1_000;
+
+/**
+ * Resolves how long to wait before retrying a 429.
+ * Prefers the standard Retry-After header (delta-seconds or HTTP-date), then the
+ * `retryAfterMs` field the backend's tier rate limiter includes in its JSON body.
+ */
+function resolveRetryAfterMs(res: Response, body: Record<string, unknown> | null): number {
+  const header = res.headers?.get?.('Retry-After');
+  if (header) {
+    const seconds = Number(header);
+    if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+    const date = Date.parse(header);
+    if (!Number.isNaN(date)) return Math.max(0, date - Date.now());
+  }
+  if (body && typeof body.retryAfterMs === 'number' && body.retryAfterMs >= 0) {
+    return body.retryAfterMs;
+  }
+  return FALLBACK_RETRY_DELAY_MS;
+}
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
 export class CraftClient {
   private baseUrl: string;
   private accessToken?: string;
+  private maxRetries: number;
+  private maxRetryDelayMs: number;
 
   /**
    * Creates a new CRAFT API client.
@@ -132,6 +168,8 @@ export class CraftClient {
     if (!options.baseUrl) throw new Error('baseUrl is required');
     this.baseUrl = options.baseUrl.replace(/\/$/, '');
     this.accessToken = options.accessToken;
+    this.maxRetries = Math.max(0, options.maxRetries ?? DEFAULT_MAX_RETRIES);
+    this.maxRetryDelayMs = options.maxRetryDelayMs ?? DEFAULT_MAX_RETRY_DELAY_MS;
   }
 
   /**
@@ -155,35 +193,66 @@ export class CraftClient {
    * Makes an HTTP request to the CRAFT API.
    * All failures — network-level and HTTP error responses — surface as CraftApiError.
    * When the error body is JSON matching ApiErrorResponse, the parsed message is used.
+   * 429 responses are retried up to `maxRetries` times, waiting for the duration the
+   * server advertises via Retry-After; once retries are exhausted a CraftApiError
+   * with code 'RATE_LIMITED' is thrown.
    */
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
-    try {
-      const res = await fetch(`${this.baseUrl}${path}`, {
-        method,
-        headers: this.headers(),
-        body: body !== undefined ? JSON.stringify(body) : undefined,
-      });
-      if (!res.ok) {
-        const text = await res.text().catch(() => res.statusText);
-        let message = text;
-        let code: string | undefined;
-        try {
-          const errorBody = JSON.parse(text) as Record<string, unknown>;
-          if (errorBody.message && typeof errorBody.message === 'string') {
-            message = errorBody.message;
-          }
-          if (errorBody.code && typeof errorBody.code === 'string') {
-            code = errorBody.code;
-          }
-        } catch {
-          // text is not JSON; use raw text as message
+    for (let attempt = 0; ; attempt++) {
+      let res: Response;
+      try {
+        res = await fetch(`${this.baseUrl}${path}`, {
+          method,
+          headers: this.headers(),
+          body: body !== undefined ? JSON.stringify(body) : undefined,
+        });
+      } catch (error) {
+        throw new CraftApiError(0, `Network request failed: ${error instanceof Error ? error.message : String(error)}`, undefined);
+      }
+
+      if (res.ok) return res.json() as Promise<T>;
+
+      const text = await res.text().catch(() => res.statusText);
+      let message = text;
+      let code: string | undefined;
+      let errorBody: Record<string, unknown> | null = null;
+      try {
+        errorBody = JSON.parse(text) as Record<string, unknown>;
+        if (errorBody.message && typeof errorBody.message === 'string') {
+          message = errorBody.message;
+        } else if (errorBody.error && typeof errorBody.error === 'string') {
+          // Rate-limit middleware responses use `error` rather than `message`.
+          message = errorBody.error;
         }
+        if (errorBody.code && typeof errorBody.code === 'string') {
+          code = errorBody.code;
+        }
+      } catch {
+        // text is not JSON; use raw text as message
+      }
+
+      if (res.status !== 429) {
         throw new CraftApiError(res.status, message, code);
       }
-      return res.json() as Promise<T>;
-    } catch (error) {
-      if (error instanceof CraftApiError) throw error;
-      throw new CraftApiError(0, `Network request failed: ${error instanceof Error ? error.message : String(error)}`, undefined);
+
+      const retryAfterMs = resolveRetryAfterMs(res, errorBody);
+      if (attempt >= this.maxRetries) {
+        throw new CraftApiError(
+          429,
+          `Rate limit exceeded; gave up after ${attempt} ${attempt === 1 ? 'retry' : 'retries'} (server asked to retry after ${retryAfterMs}ms): ${message}`,
+          code ?? 'RATE_LIMITED',
+          retryAfterMs,
+        );
+      }
+      if (retryAfterMs > this.maxRetryDelayMs) {
+        throw new CraftApiError(
+          429,
+          `Rate limit exceeded; server asked to retry after ${retryAfterMs}ms, which exceeds maxRetryDelayMs (${this.maxRetryDelayMs}ms): ${message}`,
+          code ?? 'RATE_LIMITED',
+          retryAfterMs,
+        );
+      }
+      await sleep(retryAfterMs);
     }
   }
 

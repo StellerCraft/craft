@@ -33,9 +33,9 @@ describe('getErrorGuidance', () => {
     expect(g.template.retryable).toBe(true);
   });
 
-  it('falls back to general:UNKNOWN for an unrecognised code', () => {
+  it('falls back to domain:UNKNOWN for an unrecognised code', () => {
     const g = getErrorGuidance('github', 'TOTALLY_UNKNOWN_CODE');
-    expect(g.template.title).toBe('An unexpected error occurred');
+    expect(g.template.title).toBe('GitHub integration error');
     expect(g.template.retryable).toBe(true);
   });
 
@@ -48,9 +48,9 @@ describe('getErrorGuidance', () => {
   it('every guidance entry has at least one step and one link', () => {
     const domains = ['github', 'vercel', 'stripe', 'stellar', 'auth'] as const;
     const codes: Record<string, string[]> = {
-      github: ['AUTH_FAILED', 'RATE_LIMITED', 'COLLISION', 'NETWORK_ERROR', 'CONFIGURATION_ERROR'],
-      vercel: ['AUTH_FAILED', 'RATE_LIMITED', 'PROJECT_EXISTS', 'NETWORK_ERROR'],
-      stripe: ['CARD_DECLINED', 'WEBHOOK_SIGNATURE_INVALID', 'SUBSCRIPTION_NOT_FOUND'],
+      github: ['AUTH_FAILED', 'RATE_LIMITED', 'COLLISION', 'NETWORK_ERROR', 'CONFIGURATION_ERROR', 'UNKNOWN'],
+      vercel: ['AUTH_FAILED', 'RATE_LIMITED', 'PROJECT_EXISTS', 'NETWORK_ERROR', 'UNKNOWN'],
+      stripe: ['CARD_DECLINED', 'WEBHOOK_SIGNATURE_INVALID', 'SUBSCRIPTION_NOT_FOUND', 'UNKNOWN'],
       stellar: ['INSUFFICIENT_BALANCE', 'NETWORK_MISMATCH', 'TRANSACTION_FAILED', 'ENDPOINT_UNREACHABLE'],
       auth: ['INVALID_CREDENTIALS', 'EMAIL_TAKEN'],
     };
@@ -61,6 +61,18 @@ describe('getErrorGuidance', () => {
         expect(g.steps.length, `${domain}:${code} steps`).toBeGreaterThan(0);
         expect(g.links.length, `${domain}:${code} links`).toBeGreaterThan(0);
       }
+    }
+  });
+
+  it('every domain in the guidance map has a :UNKNOWN fallback entry', () => {
+    const domains = ['github', 'vercel', 'stripe', 'stellar', 'auth', 'general'] as const;
+
+    for (const domain of domains) {
+      const g = getErrorGuidance(domain, 'ANY_UNKNOWN_CODE');
+      expect(g, `${domain} should have a fallback for unknown codes`).toBeDefined();
+      expect(g.template.title).toBeTruthy();
+      expect(g.steps.length).toBeGreaterThan(0);
+      expect(g.links.length).toBeGreaterThan(0);
     }
   });
 });

@@ -109,6 +109,38 @@ export class GitHubCredentialService {
         return token;
     }
 
+    /**
+     * Executes a GitHub operation with automatic retry on 401 due to credential rotation.
+     *
+     * Pattern: an in-flight request that decrypted an old token before a proactive
+     * rotation can receive a 401 from GitHub. This helper fetches a fresh credential
+     * and retries once, distinguishing a rotation race from a genuinely revoked token.
+     *
+     * @param userId - The user whose credential to fetch
+     * @param operation - Async function that receives the plaintext token and performs
+     *                    the GitHub operation; must throw GitHubCredentialError on non-2xx
+     * @returns The operation result, or throws GitHubCredentialError if it fails after retry
+     */
+    async withFreshCredentialOnRotation<T>(
+        userId: string,
+        operation: (token: string) => Promise<T>,
+    ): Promise<T> {
+        let token = await this._loadAndCheckExpiry(userId);
+
+        try {
+            return await operation(token);
+        } catch (err) {
+            // Only retry on 401 (rotation race); other errors are fatal
+            if (!(err instanceof GitHubCredentialError) || err.code !== 'TOKEN_INVALID') {
+                throw err;
+            }
+
+            // Rotation race detected: refetch the credential and retry once
+            token = await this._loadAndCheckExpiry(userId);
+            return await operation(token);
+        }
+    }
+
     // ── Private ──────────────────────────────────────────────────────────────
 
     private async _loadAndCheckExpiry(userId: string): Promise<string> {

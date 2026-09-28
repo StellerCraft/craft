@@ -322,3 +322,160 @@ describe('Twitter Card tags', () => {
     expect(tags['twitter:site']).toMatch(/^@/);
   });
 });
+
+// ── Custom-domain metadata generation (#1340) ─────────────────────────────────
+//
+// A deployment is first served from the platform's default subdomain; the
+// domain-attachment flow (POST /api/deployments/[id]/domains, persisted as
+// `custom_domain`) can later attach a branded domain. Once attached, every
+// absolute URL the generated SEO metadata emits — canonical, og:url, og:image,
+// sitemap <loc>, robots.txt Sitemap — must resolve against the custom domain,
+// otherwise search engines and link previews advertise the wrong site.
+
+interface DeploymentDomainConfig {
+  /** Platform-assigned default host, e.g. "my-dex-abc123.vercel.app". */
+  defaultSubdomain: string;
+  /** Attached custom domain (bare hostname), or null when none is attached. */
+  customDomain: string | null;
+}
+
+interface GeneratedSeoMetadata {
+  canonical: string;
+  openGraph: { 'og:url': string; 'og:image': string; 'og:title': string; 'og:site_name': string };
+  sitemap: Array<{ loc: string }>;
+  robotsTxt: string;
+}
+
+const SITEMAP_PATHS = ['/', '/dashboard', '/settings'] as const;
+
+function resolveBaseUrl({ defaultSubdomain, customDomain }: DeploymentDomainConfig): string {
+  const host = (customDomain?.trim() || defaultSubdomain).toLowerCase().replace(/\.$/, '');
+  return `https://${host}`;
+}
+
+function generateSeoMetadata(name: TemplateName, deployment: DeploymentDomainConfig): GeneratedSeoMetadata {
+  const baseUrl = resolveBaseUrl(deployment);
+  const meta = TEMPLATE_META[name];
+  const sitemapUrl = `${baseUrl}/sitemap.xml`;
+  return {
+    canonical: baseUrl,
+    openGraph: {
+      'og:url': baseUrl,
+      'og:image': `${baseUrl}/og-image.png`,
+      'og:title': meta.title,
+      'og:site_name': meta.title,
+    },
+    sitemap: SITEMAP_PATHS.map((p) => ({ loc: p === '/' ? `${baseUrl}/` : `${baseUrl}${p}` })),
+    robotsTxt: ['User-agent: *', 'Allow: /', `Sitemap: ${sitemapUrl}`].join('\n'),
+  };
+}
+
+/** Every absolute URL emitted by the metadata, for exhaustive host assertions. */
+function allAbsoluteUrls(seo: GeneratedSeoMetadata): string[] {
+  const robotsSitemap = seo.robotsTxt.match(/^Sitemap: (.+)$/m)?.[1];
+  return [
+    seo.canonical,
+    seo.openGraph['og:url'],
+    seo.openGraph['og:image'],
+    ...seo.sitemap.map((e) => e.loc),
+    ...(robotsSitemap ? [robotsSitemap] : []),
+  ];
+}
+
+const CUSTOM_DOMAIN_FIXTURES: Record<TemplateName, DeploymentDomainConfig> = {
+  'stellar-dex':     { defaultSubdomain: 'stellar-dex-a1b2c3.vercel.app',     customDomain: 'trade.acme-dex.io' },
+  'soroban-defi':    { defaultSubdomain: 'soroban-defi-d4e5f6.vercel.app',    customDomain: 'app.yieldfarm.finance' },
+  'payment-gateway': { defaultSubdomain: 'payment-gateway-g7h8i9.vercel.app', customDomain: 'pay.merchant-co.com' },
+  'asset-issuance':  { defaultSubdomain: 'asset-issuance-j1k2l3.vercel.app',  customDomain: 'tokens.issuer-inc.org' },
+};
+
+describe('Custom-domain SEO metadata', () => {
+  it.each(TEMPLATE_NAMES)('%s: canonical URL resolves against the custom domain', (name) => {
+    const fixture = CUSTOM_DOMAIN_FIXTURES[name];
+    const seo = generateSeoMetadata(name, fixture);
+    expect(seo.canonical).toBe(`https://${fixture.customDomain}`);
+  });
+
+  it.each(TEMPLATE_NAMES)('%s: og:url and og:image resolve against the custom domain', (name) => {
+    const fixture = CUSTOM_DOMAIN_FIXTURES[name];
+    const seo = generateSeoMetadata(name, fixture);
+    expect(new URL(seo.openGraph['og:url']).host).toBe(fixture.customDomain);
+    expect(new URL(seo.openGraph['og:image']).host).toBe(fixture.customDomain);
+  });
+
+  it.each(TEMPLATE_NAMES)('%s: every sitemap entry resolves against the custom domain', (name) => {
+    const fixture = CUSTOM_DOMAIN_FIXTURES[name];
+    const seo = generateSeoMetadata(name, fixture);
+    expect(seo.sitemap).toHaveLength(SITEMAP_PATHS.length);
+    for (const entry of seo.sitemap) {
+      expect(new URL(entry.loc).host).toBe(fixture.customDomain);
+    }
+  });
+
+  it.each(TEMPLATE_NAMES)('%s: robots.txt Sitemap directive points at the custom domain', (name) => {
+    const fixture = CUSTOM_DOMAIN_FIXTURES[name];
+    const seo = generateSeoMetadata(name, fixture);
+    expect(seo.robotsTxt).toContain(`Sitemap: https://${fixture.customDomain}/sitemap.xml`);
+  });
+
+  it.each(TEMPLATE_NAMES)('%s: no emitted URL leaks the default subdomain', (name) => {
+    const fixture = CUSTOM_DOMAIN_FIXTURES[name];
+    const seo = generateSeoMetadata(name, fixture);
+    for (const url of allAbsoluteUrls(seo)) {
+      expect(url, `${url} still references the default subdomain`).not.toContain(fixture.defaultSubdomain);
+      expect(url).not.toMatch(/\.vercel\.app/);
+      expect(url).toMatch(/^https:\/\//);
+    }
+  });
+
+  it.each(TEMPLATE_NAMES)('%s: without a custom domain, metadata falls back to the default subdomain', (name) => {
+    const fixture = { ...CUSTOM_DOMAIN_FIXTURES[name], customDomain: null };
+    const seo = generateSeoMetadata(name, fixture);
+    for (const url of allAbsoluteUrls(seo)) {
+      expect(new URL(url).host).toBe(fixture.defaultSubdomain);
+    }
+  });
+
+  it('normalises custom-domain casing and trailing dot', () => {
+    const seo = generateSeoMetadata('stellar-dex', {
+      defaultSubdomain: 'stellar-dex-a1b2c3.vercel.app',
+      customDomain: 'Trade.Acme-Dex.IO.',
+    });
+    expect(seo.canonical).toBe('https://trade.acme-dex.io');
+  });
+});
+
+describe('Custom-domain SEO metadata — default → custom transition', () => {
+  it.each(TEMPLATE_NAMES)('%s: attaching a custom domain after generation updates all metadata', (name) => {
+    const { defaultSubdomain, customDomain } = CUSTOM_DOMAIN_FIXTURES[name];
+
+    // 1. Initial generation — no custom domain attached yet
+    const before = generateSeoMetadata(name, { defaultSubdomain, customDomain: null });
+    for (const url of allAbsoluteUrls(before)) {
+      expect(new URL(url).host).toBe(defaultSubdomain);
+    }
+
+    // 2. Custom domain attached via the domain-attachment flow → regenerate
+    const after = generateSeoMetadata(name, { defaultSubdomain, customDomain });
+    const afterUrls = allAbsoluteUrls(after);
+    for (const url of afterUrls) {
+      expect(new URL(url).host, `${url} was not updated to the custom domain`).toBe(customDomain);
+    }
+
+    // 3. Same shape (paths unchanged), only the host moved
+    const pathsOf = (urls: string[]) => urls.map((u) => new URL(u).pathname);
+    expect(pathsOf(afterUrls)).toEqual(pathsOf(allAbsoluteUrls(before)));
+
+    // Non-URL metadata is unaffected by the domain change
+    expect(after.openGraph['og:title']).toBe(before.openGraph['og:title']);
+  });
+
+  it.each(TEMPLATE_NAMES)('%s: detaching the custom domain reverts metadata to the default subdomain', (name) => {
+    const { defaultSubdomain, customDomain } = CUSTOM_DOMAIN_FIXTURES[name];
+    generateSeoMetadata(name, { defaultSubdomain, customDomain });
+    const reverted = generateSeoMetadata(name, { defaultSubdomain, customDomain: null });
+    for (const url of allAbsoluteUrls(reverted)) {
+      expect(new URL(url).host).toBe(defaultSubdomain);
+    }
+  });
+});

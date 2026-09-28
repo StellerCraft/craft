@@ -48,9 +48,23 @@ describe('UpgradeFlow', () => {
     expect(screen.getByTestId('proration-note')).toBeDefined();
   });
 
-  it('does not show proration note for downgrades', () => {
-    render(<UpgradeFlow currentTier="enterprise" targetTier="free" onConfirm={noop} loading={false} error={null} />);
-    expect(screen.queryByTestId('proration-note')).toBeNull();
+  it('shows upgrade-branded heading and CTA for an upgrade', () => {
+    render(<UpgradeFlow currentTier="free" targetTier="pro" onConfirm={noop} loading={false} error={null} />);
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Upgrade to Pro');
+    expect(screen.getByTestId('confirm-button').textContent).toBe('Confirm upgrade');
+    expect(screen.getByTestId('proration-note').textContent).toContain('charged a prorated amount');
+  });
+
+  it('shows downgrade-appropriate heading, CTA and proration note for a downgrade', () => {
+    render(<UpgradeFlow currentTier="enterprise" targetTier="pro" onConfirm={noop} loading={false} error={null} />);
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Downgrade to Pro');
+    expect(screen.getByTestId('confirm-button').textContent).toBe('Confirm downgrade');
+    expect(screen.getByLabelText('Downgrade confirmation')).toBeDefined();
+
+    const note = screen.getByTestId('proration-note').textContent ?? '';
+    expect(note).toContain('credit');
+    expect(note).not.toContain('charged a prorated amount');
+    expect(screen.queryByText(/upgrade/i)).toBeNull();
   });
 
   it('calls onConfirm when confirm button is clicked', () => {

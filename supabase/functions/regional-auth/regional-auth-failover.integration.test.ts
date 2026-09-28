@@ -5,9 +5,13 @@
  * Verifies transparent failover from primary to secondary region,
  * JWT token validity across regions, and clock skew tolerance.
  *
+ * Also covers token refresh when the target region fails mid-refresh and the
+ * retry is served by a failover region (Issue #1320).
+ *
  * Run: pnpm test -- regional-auth-failover.integration
  */
 
+import { createHmac } from 'node:crypto';
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 
 interface RegionalAuthToken {
@@ -858,5 +862,340 @@ describe('Sign-up: failed cross-region profile sync (Issue #977)', () => {
         repairMock,
       }),
     ).resolves.toMatchObject({ httpStatus: 201 });
+  });
+});
+
+// ── Issue #1320: token refresh with mid-refresh region failover ───────────────
+//
+// Mirrors token-refresh.ts: refreshTokenWithFallback() tries the requested
+// region first, then the remaining regions in order; refreshTokenInRegion()
+// turns any thrown error into { success: false } so the loop moves on.
+//
+// Scenario: the primary region reads the user's profile, then becomes
+// unavailable before issuing a session. The retry lands on a failover region.
+// The resulting token must be valid and reflect the user's CURRENT profile
+// state, never the snapshot the failed region read before it went down.
+//
+// Reconciliation mirrors consistency-validators.ts: validateUserStateConsistency()
+// compares reachable regions, and repairUserStateConsistency() picks the region
+// with the most recent updated_at as authority (unreachable regions skipped)
+// and syncs it to the others before the token's profile claims are issued.
+
+describe('Token refresh: mid-refresh region failover (Issue #1320)', () => {
+  type Region = 'us-east' | 'eu-west' | 'ap-southeast';
+  const ALL_REGIONS: Region[] = ['us-east', 'eu-west', 'ap-southeast'];
+  const JWT_SECRET = 'test-shared-regional-jwt-secret';
+
+  interface Profile {
+    id: string;
+    email: string;
+    subscription_tier: 'free' | 'pro' | 'enterprise';
+    updated_at: string;
+  }
+
+  interface TokenClaims {
+    sub: string;
+    email: string;
+    subscription_tier: Profile['subscription_tier'];
+    profile_updated_at: string;
+    region: Region;
+    iat: number;
+    exp: number;
+  }
+
+  interface Session {
+    access_token: string;
+    refresh_token: string;
+    expires_in: number;
+  }
+
+  // ── Minimal HS256 JWT helpers (verifyRegionalJWT stand-in) ──────────────────
+
+  const b64url = (input: string | Buffer) => Buffer.from(input).toString('base64url');
+
+  function signJwt(claims: TokenClaims): string {
+    const head = b64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+    const body = b64url(JSON.stringify(claims));
+    const sig = createHmac('sha256', JWT_SECRET).update(`${head}.${body}`).digest('base64url');
+    return `${head}.${body}.${sig}`;
+  }
+
+  function verifyJwt(token: string): { valid: boolean; claims?: TokenClaims; error?: string } {
+    const [head, body, sig] = token.split('.');
+    if (!head || !body || !sig) return { valid: false, error: 'Malformed token' };
+    const expected = createHmac('sha256', JWT_SECRET).update(`${head}.${body}`).digest('base64url');
+    if (expected !== sig) return { valid: false, error: 'Bad signature' };
+    const claims = JSON.parse(Buffer.from(body, 'base64url').toString()) as TokenClaims;
+    if (claims.exp * 1000 <= Date.now()) return { valid: false, error: 'Token expired' };
+    return { valid: true, claims };
+  }
+
+  // ── Regional backend harness ────────────────────────────────────────────────
+
+  class RegionalBackend {
+    profiles = new Map<Region, Map<string, Profile>>();
+    /** Refresh tokens are replicated; value is the owning user id. */
+    refreshTokens = new Map<Region, Map<string, string>>();
+    unavailable = new Set<Region>();
+    /** Regions that go down after reading the profile but before issuing a session. */
+    failMidRefresh = new Set<Region>();
+    /** Profile snapshots read by each refresh attempt, in order. */
+    snapshotsRead: Array<{ region: Region; profile: Profile }> = [];
+    /** Sessions actually issued (a region that fails mid-refresh issues none). */
+    issued: Array<{ region: Region; session: Session }> = [];
+    auditLog: Array<{ region: Region; eventType: string; userId: string | null }> = [];
+
+    constructor() {
+      for (const r of ALL_REGIONS) {
+        this.profiles.set(r, new Map());
+        this.refreshTokens.set(r, new Map());
+      }
+    }
+
+    seedProfile(region: Region, profile: Profile) {
+      this.profiles.get(region)!.set(profile.id, { ...profile });
+    }
+
+    seedRefreshToken(token: string, userId: string) {
+      for (const r of ALL_REGIONS) this.refreshTokens.get(r)!.set(token, userId);
+    }
+
+    private assertReachable(region: Region) {
+      if (this.unavailable.has(region)) throw new Error(`fetch failed: region ${region} unreachable`);
+    }
+
+    getProfile(region: Region, userId: string): Profile | null {
+      this.assertReachable(region);
+      const p = this.profiles.get(region)!.get(userId);
+      return p ? { ...p } : null;
+    }
+
+    /** supabase.auth.refreshSession() in one region. */
+    refreshSession(region: Region, refreshToken: string): { user: Profile; session: Session } {
+      this.assertReachable(region);
+      const userId = this.refreshTokens.get(region)!.get(refreshToken);
+      if (!userId) throw new Error('Invalid Refresh Token');
+
+      const profile = this.getProfile(region, userId);
+      if (!profile) throw new Error('User not found');
+      this.snapshotsRead.push({ region, profile });
+
+      if (this.failMidRefresh.has(region)) {
+        // The region dies between reading state and issuing the session.
+        this.unavailable.add(region);
+        throw new Error(`fetch failed: connection reset by ${region}`);
+      }
+
+      const newRefresh = `refresh_${region}_${this.issued.length + 1}`;
+      for (const r of ALL_REGIONS) {
+        if (this.unavailable.has(r)) continue;
+        this.refreshTokens.get(r)!.delete(refreshToken);
+        this.refreshTokens.get(r)!.set(newRefresh, userId);
+      }
+      const session: Session = { access_token: '', refresh_token: newRefresh, expires_in: 3600 };
+      this.issued.push({ region, session });
+      return { user: profile, session };
+    }
+  }
+
+  // ── Mirrors of token-refresh.ts / consistency-validators.ts ─────────────────
+
+  function validateUserStateConsistency(backend: RegionalBackend, userId: string) {
+    const states: Partial<Record<Region, Profile | { error: string }>> = {};
+    for (const r of ALL_REGIONS) {
+      try {
+        const p = backend.getProfile(r, userId);
+        if (p) states[r] = p;
+      } catch (err) {
+        states[r] = { error: String(err) };
+      }
+    }
+    const reachable = Object.values(states).filter((s): s is Profile => !!s && !('error' in s));
+    const tiers = new Set(reachable.map((p) => p.subscription_tier));
+    const stamps = new Set(reachable.map((p) => p.updated_at));
+    return { consistent: tiers.size <= 1 && stamps.size <= 1, states };
+  }
+
+  function repairUserStateConsistency(backend: RegionalBackend, userId: string) {
+    let authority: Region | null = null;
+    let authorityProfile: Profile | null = null;
+    for (const r of ALL_REGIONS) {
+      try {
+        const p = backend.getProfile(r, userId);
+        if (p && (!authorityProfile || new Date(p.updated_at) > new Date(authorityProfile.updated_at))) {
+          authority = r;
+          authorityProfile = p;
+        }
+      } catch {
+        // Skip regions with errors (same as repairUserStateConsistency)
+      }
+    }
+    const repairs: Partial<Record<Region, { repaired: boolean; error?: string }>> = {};
+    for (const r of ALL_REGIONS) {
+      if (r === authority) {
+        repairs[r] = { repaired: true };
+        continue;
+      }
+      if (backend.unavailable.has(r)) {
+        repairs[r] = { repaired: false, error: `region ${r} unreachable` };
+        continue;
+      }
+      backend.seedProfile(r, authorityProfile!);
+      repairs[r] = { repaired: true };
+    }
+    return { authorityRegion: authority!, authorityProfile: authorityProfile!, repairs };
+  }
+
+  async function refreshTokenWithFallback(backend: RegionalBackend, refreshToken: string, primary: Region) {
+    const order = [primary, ...ALL_REGIONS.filter((r) => r !== primary)];
+    const attempts: Array<{ region: Region; error?: string }> = [];
+
+    for (const region of order) {
+      try {
+        const data = backend.refreshSession(region, refreshToken);
+        attempts.push({ region });
+
+        // Reconcile before minting claims: the failover region may be lagging.
+        const check = validateUserStateConsistency(backend, data.user.id);
+        const profile = check.consistent
+          ? backend.getProfile(region, data.user.id)!
+          : repairUserStateConsistency(backend, data.user.id).authorityProfile;
+
+        const now = Math.floor(Date.now() / 1000);
+        data.session.access_token = signJwt({
+          sub: profile.id,
+          email: profile.email,
+          subscription_tier: profile.subscription_tier,
+          profile_updated_at: profile.updated_at,
+          region,
+          iat: now,
+          exp: now + data.session.expires_in,
+        });
+
+        backend.auditLog.push({ region, eventType: 'refresh', userId: profile.id });
+        return { success: true as const, region, session: data.session, attempts, reconciled: !check.consistent };
+      } catch (err) {
+        attempts.push({ region, error: String(err) });
+      }
+    }
+    return { success: false as const, attempts, error: 'Token refresh failed in all regions.' };
+  }
+
+  // ── Fixtures ────────────────────────────────────────────────────────────────
+
+  const USER_ID = 'user-refresh-001';
+  const STALE_AT = '2026-09-01T00:00:00.000Z';
+  const CURRENT_AT = '2026-09-20T12:00:00.000Z';
+
+  const staleProfile: Profile = {
+    id: USER_ID,
+    email: 'refresh@example.com',
+    subscription_tier: 'free',
+    updated_at: STALE_AT,
+  };
+  const currentProfile: Profile = { ...staleProfile, subscription_tier: 'pro', updated_at: CURRENT_AT };
+
+  let backend: RegionalBackend;
+
+  beforeEach(() => {
+    backend = new RegionalBackend();
+    backend.seedRefreshToken('refresh_initial', USER_ID);
+  });
+
+  it('retries on a failover region when the primary fails mid-refresh and returns a valid token', async () => {
+    for (const r of ALL_REGIONS) backend.seedProfile(r, currentProfile);
+    backend.failMidRefresh.add('us-east');
+
+    const result = await refreshTokenWithFallback(backend, 'refresh_initial', 'us-east');
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.attempts.map((a) => a.region)).toEqual(['us-east', 'eu-west']);
+    expect(result.attempts[0].error).toContain('connection reset');
+    expect(result.region).toBe('eu-west');
+
+    // The failed primary read state but never issued a session.
+    expect(backend.snapshotsRead.map((s) => s.region)).toEqual(['us-east', 'eu-west']);
+    expect(backend.issued.map((i) => i.region)).toEqual(['eu-west']);
+
+    const verification = verifyJwt(result.session.access_token);
+    expect(verification.valid).toBe(true);
+    expect(verification.claims).toMatchObject({ sub: USER_ID, region: 'eu-west', subscription_tier: 'pro' });
+    expect(backend.auditLog).toEqual([{ region: 'eu-west', eventType: 'refresh', userId: USER_ID }]);
+  });
+
+  it('does not carry the stale snapshot read by the failed region into the new token', async () => {
+    // us-east's copy predates the user's upgrade; the other regions hold the current profile.
+    backend.seedProfile('us-east', staleProfile);
+    backend.seedProfile('eu-west', currentProfile);
+    backend.seedProfile('ap-southeast', currentProfile);
+    backend.failMidRefresh.add('us-east');
+
+    const result = await refreshTokenWithFallback(backend, 'refresh_initial', 'us-east');
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(backend.snapshotsRead[0]).toEqual({ region: 'us-east', profile: staleProfile });
+
+    const { claims } = verifyJwt(result.session.access_token);
+    expect(claims?.subscription_tier).toBe('pro');
+    expect(claims?.profile_updated_at).toBe(CURRENT_AT);
+    expect(claims?.subscription_tier).not.toBe(backend.snapshotsRead[0].profile.subscription_tier);
+  });
+
+  it('reconciles a lagging failover region before minting the token (consistency-validators path)', async () => {
+    // Primary is authoritative but dies mid-refresh; the failover region is lagging;
+    // ap-southeast holds the replicated current state.
+    backend.seedProfile('us-east', currentProfile);
+    backend.seedProfile('eu-west', staleProfile);
+    backend.seedProfile('ap-southeast', currentProfile);
+    backend.failMidRefresh.add('us-east');
+
+    const result = await refreshTokenWithFallback(backend, 'refresh_initial', 'us-east');
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.region).toBe('eu-west');
+    expect(result.reconciled).toBe(true);
+
+    const { valid, claims } = verifyJwt(result.session.access_token);
+    expect(valid).toBe(true);
+    expect(claims).toMatchObject({ subscription_tier: 'pro', profile_updated_at: CURRENT_AT, region: 'eu-west' });
+
+    // The failover region was repaired from the most recent reachable profile,
+    // and the unreachable primary was skipped rather than treated as authority.
+    expect(backend.getProfile('eu-west', USER_ID)).toEqual(currentProfile);
+    expect(validateUserStateConsistency(backend, USER_ID).consistent).toBe(true);
+    expect(validateUserStateConsistency(backend, USER_ID).states['us-east']).toHaveProperty('error');
+  });
+
+  it('rotates the refresh token so the pre-failover token cannot be replayed', async () => {
+    for (const r of ALL_REGIONS) backend.seedProfile(r, currentProfile);
+    backend.failMidRefresh.add('us-east');
+
+    const first = await refreshTokenWithFallback(backend, 'refresh_initial', 'us-east');
+    expect(first.success).toBe(true);
+    if (!first.success) return;
+    expect(first.session.refresh_token).not.toBe('refresh_initial');
+
+    const replay = await refreshTokenWithFallback(backend, 'refresh_initial', 'eu-west');
+    expect(replay.success).toBe(false);
+
+    const next = await refreshTokenWithFallback(backend, first.session.refresh_token, 'eu-west');
+    expect(next.success).toBe(true);
+  });
+
+  it('fails cleanly with no token issued when every region is unavailable during refresh', async () => {
+    for (const r of ALL_REGIONS) backend.seedProfile(r, currentProfile);
+    backend.failMidRefresh.add('us-east');
+    backend.unavailable.add('eu-west');
+    backend.unavailable.add('ap-southeast');
+
+    const result = await refreshTokenWithFallback(backend, 'refresh_initial', 'us-east');
+
+    expect(result.success).toBe(false);
+    expect(result.attempts.map((a) => a.region)).toEqual(['us-east', 'eu-west', 'ap-southeast']);
+    expect(backend.issued).toEqual([]);
+    expect(backend.auditLog).toEqual([]);
   });
 });
