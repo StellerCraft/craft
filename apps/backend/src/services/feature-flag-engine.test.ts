@@ -15,9 +15,13 @@ import {
     matchesRule,
     evaluateFlag,
     FlagEngine,
+    RolloutEngine,
+    ROLLBACK_ERROR_RATE_THRESHOLD,
+    ROLLBACK_LATENCY_THRESHOLD_MS,
     type FlagDefinition,
     type UserContext,
     type TargetingRule,
+    type DeploymentVersion,
 } from './feature-flag-engine';
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -367,6 +371,49 @@ describe('FlagEngine – tier targeting (subscription plan)', () => {
 
         expect(engine.evaluate('early-access', { id: 'beta-user', attributes: { betaTester: true } })).toBe('on');
         expect(engine.evaluate('early-access', { id: 'normal-user', attributes: { betaTester: false } })).toBe('off');
+    });
+});
+
+// ── RolloutEngine — configurable rollback thresholds ─────────────────────────
+
+const STABLE: DeploymentVersion = { id: 'stable-v1', errorRate: 0.01, p99LatencyMs: 200 };
+
+describe('RolloutEngine — configurable rollback thresholds', () => {
+    it('defaults to the module-level thresholds when none are supplied', () => {
+        const candidate: DeploymentVersion = { id: 'candidate', errorRate: ROLLBACK_ERROR_RATE_THRESHOLD, p99LatencyMs: 100 };
+        const engine = new RolloutEngine(STABLE, candidate);
+        engine.setTrafficPercent(50);
+
+        expect(engine.evaluateAndMaybeRollback()).toBe(true);
+    });
+
+    it('rolls back on a caller-supplied stricter error-rate threshold', () => {
+        const candidate: DeploymentVersion = { id: 'candidate', errorRate: 0.03, p99LatencyMs: 100 };
+        const engine = new RolloutEngine(STABLE, candidate, { errorRateThreshold: 0.02 });
+        engine.setTrafficPercent(50);
+
+        expect(engine.evaluateAndMaybeRollback()).toBe(true);
+    });
+
+    it('tolerates a caller-supplied looser latency threshold', () => {
+        const candidate: DeploymentVersion = { id: 'candidate', errorRate: 0.001, p99LatencyMs: 3_000 };
+        const engine = new RolloutEngine(STABLE, candidate, { latencyThresholdMs: 5_000 });
+        engine.setTrafficPercent(50);
+
+        expect(engine.evaluateAndMaybeRollback()).toBe(false);
+    });
+
+    it('rejects a non-positive error-rate or latency threshold override', () => {
+        const candidate: DeploymentVersion = { id: 'candidate', errorRate: 0.01, p99LatencyMs: 100 };
+        expect(() => new RolloutEngine(STABLE, candidate, { errorRateThreshold: 0 })).toThrow(RangeError);
+        expect(() => new RolloutEngine(STABLE, candidate, { latencyThresholdMs: -1 })).toThrow(RangeError);
+    });
+
+    it('does not mutate the shared module-level constants', () => {
+        const candidate: DeploymentVersion = { id: 'candidate', errorRate: 0.01, p99LatencyMs: 100 };
+        expect(() => new RolloutEngine(STABLE, candidate, { errorRateThreshold: 0.5, latencyThresholdMs: 9_000 })).not.toThrow();
+        expect(ROLLBACK_ERROR_RATE_THRESHOLD).toBe(0.05);
+        expect(ROLLBACK_LATENCY_THRESHOLD_MS).toBe(2_000);
     });
 });
 
