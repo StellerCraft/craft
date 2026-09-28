@@ -18,6 +18,7 @@
 import { createClient } from '@/lib/supabase/server';
 import { createLogger } from '@/lib/api/logger';
 import { randomUUID } from 'node:crypto';
+import { readRetentionDays } from '@/lib/retention-policy';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -85,6 +86,23 @@ export interface ReplayDeliveryResult {
 }
 
 export type WebhookDeliveryProcessor = (delivery: WebhookDelivery) => Promise<void>;
+
+export interface PruneOldDeliveriesOptions {
+    /** Days to retain processed deliveries. Default: WEBHOOK_DELIVERY_RETENTION_DAYS env var, else 90. */
+    retentionDays?: number;
+    /** Rows to delete per pruning run. Default: 500. */
+    batchLimit?: number;
+    /** Injectable clock for testing. Default: () => new Date() */
+    now?: () => Date;
+}
+
+export interface PruneOldDeliveriesResult {
+    success: boolean;
+    pruned: number;
+    error?: string;
+}
+
+const PRUNE_BATCH_LIMIT = 500;
 
 // ── Service ───────────────────────────────────────────────────────────────────
 
@@ -425,6 +443,67 @@ export class WebhookDeliveryService {
         } catch (error: any) {
             this.log.error('Unexpected error getting recent deliveries', error);
             return [];
+        }
+    }
+
+    /**
+     * Prunes successfully-processed deliveries past the retention window.
+     *
+     * Only rows with status = 'processed' are eligible: 'failed' and 'received'
+     * deliveries remain queryable via getDeliveriesForReplay() and must never be
+     * pruned while they're still eligible for replay. Deletes in a single bounded
+     * batch per call so repeated cron runs drain a large backlog gradually,
+     * matching the pattern used by CleanupService.purgeOrphanedArtifacts.
+     *
+     * @param options - Optional retention window, batch size, and clock overrides
+     * @returns Result with the count of rows pruned
+     */
+    async pruneOldDeliveries(options: PruneOldDeliveriesOptions = {}): Promise<PruneOldDeliveriesResult> {
+        const retentionDays = options.retentionDays ?? readRetentionDays('webhookDeliveryPrune');
+        const batchLimit = options.batchLimit ?? PRUNE_BATCH_LIMIT;
+        const now = options.now ? options.now() : new Date();
+
+        if (retentionDays <= 0) {
+            return { success: true, pruned: 0 };
+        }
+
+        const cutoffIso = new Date(now.getTime() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
+
+        try {
+            const supabase = createClient();
+
+            const { data: candidates, error: selectError } = await supabase
+                .from('github_webhook_deliveries')
+                .select('id')
+                .eq('status', 'processed')
+                .lt('processed_at', cutoffIso)
+                .limit(batchLimit);
+
+            if (selectError) {
+                this.log.error('Failed to select deliveries for pruning', selectError);
+                return { success: false, pruned: 0, error: selectError.message };
+            }
+
+            const ids = (candidates ?? []).map((row: { id: string }) => row.id);
+            if (ids.length === 0) {
+                return { success: true, pruned: 0 };
+            }
+
+            const { error: deleteError } = await supabase
+                .from('github_webhook_deliveries')
+                .delete()
+                .in('id', ids);
+
+            if (deleteError) {
+                this.log.error('Failed to prune webhook deliveries', deleteError);
+                return { success: false, pruned: 0, error: deleteError.message };
+            }
+
+            this.log.info('Pruned processed webhook deliveries', { count: ids.length, retentionDays });
+            return { success: true, pruned: ids.length };
+        } catch (error: any) {
+            this.log.error('Unexpected error pruning webhook deliveries', error);
+            return { success: false, pruned: 0, error: error.message || 'Unknown error' };
         }
     }
 
