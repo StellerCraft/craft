@@ -1,5 +1,4 @@
 import { createClient } from '@/lib/supabase/server';
-import { randomBytes } from 'crypto';
 
 /**
  * Payment Idempotency Service
@@ -69,61 +68,25 @@ export class PaymentIdempotencyService {
       return existing.idempotency_key;
     }
 
-    // ── 2. Atomic upsert: mint a new key and insert with conflict handling ────
-    // If a concurrent call inserts the same (user_id, operation_type, request_fingerprint)
-    // first, our insert is silently ignored via ON CONFLICT DO NOTHING.
-    // We then re-select to get the key (ours or the concurrent winner's).
-    const key = this.generateRandomKey();
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+    // Generation and conflict resolution must stay in one database transaction.
+    const { data: key, error: rpcError } = await supabase.rpc(
+      'generate_payment_idempotency_key',
+      {
+        p_user_id: userId,
+        p_operation_type: operationType,
+        p_request_fingerprint: requestFingerprint || null,
+      },
+    );
 
-    const insertPayload: Record<string, unknown> = {
-      user_id: userId,
-      idempotency_key: key,
-      operation_type: operationType,
-      expires_at: expiresAt.toISOString(),
-    };
-
-    if (requestFingerprint) {
-      insertPayload.request_fingerprint = requestFingerprint;
+    if (rpcError) {
+      throw new Error(`Failed to generate idempotency key atomically: ${rpcError.message}`);
     }
 
-    const { error: insertError } = await supabase
-      .from('payment_idempotency_keys')
-      .insert(insertPayload);
-
-    if (insertError) {
-      throw new Error(`Failed to generate idempotency key: ${insertError.message}`);
+    if (typeof key !== 'string' || key.length === 0) {
+      throw new Error('Failed to generate idempotency key atomically: RPC returned no key');
     }
 
-    // ── 3. Re-select to get the key (ours or the concurrent winner's) ─────────
-    // After insert (which may have been silently ignored via ON CONFLICT DO NOTHING
-    // due to database constraints), re-select to ensure we always return a key.
-    // This handles the atomic upsert: if a concurrent call inserted first, we get its key.
-    let reSelectQuery = supabase
-      .from('payment_idempotency_keys')
-      .select('idempotency_key')
-      .eq('user_id', userId)
-      .eq('operation_type', operationType)
-      .gt('expires_at', now);
-
-    if (requestFingerprint) {
-      reSelectQuery = reSelectQuery.eq('request_fingerprint', requestFingerprint);
-    }
-
-    const { data: reselected, error: reselectError } = await reSelectQuery
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .single();
-
-    if (reselectError && reselectError.code !== 'PGRST116') {
-      throw new Error(`Failed to retrieve generated idempotency key: ${reselectError.message}`);
-    }
-
-    if (reselected?.idempotency_key) {
-      return reselected.idempotency_key;
-    }
-
-    throw new Error('Idempotency key generation failed: unable to retrieve key after insert');
+    return key;
   }
 
   /**
@@ -190,15 +153,6 @@ export class PaymentIdempotencyService {
     return data?.length ?? 0;
   }
 
-  /**
-   * Generate a random idempotency key.
-   * Format: idempotency_<random-hex>_<timestamp>
-   */
-  private generateRandomKey(): string {
-    const randomPart = randomBytes(16).toString('hex');
-    const timestamp = Date.now();
-    return `idempotency_${randomPart}_${timestamp}`;
-  }
 }
 
 export const paymentIdempotencyService = new PaymentIdempotencyService();

@@ -93,8 +93,9 @@ export class MultiProviderAuthService {
      * Only the public key is stored — the platform never holds the private key.
      * Idempotent — re-connecting replaces the existing public key.
      *
-     * Uses the set_provider_connection RPC to merge into provider_connections
-     * atomically (single row-locked UPDATE) instead of a client-side
+    * Uses the set_provider_connection RPC from
+    * 017_provider_connections_atomic_rpc.sql to merge into provider_connections
+    * atomically (single row-locked UPDATE) instead of a client-side
      * read-modify-write, which would let a concurrent request (e.g. a second
      * browser tab, or a retried request) silently clobber this change.
      */

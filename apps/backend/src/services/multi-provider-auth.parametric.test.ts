@@ -68,21 +68,22 @@ function makeSupabase(rows: Record<string, unknown> = {}) {
     return {
         _updateCalls: updateCalls,
         rpc: vi.fn().mockImplementation((fnName: string, args: Record<string, unknown>) => {
-            if (fnName === 'connect_stellar_provider') {
+            if (fnName === 'set_provider_connection') {
                 const existing = (rows.provider_connections as Record<string, unknown>) ?? {};
                 const updated = {
                     ...existing,
-                    stellar: { publicKey: args.p_public_key, connectedAt: args.p_connected_at },
+                    [args.p_provider as string]: args.p_value,
                 };
                 rows.provider_connections = updated;
                 updateCalls.push({ provider_connections: updated, updated_at: new Date().toISOString() });
                 return Promise.resolve({ error: null });
             }
-            if (fnName === 'disconnect_stellar_provider') {
+            if (fnName === 'remove_provider_connection') {
                 const existing = (rows.provider_connections as Record<string, unknown>) ?? {};
-                const { stellar: _removed, ...rest } = existing as any;
-                rows.provider_connections = rest;
-                updateCalls.push({ provider_connections: rest, updated_at: new Date().toISOString() });
+                const updated = { ...existing };
+                delete updated[args.p_provider as string];
+                rows.provider_connections = updated;
+                updateCalls.push({ provider_connections: updated, updated_at: new Date().toISOString() });
                 return Promise.resolve({ error: null });
             }
             return Promise.resolve({ error: null });
