@@ -24,9 +24,12 @@ export const GET = withDeploymentAuth(async (req: NextRequest, { params, supabas
         });
     } catch (error: any) {
         console.error('Error exporting analytics:', error);
+        const isRowLimitError = error.message?.includes('exceeding limit') ||
+                               error.message?.includes('row limit');
+        const status = isRowLimitError ? 400 : 500;
         return NextResponse.json(
             { error: error.message || 'Failed to export analytics' },
-            { status: 500 }
+            { status }
         );
     }
 });

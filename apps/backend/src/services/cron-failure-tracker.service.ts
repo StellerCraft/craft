@@ -6,7 +6,7 @@
  *
  * Escalation:
  *   - 3 consecutive failures → Slack webhook alert (SLACK_WEBHOOK_URL)
- *   - 6 consecutive failures → email alert (console.error [EMAIL_ALERT])
+ *   - 6 consecutive failures → email alert (via EmailDeliveryService.send)
  *   - Successful run        → resets consecutive_failures to 0
  *
  * Issue: #759
@@ -14,6 +14,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import { emailDeliveryService } from './email-delivery.service';
 
 const SLACK_ALERT_THRESHOLD = 3;
 const EMAIL_ALERT_THRESHOLD = 6;
@@ -200,7 +201,7 @@ export class CronFailureTrackerService {
 
         // Email alert at threshold 6 or above (if not already sent)
         if (count >= EMAIL_ALERT_THRESHOLD && !row?.email_alert_sent) {
-            this._sendEmailAlert(jobName, count, error);
+            await this._sendEmailAlert(jobName, count, error);
             await supabase.rpc('mark_cron_alert_sent', {
                 p_job_name: jobName,
                 p_alert_type: 'email',
@@ -229,13 +230,24 @@ export class CronFailureTrackerService {
         }
     }
 
-    private _sendEmailAlert(jobName: string, count: number, error: string): void {
-        console.error('[CRON_EMAIL_ALERT]', {
-            jobName,
-            consecutiveFailures: count,
-            error,
-            timestamp: new Date().toISOString(),
-        });
+    private async _sendEmailAlert(jobName: string, count: number, error: string): Promise<void> {
+        const adminEmail = process.env.ADMIN_EMAIL || 'admin@craft.app';
+        try {
+            await emailDeliveryService.send({
+                type: 'security_alert',
+                to: adminEmail,
+                subject: `Cron Job Alert: ${jobName} Failed ${count} Times`,
+                data: {
+                    jobName,
+                    consecutiveFailures: count,
+                    error,
+                    timestamp: new Date().toISOString(),
+                    alertType: 'cron_failure',
+                },
+            });
+        } catch (err) {
+            console.error('[cron-failure-tracker] Failed to send email alert', err);
+        }
     }
 }
 

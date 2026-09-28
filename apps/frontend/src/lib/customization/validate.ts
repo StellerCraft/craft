@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { CustomizationConfig, ValidationResult, ValidationError } from '@craft/types';
 import { validateContractAddresses } from '@/lib/stellar/contract-validation';
+import { validateAssetPairs } from '@/lib/stellar/validate-asset-pairs';
 import {
     checkStellarEndpoints,
     type ConnectivityCheckResult,
@@ -93,6 +94,10 @@ function businessRuleErrors(config: CustomizationConfig): ValidationError[] {
             code: contractValidation.code,
         });
     }
+
+    // Validate asset pairs if provided
+    const assetPairErrors = validateAssetPairs(config.stellar.assetPairs);
+    errors.push(...assetPairErrors);
 
     return errors;
 }

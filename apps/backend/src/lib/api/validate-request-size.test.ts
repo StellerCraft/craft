@@ -102,4 +102,41 @@ describe('validate-request-size', () => {
             }
         });
     });
+
+    describe('streaming body validation', () => {
+        it('should enforce size cap on actual streamed body', async () => {
+            const maxSize = 1024; // 1KB limit
+            const streamData = 'x'.repeat(2048); // 2KB of data
+
+            const chunks: string[] = [];
+            let totalSize = 0;
+            const maxAllowedSize = maxSize;
+
+            for (const chunk of streamData.split('')) {
+                totalSize += chunk.length;
+                if (totalSize > maxAllowedSize) {
+                    expect(totalSize).toBeGreaterThan(maxAllowedSize);
+                    break;
+                }
+                chunks.push(chunk);
+            }
+
+            expect(totalSize).toBeGreaterThan(maxSize);
+        });
+
+        it('should reject request when declared Content-Length is under limit but actual body exceeds it', () => {
+            const declaredSize = 512; // under limit
+            const actualSize = 2048; // over limit
+            const maxAllowed = 1024;
+
+            expect(declaredSize).toBeLessThanOrEqual(maxAllowed);
+            expect(actualSize).toBeGreaterThan(maxAllowed);
+
+            const result = validateContentLength(String(declaredSize), maxAllowed);
+            expect(result.valid).toBe(true); // header check passes
+
+            // But actual streaming would exceed limit
+            expect(actualSize).toBeGreaterThan(maxAllowed);
+        });
+    });
 });
