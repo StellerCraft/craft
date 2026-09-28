@@ -14,6 +14,8 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { readFileSync, existsSync } from 'fs';
 import { resolve } from 'path';
+import { generateBrandingCss } from '../../apps/frontend/src/lib/branding/branding-replacer';
+import type { BrandingConfig } from '../../packages/types/src/customization';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -96,6 +98,16 @@ function contrastRatio(fg: string, bg: string): ContrastResult {
       aaaLarge: ratio >= 4.5,
     },
   };
+}
+
+function generatedBrandingContrast(branding: BrandingConfig): ContrastResult {
+  const css = generateBrandingCss(branding);
+  const primaryColor = css.match(/--primary-color:\s*(#[0-9a-fA-F]{6})/)?.[1];
+  const secondaryColor = css.match(/--secondary-color:\s*(#[0-9a-fA-F]{6})/)?.[1];
+  if (!primaryColor || !secondaryColor) {
+    throw new Error('Generated branding CSS is missing valid primary or secondary colors');
+  }
+  return contrastRatio(primaryColor, secondaryColor);
 }
 
 /** Scan TSX/HTML source for ARIA attribute patterns */
@@ -225,6 +237,26 @@ describe('Accessibility Audit — WCAG 2.1 AA', () => {
   // ── Color Contrast ──────────────────────────────────────────────────────────
 
   describe('Color contrast ratios', () => {
+    it('flags generated custom branding colors with insufficient contrast', () => {
+      const result = generatedBrandingContrast({
+        appName: 'Test App',
+        primaryColor: '#777777',
+        secondaryColor: '#777777',
+        fontFamily: 'Arial',
+      });
+      expect(result.passes.aa).toBe(false);
+    });
+
+    it('accepts generated custom branding colors with sufficient contrast', () => {
+      const result = generatedBrandingContrast({
+        appName: 'Test App',
+        primaryColor: '#000000',
+        secondaryColor: '#ffffff',
+        fontFamily: 'Arial',
+      });
+      expect(result.passes.aa).toBe(true);
+    });
+
     it('contrast ratio calculation is correct for known pairs', () => {
       // Black on white = 21:1
       const result = contrastRatio('#000000', '#ffffff');
