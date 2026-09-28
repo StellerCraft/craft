@@ -8,12 +8,9 @@ export interface ValidationError {
     message: string;
 }
 
-export interface ValidationResult {
-    valid: true;
-} | {
-    valid: false;
-    errors: ValidationError[];
-};
+export type ValidationResult =
+    | { valid: true }
+    | { valid: false; errors: ValidationError[] };
 
 /**
  * Validate upload metadata schema

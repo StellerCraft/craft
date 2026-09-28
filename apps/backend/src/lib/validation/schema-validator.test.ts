@@ -154,6 +154,47 @@ describe('schema-validator', () => {
         });
     });
 
+    describe('validateUploadMetadata malformed input', () => {
+        it('does not throw for primitive inputs and returns structured diagnostics', () => {
+            const inputs: unknown[] = [null, undefined, 42, true, 'a string', Symbol('x'), () => {}];
+            for (const input of inputs) {
+                expect(() => validateUploadMetadata(input)).not.toThrow();
+                const result = validateUploadMetadata(input);
+                expect(result.valid).toBe(false);
+                if (!result.valid) {
+                    expect(Array.isArray(result.errors)).toBe(true);
+                    expect(result.errors.length).toBeGreaterThan(0);
+                    expect(result.errors[0]).toMatchObject({
+                        field: expect.any(String),
+                        message: expect.any(String),
+                    });
+                }
+            }
+        });
+
+        it('does not throw for an array or deeply nested/circular-shaped input', () => {
+            expect(() => validateUploadMetadata([1, 2, 3])).not.toThrow();
+
+            const weird: Record<string, unknown> = { filename: { nested: { deeper: true } } };
+            expect(() => validateUploadMetadata(weird)).not.toThrow();
+            const result = validateUploadMetadata(weird);
+            expect(result.valid).toBe(false);
+            if (!result.valid) {
+                expect(result.errors.some((e) => e.field === 'filename')).toBe(true);
+            }
+        });
+
+        it('does not throw when tags contains non-primitive entries', () => {
+            const input = { tags: [{ nested: true }, [1, 2], null, undefined] };
+            expect(() => validateUploadMetadata(input)).not.toThrow();
+            const result = validateUploadMetadata(input);
+            expect(result.valid).toBe(false);
+            if (!result.valid) {
+                expect(result.errors.every((e) => typeof e.field === 'string' && typeof e.message === 'string')).toBe(true);
+            }
+        });
+    });
+
     describe('formatValidationErrors', () => {
         it('should format single error', () => {
             const errors: ValidationError[] = [
