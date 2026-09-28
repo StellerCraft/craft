@@ -4,6 +4,13 @@
  * Validates ABI schema compatibility between old and new contract versions
  * before submitting an upgrade transaction. Supports dry-run mode to simulate
  * the upgrade without broadcasting, and emits a detailed schema diff report.
+ *
+ * ## Dry-Run Guarantee
+ * Dry-run mode (`dryRun: true`) is strictly isolated from network submission.
+ * Under dry-run mode, transactions are ONLY simulated via `simulateTransaction`
+ * to assess execution feasibility and schema safety. No live transaction submission
+ * or network broadcast call is ever made or reached during a dry run. An explicit
+ * guard prevents any submission routine from executing if `dryRun` is set.
  */
 
 import { SorobanRpc, TransactionBuilder, Networks, BASE_FEE, xdr } from 'stellar-sdk';
@@ -97,6 +104,34 @@ export interface UpgradeOrchestratorOptions {
 export type UpgradeOrchestratorResult =
   | { ok: true; dryRun: boolean; diffReport: SchemaDiffReport; simulationResult?: SorobanRpc.Api.SimulateTransactionResponse }
   | { ok: false; error: string; diffReport?: SchemaDiffReport };
+
+/** Options for submitting an upgrade transaction to the network. */
+export interface SubmitUpgradeOptions {
+  /** Signed transaction XDR (base64) to submit. */
+  signedTxXdr: string;
+  /**
+   * Dry-run flag. If set to true, submitUpgradeTransaction will throw an error
+   * as defense-in-depth to guarantee dry-run mode never submits live transactions.
+   */
+  dryRun?: boolean;
+}
+
+/**
+ * Submits an upgrade transaction to the network.
+ *
+ * @throws Error if invoked when `dryRun: true` is set.
+ */
+export async function submitUpgradeTransaction(
+  options: SubmitUpgradeOptions,
+): Promise<SorobanRpc.Api.SendTransactionResponse> {
+  if (options.dryRun) {
+    throw new Error('Invariant violation: submitUpgradeTransaction reached while dryRun is true');
+  }
+
+  const client = createSorobanClient();
+  const tx = TransactionBuilder.fromXDR(options.signedTxXdr, Networks.TESTNET);
+  return await client.sendTransaction(tx as Parameters<typeof client.sendTransaction>[0]);
+}
 
 // ---------------------------------------------------------------------------
 // Core: ABI schema diff

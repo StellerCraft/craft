@@ -28,6 +28,7 @@ import {
     SnapshotSizeLimitError,
     SnapshotNotFoundError,
     SnapshotStorageError,
+    SnapshotOriginMismatchError,
     type SnapshotRpcClient,
     type SnapshotStorage,
     type SnapshotDb,
@@ -573,5 +574,64 @@ describe('ContractStateSnapshotService.restore() – edge-case coverage (#1125)'
         expect(restored.entries).toHaveLength(0);
         expect(restored.contractId).toBe(CONTRACT_ID);
         expect(restored.ledgerSequence).toBe(LEDGER_SEQ);
+    });
+
+    describe('Origin contract ID verification and force override (Issue #1288)', () => {
+        const CONTRACT_A = 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM';
+        const CONTRACT_B = 'CBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB2KM';
+
+        it('rejects restore without force when target contract ID does not match origin contract ID', async () => {
+            const blob = await buildCompressedBlob(FAKE_ENTRIES);
+            const storage = makeStorage({
+                download: vi.fn().mockResolvedValue({ data: blob, error: null }),
+            });
+            const svc = new ContractStateSnapshotService(makeRpc(), storage, makeDb());
+
+            // CONTRACT_ID is CONTRACT_A in makeDb & buildCompressedBlob
+            await expect(
+                svc.restore(SNAPSHOT_ID, CONTRACT_B),
+            ).rejects.toThrow(SnapshotOriginMismatchError);
+
+            await expect(
+                svc.restore(SNAPSHOT_ID, { targetContractId: CONTRACT_B, force: false }),
+            ).rejects.toThrow(
+                `Snapshot origin contract "${CONTRACT_A}" does not match target contract "${CONTRACT_B}". Pass force: true to override.`,
+            );
+        });
+
+        it('succeeds restoring onto mismatched target contract ID when force is true', async () => {
+            const blob = await buildCompressedBlob(FAKE_ENTRIES);
+            const storage = makeStorage({
+                download: vi.fn().mockResolvedValue({ data: blob, error: null }),
+            });
+            const svc = new ContractStateSnapshotService(makeRpc(), storage, makeDb());
+
+            const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+            const restored = await svc.restore(SNAPSHOT_ID, CONTRACT_B, true);
+
+            expect(restored.contractId).toBe(CONTRACT_B);
+            expect(restored.originContractId).toBe(CONTRACT_A);
+            expect(restored.entries).toHaveLength(FAKE_ENTRIES.length);
+            expect(warnSpy).toHaveBeenCalledWith(
+                expect.stringContaining(`Restoring snapshot with origin contract ID "${CONTRACT_A}" onto mismatched target contract ID "${CONTRACT_B}"`),
+            );
+
+            warnSpy.mockRestore();
+        });
+
+        it('succeeds without force when target contract ID matches origin contract ID', async () => {
+            const blob = await buildCompressedBlob(FAKE_ENTRIES);
+            const storage = makeStorage({
+                download: vi.fn().mockResolvedValue({ data: blob, error: null }),
+            });
+            const svc = new ContractStateSnapshotService(makeRpc(), storage, makeDb());
+
+            const restored = await svc.restore(SNAPSHOT_ID, CONTRACT_A);
+
+            expect(restored.contractId).toBe(CONTRACT_A);
+            expect(restored.originContractId).toBe(CONTRACT_A);
+            expect(restored.entries).toHaveLength(FAKE_ENTRIES.length);
+        });
     });
 });

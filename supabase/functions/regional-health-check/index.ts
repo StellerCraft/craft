@@ -8,11 +8,13 @@
 
 import { serve } from 'https://deno.land/std@0.208.0/http/server.ts';
 import { SUPPORTED_REGIONS, getRegionalEndpointConfig } from '../_shared/regions.ts';
+import { deriveRegionHealthState, type RegionHealthState } from '../_shared/health-status.ts';
 import { getRegionalSupabaseClient } from '../regional-auth/auth-utils.ts';
 
 interface RegionHealthStatus {
   region: string;
   healthy: boolean;
+  status: RegionHealthState;
   responseTime: number;
   timestamp: string;
   details?: {
@@ -83,11 +85,13 @@ async function checkRegionHealth(region: string): Promise<RegionHealthStatus> {
     }
 
     const responseTime = Date.now() - startTime;
-    const healthy = dbHealthy && authHealthy;
+    const status = deriveRegionHealthState(dbHealthy, authHealthy, responseTime);
+    const healthy = status === 'healthy';
 
     return {
       region,
       healthy,
+      status,
       responseTime,
       timestamp: new Date().toISOString(),
       details: {
@@ -104,6 +108,7 @@ async function checkRegionHealth(region: string): Promise<RegionHealthStatus> {
     return {
       region,
       healthy: false,
+      status: 'down',
       responseTime,
       timestamp: new Date().toISOString(),
       details: {
@@ -153,7 +158,7 @@ async function handleHealthCheck(req: Request): Promise<Response> {
 
     const response: HealthCheckResponse = {
       timestamp: new Date().toISOString(),
-      regions: detailed ? regionStatuses : regionStatuses.map(({ region, healthy, responseTime }) => ({ region, healthy, responseTime, timestamp: new Date().toISOString() })),
+      regions: detailed ? regionStatuses : regionStatuses.map(({ region, healthy, status, responseTime }) => ({ region, healthy, status, responseTime, timestamp: new Date().toISOString() })),
       healthyRegions,
       allHealthy: healthyRegions.length === regionStatuses.length,
     };

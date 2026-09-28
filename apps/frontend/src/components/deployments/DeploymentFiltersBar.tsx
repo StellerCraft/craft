@@ -1,6 +1,7 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
+import { useRouter, useSearchParams, usePathname } from 'next/navigation';
 import type { DeploymentFilters, DeploymentFilterStatus, DeploymentFilterEnvironment } from '@/types/deployment';
 
 interface DeploymentFiltersBarProps {
@@ -8,6 +9,13 @@ interface DeploymentFiltersBarProps {
   onChange: (filters: DeploymentFilters) => void;
   totalCount: number;
   filteredCount: number;
+  /**
+   * When true (default), filter state is mirrored to the URL as query
+   * parameters so that browser back/forward navigation restores the previously-
+   * applied filters.  Set to false to keep filter state purely in-memory (e.g.
+   * inside a modal or embedded panel where URL mutation is undesirable).
+   */
+  syncToUrl?: boolean;
 }
 
 const STATUS_OPTIONS: { value: DeploymentFilterStatus; label: string }[] = [
@@ -28,12 +36,164 @@ const ENV_OPTIONS: { value: DeploymentFilterEnvironment; label: string }[] = [
   { value: 'development', label: 'Development' },
 ];
 
+/**
+ * Search, status, and environment filters for the deployments list.
+ *
+ * This is a controlled component: it owns no filter state itself. The parent
+ * owns `filters` and is the reference implementation for the codebase's
+ * **URL-synced filters** convention (see "URL-synced filters" in
+ * CONTRIBUTING.md), which makes filtered views shareable and refresh-safe:
+ *
+ * 1. Derive the initial filter state from `useSearchParams()` (the URL is the
+ *    source of truth on first render; unknown values fall back to defaults).
+ * 2. Keep the live state in React so typing stays responsive.
+ * 3. Write changes back with a debounced `router.replace(..., { scroll: false })`
+ *    — `replace`, not `push`, so each keystroke doesn't add a history entry.
+ *    Omit default values so an unfiltered view has a clean URL.
+ *
+ * `useSearchParams()` makes the consuming page a Client Component and must sit
+ * under a `<Suspense>` boundary. A Server Component page can instead read its
+ * `searchParams` prop and pass them down as `initialFilters`, so the first,
+ * server-rendered list is already filtered.
+ *
+ * @example
+ * ```tsx
+ * // app/app/deployments/page.tsx (Server Component)
+ * export default function DeploymentsPage({
+ *   searchParams,
+ * }: { searchParams: Record<string, string | undefined> }) {
+ *   return (
+ *     <Suspense fallback={<DeploymentListSkeleton />}>
+ *       <DeploymentsView initialFilters={filtersFromSearchParams(new URLSearchParams(searchParams as Record<string, string>))} />
+ *     </Suspense>
+ *   );
+ * }
+ *
+ * // DeploymentsView.tsx
+ * 'use client';
+ *
+ * const DEFAULT_FILTERS: DeploymentFilters = { status: 'all', environment: 'all', search: '' };
+ *
+ * function filtersToQueryString(filters: DeploymentFilters): string {
+ *   const params = new URLSearchParams();
+ *   if (filters.status !== DEFAULT_FILTERS.status) params.set('status', filters.status);
+ *   if (filters.environment !== DEFAULT_FILTERS.environment) params.set('environment', filters.environment);
+ *   if (filters.search) params.set('search', filters.search);
+ *   return params.toString();
+ * }
+ *
+ * export function DeploymentsView({ initialFilters }: { initialFilters?: DeploymentFilters }) {
+ *   const searchParams = useSearchParams();
+ *   const router = useRouter();
+ *   const pathname = usePathname();
+ *   const [filters, setFilters] = useState<DeploymentFilters>(
+ *     () => initialFilters ?? filtersFromSearchParams(searchParams),
+ *   );
+ *
+ *   // Debounced URL write: only the settled value reaches the address bar.
+ *   useEffect(() => {
+ *     const handle = setTimeout(() => {
+ *       const qs = filtersToQueryString(filters);
+ *       if (qs !== searchParams.toString()) {
+ *         router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+ *       }
+ *     }, 300);
+ *     return () => clearTimeout(handle);
+ *   }, [filters, pathname, router, searchParams]);
+ *
+ *   const visible = applyFilters(deployments, filters);
+ *
+ *   return (
+ *     <DeploymentFiltersBar
+ *       filters={filters}
+ *       onChange={setFilters}
+ *       totalCount={deployments.length}
+ *       filteredCount={visible.length}
+ *     />
+ *   );
+ * }
+ * ```
+ */
+
+/** Build a URLSearchParams string from the current filter values. */
+function filtersToParams(filters: DeploymentFilters): URLSearchParams {
+  const params = new URLSearchParams();
+  if (filters.status !== 'all') params.set('status', filters.status);
+  if (filters.environment !== 'all') params.set('environment', filters.environment);
+  if (filters.search) params.set('search', filters.search);
+  return params;
+}
+
+/** Read filter values back out of a URLSearchParams instance. */
+export function filtersFromSearchParams(
+  searchParams: URLSearchParams | ReturnType<typeof useSearchParams>,
+): DeploymentFilters {
+  return {
+    status: (searchParams.get('status') as DeploymentFilterStatus) ?? 'all',
+    environment: (searchParams.get('environment') as DeploymentFilterEnvironment) ?? 'all',
+    search: searchParams.get('search') ?? '',
+  };
+}
+
 export function DeploymentFiltersBar({
   filters,
   onChange,
   totalCount,
   filteredCount,
+  syncToUrl = true,
 }: DeploymentFiltersBarProps) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+
+  // Debounce timer ref — text search updates are debounced so that every
+  // keystroke doesn't push a new history entry.
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // On mount (or when the URL changes externally, e.g. browser back), read the
+  // query parameters and propagate them to the parent so the deployment list
+  // re-filters without a full reload.  We only do this when syncToUrl is true.
+  const mountedRef = useRef(false);
+  useEffect(() => {
+    if (!syncToUrl) return;
+    if (!mountedRef.current) {
+      mountedRef.current = true;
+      const fromUrl = filtersFromSearchParams(searchParams);
+      // Avoid a redundant onChange call if the parent already provided matching
+      // filters (e.g. SSR-hydrated state).
+      if (
+        fromUrl.status !== filters.status ||
+        fromUrl.environment !== filters.environment ||
+        fromUrl.search !== filters.search
+      ) {
+        onChange(fromUrl);
+      }
+    }
+  }, [syncToUrl, searchParams, filters, onChange]);
+
+  // Whenever filters change, reflect them in the URL (debounced for search).
+  useEffect(() => {
+    if (!syncToUrl) return;
+
+    const commit = () => {
+      const params = filtersToParams(filters);
+      const qs = params.toString();
+      const target = qs ? `${pathname}?${qs}` : pathname;
+      // Use replace so each filter change doesn't push a new history entry;
+      // the back button jumps to the page the user came from, not the previous
+      // filter combination (which would be disorienting).
+      router.replace(target, { scroll: false });
+    };
+
+    // Debounce only text-search updates; dropdown changes are applied immediately.
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(commit, 300);
+
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [filters, pathname, router, syncToUrl]);
+
   const update = <K extends keyof DeploymentFilters>(key: K, value: DeploymentFilters[K]) => {
     onChange({ ...filters, [key]: value });
   };

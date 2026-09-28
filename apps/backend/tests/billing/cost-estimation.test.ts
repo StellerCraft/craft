@@ -283,4 +283,104 @@ describe('CostEstimationService', () => {
             expect(percentDiff).toBeLessThanOrEqual(10);
         });
     });
+
+    describe('Duration Rounding for Partial Billing Hours', () => {
+        it('should round up partial hours to the next billable unit for compute costs', () => {
+            const usageWithPartialHour: ResourceUsage = {
+                cpuCores: 2,
+                memoryGB: 2,
+                storageGB: 10,
+                bandwidthGB: 100,
+                durationHours: 0.5  // Half hour should round up to 1 hour
+            };
+
+            const result = costEstimationService.calculateCost(usageWithPartialHour, 'basic');
+
+            // CPU overage: (2-1) * $0.01 * 1 (rounded up) = $0.01
+            // Memory: included, no overage
+            // Expected compute cost: $0.01
+            expect(result.computeCost).toBeGreaterThan(0);
+            expect(result.computeCost).toBe(0.01);
+        });
+
+        it('should round up 23.4 hours to 24 hours for a full day of deployment', () => {
+            const usage: ResourceUsage = {
+                cpuCores: 2,
+                memoryGB: 4,
+                storageGB: 10,
+                bandwidthGB: 100,
+                durationHours: 23.4  // 23.4 hours should round up to 24 hours
+            };
+
+            const result = costEstimationService.calculateCost(usage, 'basic');
+
+            // CPU overage: (2-1) * $0.01 * 24 (rounded up) = $0.24
+            // Memory overage: (4-2) * $0.005 * 24 = $0.24
+            // Expected compute cost: $0.48
+            expect(result.computeCost).toBe(0.48);
+        });
+
+        it('should handle boundary case of 0.1 hours rounding up to 1 hour', () => {
+            const usage: ResourceUsage = {
+                cpuCores: 2,
+                memoryGB: 2,
+                storageGB: 10,
+                bandwidthGB: 100,
+                durationHours: 0.1
+            };
+
+            const result = costEstimationService.calculateCost(usage, 'basic');
+
+            // Even 0.1 hours should round up to 1 hour for billing
+            // CPU overage: (2-1) * $0.01 * 1 = $0.01
+            expect(result.computeCost).toBe(0.01);
+        });
+
+        it('should not round up when hours are exactly whole numbers', () => {
+            const usage: ResourceUsage = {
+                cpuCores: 2,
+                memoryGB: 4,
+                storageGB: 10,
+                bandwidthGB: 100,
+                durationHours: 24  // Exactly 24 hours
+            };
+
+            const result = costEstimationService.calculateCost(usage, 'basic');
+
+            // CPU overage: (2-1) * $0.01 * 24 = $0.24
+            // Memory overage: (4-2) * $0.005 * 24 = $0.24
+            // Expected compute cost: $0.48
+            expect(result.computeCost).toBe(0.48);
+        });
+
+        it('should round up 0.9 hours to 1 hour for minimal partial hour usage', () => {
+            const usage: ResourceUsage = {
+                cpuCores: 1,
+                memoryGB: 3,  // 1 GB overage
+                storageGB: 10,
+                bandwidthGB: 100,
+                durationHours: 0.9
+            };
+
+            const result = costEstimationService.calculateCost(usage, 'basic');
+
+            // Memory overage: (3-2) * $0.005 * 1 (rounded up) = $0.005
+            expect(result.computeCost).toBe(0.005);
+        });
+
+        it('should round up 30.1 hours to 31 hours for a month-ish deployment', () => {
+            const usage: ResourceUsage = {
+                cpuCores: 2,
+                memoryGB: 2,
+                storageGB: 10,
+                bandwidthGB: 100,
+                durationHours: 30.1
+            };
+
+            const result = costEstimationService.calculateCost(usage, 'basic');
+
+            // CPU overage: (2-1) * $0.01 * 31 (rounded up) = $0.31
+            expect(result.computeCost).toBe(0.31);
+        });
+    });
 });

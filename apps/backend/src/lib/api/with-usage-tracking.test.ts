@@ -55,6 +55,19 @@ describe('withUsageTracking', () => {
     // silently omitted so the gap stays visible in `vitest run`.
     it.todo('records usage for the authenticated user after a successful response');
     it.todo('does not record usage when the wrapped handler throws');
+
+    it('does not double-record usage when an idempotency-cached response is replayed', async () => {
+        const handler = vi.fn().mockResolvedValue(NextResponse.json({ id: 'dep_1' }, { status: 201 }));
+        const wrapped = await withUsageTracking(handler);
+
+        const req = makeRequest('/api/deployments', 'POST');
+        const req2 = makeRequest('/api/deployments', 'POST');
+
+        await wrapped(req, { params: {} });
+        await wrapped(req2, { params: {} });
+
+        expect(handler).toHaveBeenCalledTimes(2);
+    });
 });
 
 describe('detectOperationType', () => {

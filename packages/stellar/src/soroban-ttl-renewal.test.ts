@@ -444,3 +444,48 @@ describe('createAutoRenewer', () => {
         renewer.stop();
     });
 });
+
+// ── Clock-Skew Tolerance ──────────────────────────────────────────────────────
+
+describe('Soroban TTL renewal clock-skew tolerance (#1285)', () => {
+    it('is unaffected when local system clock is skewed ahead or behind the network', async () => {
+        const currentLedger = 1000;
+        const key = buildContractInstanceKey(CONTRACT_A);
+
+        // Case 1: Healthy TTL — remaining = 1500 ledgers (> 1000 threshold).
+        // Even if local clock is skewed ahead by 24 hours, renewal should NOT trigger.
+        const healthyTtlClient = makeTtlClient([{ contractId: CONTRACT_A, liveUntil: currentLedger + 1500 }], currentLedger);
+        const healthyTxClient = makeTxClient();
+        const healthyRenewer = new AutomaticTTLRenewer(SOURCE_KEY, {
+            ttlClient: healthyTtlClient,
+            txClient: healthyTxClient,
+        });
+        healthyRenewer.watch(key);
+
+        const realNow = Date.now;
+        try {
+            // Local clock 24 hours in the future
+            vi.spyOn(Date, 'now').mockReturnValue(realNow() + 86_400_000);
+            await healthyRenewer._tick();
+            expect(healthyTxClient.prepareTransaction).not.toHaveBeenCalled();
+
+            // Case 2: Renewal due — remaining = 500 ledgers (<= RENEWAL_TRIGGER_LEDGERS).
+            // Even if local clock is skewed behind by 24 hours, renewal SHOULD trigger
+            // based strictly on the ledger sequence.
+            const dueTtlClient = makeTtlClient([{ contractId: CONTRACT_A, liveUntil: currentLedger + RENEWAL_TRIGGER_LEDGERS }], currentLedger);
+            const dueTxClient = makeTxClient();
+            const dueRenewer = new AutomaticTTLRenewer(SOURCE_KEY, {
+                ttlClient: dueTtlClient,
+                txClient: dueTxClient,
+            });
+            dueRenewer.watch(key);
+
+            // Local clock 24 hours in the past
+            vi.spyOn(Date, 'now').mockReturnValue(realNow() - 86_400_000);
+            await dueRenewer._tick();
+            expect(dueTxClient.prepareTransaction).toHaveBeenCalledOnce();
+        } finally {
+            vi.restoreAllMocks();
+        }
+    });
+});

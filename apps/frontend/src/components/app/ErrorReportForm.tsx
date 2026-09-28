@@ -17,6 +17,12 @@ interface ErrorReportFormProps {
 
 type FormStatus = 'idle' | 'submitting' | 'success' | 'error';
 
+/**
+ * Maximum description length accepted by POST /api/error-reports.
+ * Must stay in sync with the backend's zod schema (`description.max(2000)`).
+ */
+export const MAX_DESCRIPTION_LENGTH = 2000;
+
 async function defaultSubmit(payload: {
     correlationId?: string;
     description: string;
@@ -47,12 +53,13 @@ export function ErrorReportForm({
     const [status, setStatus] = useState<FormStatus>('idle');
     const [submitError, setSubmitError] = useState<string | null>(null);
 
-    const MAX = 2000;
-    const remaining = MAX - description.length;
+    const length = description.length;
+    const remaining = MAX_DESCRIPTION_LENGTH - length;
+    const isOverLimit = length > MAX_DESCRIPTION_LENGTH;
 
     async function handleSubmit(e: React.FormEvent) {
         e.preventDefault();
-        if (!description.trim()) return;
+        if (!description.trim() || isOverLimit) return;
 
         setStatus('submitting');
         setSubmitError(null);
@@ -134,15 +141,32 @@ export function ErrorReportForm({
                                 <textarea
                                     id="error-description"
                                     value={description}
-                                    onChange={(e) => setDescription(e.target.value.slice(0, MAX))}
+                                    onChange={(e) => setDescription(e.target.value)}
                                     placeholder="e.g. I clicked Deploy after filling in the branding form…"
                                     rows={4}
                                     required
+                                    aria-invalid={isOverLimit}
+                                    aria-describedby={`error-description-counter${isOverLimit ? ' error-description-limit' : ''}`}
                                     className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none focus:ring-2 focus:ring-primary/40 resize-none"
                                 />
-                                <p className={`text-xs text-right ${remaining < 100 ? 'text-error' : 'text-on-surface-variant/50'}`}>
-                                    {remaining} characters remaining
+                                <p
+                                    id="error-description-counter"
+                                    data-testid="error-description-counter"
+                                    aria-live="polite"
+                                    className={`text-xs text-right ${remaining < 100 ? 'text-error' : 'text-on-surface-variant/50'}`}
+                                >
+                                    {length} / {MAX_DESCRIPTION_LENGTH}
                                 </p>
+                                {isOverLimit && (
+                                    <p
+                                        id="error-description-limit"
+                                        data-testid="error-description-limit"
+                                        className="text-xs text-error"
+                                    >
+                                        Description is {length - MAX_DESCRIPTION_LENGTH} characters over the{' '}
+                                        {MAX_DESCRIPTION_LENGTH}-character limit. Please shorten it to submit.
+                                    </p>
+                                )}
                             </div>
 
                             {submitError && (
@@ -161,7 +185,7 @@ export function ErrorReportForm({
                                 </button>
                                 <button
                                     type="submit"
-                                    disabled={status === 'submitting' || !description.trim()}
+                                    disabled={status === 'submitting' || !description.trim() || isOverLimit}
                                     className="primary-gradient text-on-primary px-5 py-2.5 rounded-lg text-sm font-semibold shadow-md hover:shadow-lg transition-all active:scale-95 disabled:opacity-60 disabled:cursor-not-allowed disabled:active:scale-100"
                                 >
                                     {status === 'submitting' ? 'Submitting…' : 'Submit report'}

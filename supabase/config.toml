@@ -54,6 +54,10 @@ verify_jwt = false
 key = "regional-auth-token-refresh"
 verify_jwt = false
 
+[functions."regional-auth-reconcile"]
+key = "regional-auth-reconcile"
+verify_jwt = false
+
 # Regional Health Check
 [functions."regional-health-check"]
 key = "regional-health-check"

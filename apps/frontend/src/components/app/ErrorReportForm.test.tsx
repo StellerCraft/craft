@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { ErrorReportForm } from './ErrorReportForm';
+import { ErrorReportForm, MAX_DESCRIPTION_LENGTH } from './ErrorReportForm';
 
 const ERROR_CONTEXT = { status: 500, message: 'Internal Server Error' };
 
@@ -139,5 +139,73 @@ describe('ErrorReportForm', () => {
         await waitFor(() => screen.getByText('Report submitted'));
         fireEvent.click(screen.getByRole('button', { name: 'Done' }));
         expect(onClose).toHaveBeenCalledOnce();
+    });
+
+    describe('description length cap', () => {
+        it('shows a live character counter', () => {
+            render(<ErrorReportForm errorContext={ERROR_CONTEXT} onClose={vi.fn()} />);
+            expect(screen.getByTestId('error-description-counter').textContent).toBe(
+                `0 / ${MAX_DESCRIPTION_LENGTH}`
+            );
+
+            fireEvent.change(screen.getByLabelText('What were you doing?'), {
+                target: { value: 'hello' },
+            });
+            expect(screen.getByTestId('error-description-counter').textContent).toBe(
+                `5 / ${MAX_DESCRIPTION_LENGTH}`
+            );
+        });
+
+        it('allows submission at exactly the limit', async () => {
+            const onSubmit = vi.fn().mockResolvedValue(undefined);
+            render(
+                <ErrorReportForm errorContext={ERROR_CONTEXT} onClose={vi.fn()} onSubmit={onSubmit} />
+            );
+            const atLimit = 'a'.repeat(MAX_DESCRIPTION_LENGTH);
+
+            fireEvent.change(screen.getByLabelText('What were you doing?'), {
+                target: { value: atLimit },
+            });
+
+            expect(screen.getByTestId('error-description-counter').textContent).toBe(
+                `${MAX_DESCRIPTION_LENGTH} / ${MAX_DESCRIPTION_LENGTH}`
+            );
+            expect(screen.queryByTestId('error-description-limit')).toBeNull();
+            const btn = screen.getByRole('button', { name: 'Submit report' }) as HTMLButtonElement;
+            expect(btn.disabled).toBe(false);
+
+            fireEvent.click(btn);
+            await waitFor(() =>
+                expect(onSubmit).toHaveBeenCalledWith(
+                    expect.objectContaining({ description: atLimit })
+                )
+            );
+        });
+
+        it('blocks submission and shows an inline warning past the limit', async () => {
+            const onSubmit = vi.fn().mockResolvedValue(undefined);
+            render(
+                <ErrorReportForm errorContext={ERROR_CONTEXT} onClose={vi.fn()} onSubmit={onSubmit} />
+            );
+            const textarea = screen.getByLabelText('What were you doing?');
+
+            fireEvent.change(textarea, {
+                target: { value: 'a'.repeat(MAX_DESCRIPTION_LENGTH + 5) },
+            });
+
+            expect(screen.getByTestId('error-description-counter').textContent).toBe(
+                `${MAX_DESCRIPTION_LENGTH + 5} / ${MAX_DESCRIPTION_LENGTH}`
+            );
+            expect(screen.getByTestId('error-description-limit').textContent).toContain(
+                '5 characters over'
+            );
+            expect(textarea.getAttribute('aria-invalid')).toBe('true');
+
+            const btn = screen.getByRole('button', { name: 'Submit report' }) as HTMLButtonElement;
+            expect(btn.disabled).toBe(true);
+
+            fireEvent.submit(btn.closest('form')!);
+            await waitFor(() => expect(onSubmit).not.toHaveBeenCalled());
+        });
     });
 });

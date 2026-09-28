@@ -11,12 +11,20 @@
  *
  * The fix:  policy is now USING (auth.uid() = user_id OR role = 'service_role').
  *
+ * Cross-region coverage (Issue #1318): the blanket-read gap was a cross-region
+ *           leak, so a multi-user, multi-region fixture is exercised end-to-end
+ *           through a fan-out query path that mirrors how regional-auth reads
+ *           auth_audit_logs (one query per regional database, results merged —
+ *           see validateAuditLogConsistency in
+ *           supabase/functions/regional-auth/consistency-validators.ts).
+ *           Traceability: supabase/migrations/019_fix_auth_audit_logs_rls.sql.
+ *
  * Approach: no live Supabase database is required.  The SQL USING expression is
  *           re-implemented as a TypeScript predicate and exercised through an
  *           in-process RLS engine that mirrors Supabase's evaluation semantics.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -197,6 +205,166 @@ describe('auth_audit_logs RLS — fixed policy (migration 019)', () => {
     it('service_role CAN SELECT a NULL-user_id failure row', () => {
       const failureRow: AuditLogRow = makeLogRow('', { user_id: '' });
       expect(canSelect(failureRow, auth.serviceRole)).toBe(true);
+    });
+  });
+});
+
+// ── Cross-region scenario (Issue #1318) ───────────────────────────────────────
+//
+// Policy under test: supabase/migrations/019_fix_auth_audit_logs_rls.sql
+//   USING (auth.uid() = user_id OR auth.role() = 'service_role')
+//
+// Each region (see the region CHECK constraint in
+// 010_auth_audit_logs_cross_region.sql) is a separate database with its own
+// auth_audit_logs table. A cross-region read fans out to every regional table,
+// applies RLS independently inside each region, and merges the results — the
+// exact path the pre-019 tier bypass leaked through.
+
+describe('auth_audit_logs RLS — cross-region multi-user reads (migration 019)', () => {
+  const REGIONS = ['us-east', 'eu-west', 'ap-southeast'] as const;
+  type Region = (typeof REGIONS)[number];
+
+  const USER_C = 'cccccccc-0000-0000-0000-000000000003'; // shares us-east with user A
+
+  const ctx = {
+    userA: { uid: USER_A, role: 'authenticated' } as AuthContext,
+    userB: { uid: USER_B, role: 'authenticated' } as AuthContext,
+    userC: { uid: USER_C, role: 'authenticated' } as AuthContext,
+    anon: { uid: null, role: 'anon' } as AuthContext,
+    serviceRole: { uid: null, role: 'service_role' } as AuthContext,
+  };
+
+  /** One auth_audit_logs table per regional database. */
+  type RegionalTables = Record<Region, AuditLogRow[]>;
+
+  function buildRegionalTables(): RegionalTables {
+    return {
+      // User A has rows in two distinct regions; user C shares us-east with A.
+      'us-east': [
+        makeLogRow(USER_A, { region: 'us-east', event_type: 'signin' }),
+        makeLogRow(USER_A, { region: 'us-east', event_type: 'refresh' }),
+        makeLogRow(USER_C, { region: 'us-east', event_type: 'signin' }),
+      ],
+      'eu-west': [
+        makeLogRow(USER_A, { region: 'eu-west', event_type: 'refresh' }),
+        makeLogRow(USER_B, { region: 'eu-west', event_type: 'signup' }),
+      ],
+      'ap-southeast': [
+        makeLogRow(USER_B, { region: 'ap-southeast', event_type: 'signin' }),
+        makeLogRow(USER_C, { region: 'ap-southeast', event_type: 'logout' }),
+      ],
+    };
+  }
+
+  /**
+   * Cross-region query path: SELECT * FROM auth_audit_logs [WHERE user_id = ?]
+   * issued against every regional database under the caller's auth context,
+   * with RLS evaluated inside each region before the results are merged.
+   */
+  function selectAcrossRegions(
+    tables: RegionalTables,
+    auth: AuthContext,
+    filter: { userId?: string } = {},
+  ): AuditLogRow[] {
+    return REGIONS.flatMap((region) =>
+      tables[region]
+        .filter((row) => canSelect(row, auth)) // RLS runs inside each region
+        .filter((row) => filter.userId === undefined || row.user_id === filter.userId),
+    );
+  }
+
+  /** Same fan-out under the pre-019 policy, used to prove the scenario is the leak shape. */
+  function selectAcrossRegionsOldPolicy(tables: RegionalTables, auth: AuthContext, tier: string): AuditLogRow[] {
+    return REGIONS.flatMap((region) => tables[region].filter((row) => canSelectOldPolicy(row, auth, tier)));
+  }
+
+  const allRegionalRows = (tables: RegionalTables) => REGIONS.flatMap((r) => tables[r]);
+
+  let tables: RegionalTables;
+
+  beforeEach(() => {
+    tables = buildRegionalTables();
+  });
+
+  it('fixture: the same user_id has rows in two distinct regions', () => {
+    const regionsForA = new Set(allRegionalRows(tables).filter((r) => r.user_id === USER_A).map((r) => r.region));
+    expect(regionsForA.size).toBeGreaterThanOrEqual(2);
+    expect([...regionsForA]).toEqual(expect.arrayContaining(['us-east', 'eu-west']));
+  });
+
+  it('regression: pre-019 policy leaked other users\' rows from every region to a premium user', () => {
+    const leaked = selectAcrossRegionsOldPolicy(tables, ctx.userA, 'premium');
+    const foreignRegions = new Set(leaked.filter((r) => r.user_id !== USER_A).map((r) => r.region));
+    expect(foreignRegions).toEqual(new Set(['us-east', 'eu-west', 'ap-southeast']));
+  });
+
+  describe('a user reads only their own rows regardless of region', () => {
+    it('user A sees all of their rows from both us-east and eu-west', () => {
+      const visible = selectAcrossRegions(tables, ctx.userA);
+      const expected = allRegionalRows(tables).filter((r) => r.user_id === USER_A);
+
+      expect(visible.map((r) => r.id).sort()).toEqual(expected.map((r) => r.id).sort());
+      expect(new Set(visible.map((r) => r.region))).toEqual(new Set(['us-east', 'eu-west']));
+      expect(visible.every((r) => r.user_id === USER_A)).toBe(true);
+    });
+
+    it('user B sees only their own rows across eu-west and ap-southeast', () => {
+      const visible = selectAcrossRegions(tables, ctx.userB);
+      expect(visible).toHaveLength(2);
+      expect(visible.every((r) => r.user_id === USER_B)).toBe(true);
+      expect(new Set(visible.map((r) => r.region))).toEqual(new Set(['eu-west', 'ap-southeast']));
+    });
+
+    it.each(REGIONS)('no foreign row is returned from %s for any authenticated user', (region) => {
+      for (const auth of [ctx.userA, ctx.userB, ctx.userC]) {
+        const fromRegion = selectAcrossRegions(tables, auth).filter((r) => r.region === region);
+        expect(fromRegion.every((r) => r.user_id === auth.uid)).toBe(true);
+      }
+    });
+  });
+
+  describe('a user cannot read another user\'s rows, even when both share a region', () => {
+    it('user A and user C both have us-east rows but each sees only their own', () => {
+      const aInUsEast = selectAcrossRegions(tables, ctx.userA).filter((r) => r.region === 'us-east');
+      const cInUsEast = selectAcrossRegions(tables, ctx.userC).filter((r) => r.region === 'us-east');
+
+      expect(aInUsEast).toHaveLength(2);
+      expect(aInUsEast.every((r) => r.user_id === USER_A)).toBe(true);
+      expect(cInUsEast).toHaveLength(1);
+      expect(cInUsEast[0].user_id).toBe(USER_C);
+    });
+
+    it('explicitly filtering on another user_id returns zero rows across all regions', () => {
+      expect(selectAcrossRegions(tables, ctx.userA, { userId: USER_C })).toEqual([]);
+      expect(selectAcrossRegions(tables, ctx.userC, { userId: USER_A })).toEqual([]);
+      expect(selectAcrossRegions(tables, ctx.userB, { userId: USER_A })).toEqual([]);
+    });
+
+    it('anon sees nothing in any region', () => {
+      expect(selectAcrossRegions(tables, ctx.anon)).toEqual([]);
+    });
+  });
+
+  describe('service_role bypass in the cross-region scenario', () => {
+    it('service_role reads every row from every region', () => {
+      const visible = selectAcrossRegions(tables, ctx.serviceRole);
+      expect(visible).toHaveLength(allRegionalRows(tables).length);
+      expect(new Set(visible.map((r) => r.region))).toEqual(new Set(REGIONS));
+    });
+
+    it('service_role reads a single user\'s rows across all regions (validateAuditLogConsistency path)', () => {
+      const perRegionCounts = Object.fromEntries(
+        REGIONS.map((region) => [
+          region,
+          tables[region].filter((row) => canSelect(row, ctx.serviceRole) && row.user_id === USER_A).length,
+        ]),
+      );
+      expect(perRegionCounts).toEqual({ 'us-east': 2, 'eu-west': 1, 'ap-southeast': 0 });
+    });
+
+    it('service_role sees rows belonging to multiple users that share a region', () => {
+      const usEast = selectAcrossRegions(tables, ctx.serviceRole).filter((r) => r.region === 'us-east');
+      expect(new Set(usEast.map((r) => r.user_id))).toEqual(new Set([USER_A, USER_C]));
     });
   });
 });

@@ -4,7 +4,7 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
-import { TierUsageIndicators } from './TierUsageIndicators';
+import { TierUsageIndicators, getUsageInfo } from './TierUsageIndicators';
 
 vi.mock('@/lib/stripe/pricing', () => ({
   TIER_CONFIGS: {
@@ -46,6 +46,7 @@ describe('TierUsageIndicators', () => {
     );
 
     expect(screen.queryByLabelText('Domains usage')).toBeNull();
+    expect(screen.getByTestId('domains-usage-unavailable')).toBeDefined();
 
     rerender(
       <TierUsageIndicators
@@ -94,5 +95,40 @@ describe('TierUsageIndicators', () => {
 
     expect(screen.getByTestId('deployments-usage-unlimited')).toBeDefined();
     expect(screen.getByTestId('domains-usage-unlimited')).toBeDefined();
+  });
+
+  it('renders a zero-allowance limit as "not available on your tier" rather than 0 of 1', () => {
+    render(
+      <TierUsageIndicators
+        tier="free"
+        activeDeployments={0}
+        activeCustomDomains={0}
+      />
+    );
+
+    const unavailable = screen.getByTestId('domains-usage-unavailable');
+    expect(unavailable.textContent).toContain('not available on your current tier');
+    expect(unavailable.textContent).not.toContain('0 / 1');
+    expect(screen.queryByTestId('domains-usage')).toBeNull();
+    expect(screen.queryByTestId('domains-usage-unlimited')).toBeNull();
+  });
+
+  describe('getUsageInfo', () => {
+    it('treats limit === 0 as an explicit unavailable state', () => {
+      expect(getUsageInfo(0, 0)).toEqual({ used: 0, limit: 0, percent: 0, state: 'unavailable' });
+    });
+
+    it('keeps limit === -1 as unlimited', () => {
+      expect(getUsageInfo(5, -1)).toEqual({ used: 5, limit: -1, percent: 0, state: 'normal' });
+    });
+
+    it('computes a normal positive-limit case', () => {
+      expect(getUsageInfo(2, 10)).toEqual({ used: 2, limit: 10, percent: 20, state: 'normal' });
+    });
+
+    it('still clamps an invalid limit instead of dividing by zero', () => {
+      expect(getUsageInfo(0, Number.NaN).limit).toBe(1);
+      expect(getUsageInfo(0, -5).limit).toBe(1);
+    });
   });
 });

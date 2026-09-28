@@ -39,6 +39,19 @@ vi.mock('@/lib/supabase/server', () => ({
     createClient: () => ({ from: mockFrom, rpc: mockRpc }),
 }));
 
+vi.mock('./email-delivery.service', () => ({
+    emailDeliveryService: {
+        send: vi.fn().mockResolvedValue({
+            deliveryId: 'test-id',
+            providerMessageId: 'test-msg-id',
+            recipient: 'admin@craft.app',
+            type: 'security_alert',
+            status: 'sent',
+            delivered: true,
+        }),
+    },
+}));
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function makeService() {
@@ -47,8 +60,8 @@ function makeService() {
         .spyOn(service as unknown as { _sendSlackAlert: (...a: unknown[]) => Promise<void> }, '_sendSlackAlert')
         .mockResolvedValue(undefined);
     const emailSpy = vi
-        .spyOn(service as unknown as { _sendEmailAlert: (...a: unknown[]) => void }, '_sendEmailAlert')
-        .mockImplementation(() => undefined);
+        .spyOn(service as unknown as { _sendEmailAlert: (...a: unknown[]) => Promise<void> }, '_sendEmailAlert')
+        .mockResolvedValue(undefined);
     return { service, slackSpy, emailSpy };
 }
 
@@ -109,5 +122,27 @@ describe('CronFailureTrackerService — escalation (#1046)', () => {
             (c) => c[0] === 'mark_cron_alert_sent' && (c[1] as Record<string, unknown>).p_alert_type === 'email',
         );
         expect(emailMarks).toHaveLength(1);
+    });
+
+    it('calls emailDeliveryService.send when email alert threshold is reached', async () => {
+        const { vi: testVi } = await import('vitest');
+        const { emailDeliveryService: mockEmailService } = await import('./email-delivery.service');
+        const { service } = makeService();
+        currentCount = 6;
+
+        await service.recordFailure('job-e', 'database connection failed');
+
+        expect(mockEmailService.send).toHaveBeenCalledTimes(1);
+        expect(mockEmailService.send).toHaveBeenCalledWith(
+            expect.objectContaining({
+                type: 'security_alert',
+                to: expect.any(String),
+                data: expect.objectContaining({
+                    jobName: 'job-e',
+                    consecutiveFailures: 6,
+                    error: 'database connection failed',
+                }),
+            }),
+        );
     });
 });

@@ -4,7 +4,7 @@ import { validateStellarConfig, DEFAULT_STELLAR_CONFIG } from './validate-stella
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /** A valid 56-char Soroban contract address (starts with C). */
-const VALID_CONTRACT = 'CBQWI64FZ2NKSJC7D45HJZVVMQZ3T7KHXOJSLZPZ5LHKQM7FFWVGNQST';
+const VALID_CONTRACT = 'CADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP5KR';
 
 /** A valid Stellar account ID (starts with G). */
 const VALID_ISSUER = 'GBQWI64FZ2NKSJC7D45HJZVVMQZ3T7KHXOJSLZPZ5LHKQM7FFWVGNQST';
@@ -282,7 +282,7 @@ describe('validateStellarConfig — contractAddresses', () => {
             ...validTestnet,
             contractAddresses: {
                 amm: VALID_CONTRACT,
-                lending: 'CATPNZ2SJRSVZJBWXGFSMZQHQ47JM5PXNQRVJLGHGHVKPZ2OVH3FHXPA',
+                lending: 'CAAQQDYWDUSCWMRZIBDU4VK4MNVHC6D7Q2GZJG5CVGYLPPWFZTJ5U2RQ',
             },
         });
         expect(result.valid).toBe(true);
