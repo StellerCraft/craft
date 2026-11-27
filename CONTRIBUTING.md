@@ -26,6 +26,10 @@ on the Node version declared in the root `package.json` `engines` field. The
 workflow uses the default read-only `GITHUB_TOKEN` permissions. Make sure these
 same checks pass locally before requesting review.
 
+Dependabot proposes weekly version updates for npm workspace dependencies and
+GitHub Actions. Security updates are managed separately in the repository's
+GitHub settings.
+
 ## URL-synced filters
 
 List pages with user-facing filters (search, status, category, …) keep their
