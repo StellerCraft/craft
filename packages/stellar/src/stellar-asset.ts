@@ -1,4 +1,4 @@
-import type { StellarAsset, StellarAssetType } from '@craft/types';
+import { assertValidStellarAssetCode, type StellarAsset, type StellarAssetType } from '@craft/types';
 
 /** Create a Stellar asset after enforcing its code/type length invariant. */
 export function makeStellarAsset(
@@ -17,15 +17,7 @@ export function makeStellarAsset(
     return { type, code, issuer };
   }
 
-  if (!/^[A-Z0-9]{1,12}$/.test(code)) {
-    throw new Error('A credit Stellar asset code must be 1-12 uppercase alphanumeric characters.');
-  }
-  if (type === 'credit_alphanum4' && code.length > 4) {
-    throw new Error('credit_alphanum4 asset codes must be 1-4 characters.');
-  }
-  if (type === 'credit_alphanum12' && code.length < 5) {
-    throw new Error('credit_alphanum12 asset codes must be 5-12 characters.');
-  }
+  assertValidStellarAssetCode(type, code);
 
   return { type, code, issuer };
 }

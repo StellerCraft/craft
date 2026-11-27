@@ -52,15 +52,11 @@ export const config = {
         secondaryColor: process.env.NEXT_PUBLIC_SECONDARY_COLOR || '#1a1f36',
     },
     stellar: resolveStellarNetworkConfig(process.env),
+    // Contract addresses come from NEXT_PUBLIC_CONTRACT_* env vars set at deployment.
     contracts: {
-        // Contract addresses will be injected here by the CRAFT platform.
-        // Expected shape (populated at deployment):
-        // {
-        //   liquidityPool?: string;     // Liquidity pool contract address
-        //   yieldFarm?: string;         // Yield farming contract address
-        //   tokenSwap?: string;         // Token swap contract address
-        //   [key: string]: string | undefined;  // Additional contract addresses
-        // }
+        liquidityPool: process.env.NEXT_PUBLIC_CONTRACT_LIQUIDITY_POOL,
+        yieldFarm: process.env.NEXT_PUBLIC_CONTRACT_YIELD_FARM,
+        tokenSwap: process.env.NEXT_PUBLIC_CONTRACT_TOKEN_SWAP,
     },
 } as const;
 
