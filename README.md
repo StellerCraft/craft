@@ -191,7 +191,7 @@ craft-platform/
 
 Before you begin, ensure you have the following installed and configured:
 
-- **Node.js** 18.0 or higher ([Download](https://nodejs.org/))
+- **Node.js** 18.17.0 or higher, 20.x LTS recommended — see `.nvmrc` ([Download](https://nodejs.org/))
 - **npm** 10.0 or higher (comes with Node.js)
 - **Git** for version control
 - **Supabase** account ([Sign up](https://supabase.com))
